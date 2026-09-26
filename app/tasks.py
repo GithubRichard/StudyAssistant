@@ -233,6 +233,8 @@ class TaskRunner:
         try:
             assets = await self._collect_assets(task, run)
             timeout = min(s.hermes.timeout_seconds, s.limits.max_task_minutes * 60)
+            log.info("开始执行 task_id=%s run_no=%d timeout=%.0fs assets=%d",
+                     task_id, run["run_no"], timeout, len(assets))
             if s.is_hermes:
                 messages = hermes.build_messages(
                     s, {**task, "input_text": task.get("input_text", "")},

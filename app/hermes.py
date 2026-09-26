@@ -348,6 +348,9 @@ class HermesClient:
             "temperature": 0.2,
         }
         client = await self._http()
+        started = time.time()
+        log.info("调用 Hermes 技能 session=%s model=%s timeout=%ss",
+                 session_id, self.cfg.agent_model, self.cfg.timeout_seconds)
         try:
             resp = await client.post("/v1/chat/completions", json=payload,
                                      headers={"X-Hermes-Session-Id": session_id})
@@ -355,6 +358,10 @@ class HermesClient:
             raise HermesUnavailable(f"无法连接 Hermes：{e}") from e
         except httpx.HTTPError as e:
             raise HermesUncertain(f"请求中断，执行结果未确认：{e}") from e
+        finally:
+            elapsed = time.time() - started
+            if elapsed > 30:
+                log.info("Hermes 请求耗时 %.0fs session=%s", elapsed, session_id)
 
         if resp.status_code in (401, 403):
             raise HermesAuthError(f"Hermes 鉴权失败（HTTP {resp.status_code}）")
