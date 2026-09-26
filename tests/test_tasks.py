@@ -293,5 +293,105 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view["result"]["review_summary"]["state"], "not_run")
 
 
+async def _git(cwd: Path, *args: str):
+    proc = await asyncio.create_subprocess_exec(
+        "git", *args, cwd=str(cwd),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    out, err = await proc.communicate()
+    return proc.returncode or 0, out.decode().strip(), err.decode().strip()
+
+
+class GitDeliveryTest(unittest.IsolatedAsyncioTestCase):
+    """归档与受控 Git 交付的串联：真实提交、失败如实上报且不阻断归档。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.repo = base / "workspace"
+        self.repo.mkdir(parents=True, exist_ok=True)
+        self.settings = make_settings(
+            self.tmp.name, git={"enabled": True, "remote": "origin", "timeout_seconds": 30})
+        await db.init_db(self.settings.db_path)
+        await seed_user(self.settings, "u1")
+        await seed_asset(self.settings, "u1", "a1")
+        # 需要真实文件才能构造 data_url
+        from tests.test_workspace import png_bytes
+        asset_path = Path(self.settings.upload_dir) / "a1.jpg"
+        asset_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_path.write_bytes(png_bytes())
+
+    async def asyncTearDown(self):
+        self.tmp.cleanup()
+
+    async def _init_repo(self) -> None:
+        base = Path(self.tmp.name)
+        await _git(self.repo, "init")
+        await _git(self.repo, "symbolic-ref", "HEAD", "refs/heads/main")
+        await _git(self.repo, "config", "user.name", "test")
+        await _git(self.repo, "config", "user.email", "test@example.com")
+        (self.repo / "README.md").write_text("学习工作区\n", encoding="utf-8")
+        await _git(self.repo, "add", "--", "README.md")
+        await _git(self.repo, "commit", "-m", "init")
+        remote = base / "remote.git"
+        await _git(base, "init", "--bare", str(remote))
+        await _git(remote, "symbolic-ref", "HEAD", "refs/heads/main")
+        await _git(self.repo, "remote", "add", "origin", str(remote))
+        await _git(self.repo, "push", "-u", "origin", "main")
+
+    async def _create_and_run(self) -> str:
+        created = await tasks.create_study_task(
+            self.settings, "u1",
+            {"task_type": "grading", "subject": "数学", "text": "", "asset_ids": ["a1"]}, "")
+        await run_executor(self.settings, FakeClient())
+        return created["task_id"]
+
+    async def test_archive_is_committed_and_pushed(self):
+        await self._init_repo()
+        task_id = await self._create_and_run()
+
+        task = await db.get_task(self.settings.db_path, task_id)
+        self.assertEqual(task["git_status"], "committed")
+        self.assertEqual(task["archive_path"].endswith("2026-09-26.md"), True)
+
+        view = await tasks.build_task_view(self.settings, task)
+        git_delivery = view["result"]["delivery"]["git"]
+        self.assertEqual(git_delivery["status"], "committed")
+        self.assertTrue(git_delivery["committed"])
+        self.assertTrue(git_delivery["pushed"])
+        self.assertTrue(git_delivery["commit"])
+        # 台账条目与去重键一并落库
+        self.assertTrue(view["ledger"])
+        self.assertTrue(view["ledger"][0]["question_uid"].startswith("q-"))
+
+        code, tracked, _ = await _git(self.repo, "ls-files")
+        self.assertIn("数学/错题解析/2026-09-26.md", tracked)
+
+        last = await db.latest_git_sync(self.settings.db_path)
+        self.assertEqual(last["status"], "committed")
+        self.assertTrue(last["pushed"])
+
+    async def test_git_failure_does_not_block_archive_and_is_reported(self):
+        # 工作区不是 Git 仓库：归档成功、git 如实报告失败
+        task_id = await self._create_and_run()
+        task = await db.get_task(self.settings.db_path, task_id)
+        view = await tasks.build_task_view(self.settings, task)
+        self.assertEqual(view["result"]["delivery"]["archive"]["status"], "generated")
+        git_delivery = view["result"]["delivery"]["git"]
+        self.assertEqual(git_delivery["status"], "failed")
+        self.assertIn("不是 Git 仓库", git_delivery["note"])
+        self.assertFalse(git_delivery["pushed"])
+
+    async def test_disabled_git_reports_not_configured(self):
+        # 复用同一工作区与数据库，只把 Git 同步开关关掉
+        disabled = make_settings(self.tmp.name)
+        created = await tasks.create_study_task(
+            disabled, "u1",
+            {"task_type": "grading", "subject": "数学", "text": "", "asset_ids": ["a1"]}, "")
+        await run_executor(disabled, FakeClient())
+        task = await db.get_task(disabled.db_path, created["task_id"])
+        view = await tasks.build_task_view(disabled, task)
+        self.assertEqual(view["result"]["delivery"]["git"]["status"], "not_configured")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -143,6 +143,30 @@ class DeliveryConfig(BaseModel):
     git_enabled: bool = False
 
 
+class GitSyncConfig(BaseModel):
+    """受控 Git 提交推送（学习记录同步）。
+
+    约定：
+    - 只提交本次授权的工作区学习记录，禁止全量暂存、禁止 `git add -f` 绕过忽略规则。
+    - 不强制推送、不硬重置、不改 Git 配置、不跳过钩子；冲突或分支分歧时停止上传。
+    - `enabled` 未显式配置时回落到 `delivery.git_enabled`，保持旧配置可用。
+    """
+
+    enabled: Optional[bool] = None
+    remote: str = "origin"
+    timeout_seconds: float = 60.0
+    author_name: str = ""        # 留空则沿用仓库已有的 git user.name / user.email
+    author_email: str = ""
+
+
+class FamilyConfig(BaseModel):
+    """家庭学习配置默认值，可由小程序「设置」页覆盖并持久化到数据库。"""
+
+    default_grade_level: str = ""
+    subjects: List[str] = Field(default_factory=lambda: ["语文", "数学", "英语"])
+    term_start_date: str = ""              # 本学期开学日期 YYYY-MM-DD，用于期中/期末默认区间
+
+
 class QuotaConfig(BaseModel):
     new_user_bonus: int = 20
     daily_free: int = 3
@@ -175,6 +199,8 @@ class Settings(BaseModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
+    git: GitSyncConfig = Field(default_factory=GitSyncConfig)
+    family: FamilyConfig = Field(default_factory=FamilyConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     quota: QuotaConfig = Field(default_factory=QuotaConfig)
@@ -213,6 +239,13 @@ class Settings(BaseModel):
     @property
     def is_hermes(self) -> bool:
         return self.engine.mode == "hermes"
+
+    @property
+    def git_sync_enabled(self) -> bool:
+        """Git 同步总开关：`git.enabled` 未显式配置时回落到 `delivery.git_enabled`。"""
+        if self.git.enabled is not None:
+            return bool(self.git.enabled)
+        return bool(self.delivery.git_enabled)
 
 
 def load_settings(path: str | None = None) -> Settings:

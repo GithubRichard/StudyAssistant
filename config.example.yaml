@@ -53,6 +53,26 @@ delivery:
   email_enabled: false
   git_enabled: false
 
+# ================= 受控 Git 提交推送（学习记录同步）=================
+# 开启后：归档成功 → 只提交本次授权的工作区学习记录 → 推送。
+# 禁止全量暂存、禁止 git add -f 绕过原题忽略规则、禁止 force push / 硬重置 / 改配置 / 跳过钩子；
+# 遇内容冲突或分支分歧时在仓库根生成「冲突记录-YYYY-MM-DD-HHmmss.md」并停止上传。
+# enabled 留空（不写）时回落到上面的 delivery.git_enabled。
+git:
+  # enabled: true
+  remote: "origin"          # 期望的远端名，需与实际 upstream 一致
+  timeout_seconds: 60
+  author_name: ""           # 留空则沿用仓库已有的 git user.name / user.email
+  author_email: ""
+
+# ================= 家庭学习配置默认值 =================
+# 小程序「设置」页保存后的值会覆盖这里的默认值；未保存时以此为准。
+# 学科清单同时决定工作区要创建哪些「学科/{错题解析,周报分析,强化训练} + 原题」目录骨架。
+family:
+  default_grade_level: ""   # 留空表示未指定，不擅自假设年级
+  subjects: ["语文", "数学", "英语"]
+  term_start_date: ""       # 本学期开学日期 YYYY-MM-DD，用于期中考/期末考默认区间；留空时如实说明缺口
+
 # ================= 配额与费用 =================
 quota:
   new_user_bonus: 20

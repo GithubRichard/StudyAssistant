@@ -89,7 +89,13 @@ try:
         assert runtime["engine"]["mode"] == "hermes"
         assert runtime["hermes"]["state"] == "ready", runtime["hermes"]
         assert "test-key" not in str(runtime)
-        print("✓ 运行状态：Hermes 就绪（技能已安装），且未泄露密钥")
+        # 家庭配置、工作区骨架与原题边界、Git 开关都要如实反映
+        assert runtime["git"]["enabled"] is False
+        assert runtime["workspace"]["original_dir_exists"] is True
+        assert runtime["workspace"]["readme_exists"] is True
+        assert runtime["workspace"]["gitignore_exists"] is True
+        assert runtime["family"]["subjects"]
+        print("✓ 运行状态：Hermes 就绪、原题目录与 .gitignore 就绪、Git 未启用如实标注")
 
         # 2. 附件与任务
         quota_before = client.get("/api/quota", headers=auth(token)).json()["remaining"]
@@ -135,7 +141,42 @@ try:
         assert any(r["status"] == "not_configured"
                    for r in [result["delivery"]["pdf"], result["delivery"]["email"]]), \
             "未启用的交付能力必须标注未配置"
-        print("✓ 未启用的 PDF/邮件/同步能力如实标注为未配置")
+        assert result["delivery"]["git"]["status"] == "not_configured"
+        assert result["delivery"]["archive"]["status"] == "generated"
+        assert result["delivery"]["archive"]["path"].startswith("数学/错题解析/")
+        assert result["overview"]["error_rate_basis"], "必须说明错误率口径"
+        print("✓ 未启用的 PDF/邮件/同步能力如实标注为未配置，归档状态来自真实写入")
+
+        # 3.1 台账：错题自动入台账，可按状态与学科查询，并支持登记复测
+        assert len(view["ledger"]) == 1, view["ledger"]
+        entry = view["ledger"][0]
+        assert entry["question_uid"].startswith("q-")
+        assert entry["remediation_state"] == "pending_correction"
+
+        ledger = client.get("/api/ledger", headers=auth(token)).json()
+        assert len(ledger["entries"]) == 1 and ledger["counts"]["pending_correction"] == 1
+        assert ledger["subjects"] == ["数学"]
+
+        event = client.post(f"/api/ledger/{entry['id']}/events", headers=auth(token),
+                            json={"result": "retest_passed", "student_answer": "x=4",
+                                  "note": "重新讲解了移项规则"})
+        assert event.status_code == 201, event.text
+        assert event.json()["remediation_state"] == "retest_passed"
+        assert event.json()["archive"]["status"] == "generated", event.json()
+        text = archive.read_text(encoding="utf-8")
+        assert "复测登记" in text and "复测通过" in text
+        assert "移项未变号" in text, "追加复测不应覆盖历史判定"
+
+        filtered = client.get("/api/ledger?states=retest_passed", headers=auth(token)).json()
+        assert len(filtered["entries"]) == 1 and filtered["entries"][0]["id"] == entry["id"]
+        print("✓ 错题台账去重入账、状态筛选与复测登记（追加不覆盖历史）")
+
+        # 3.2 原题照片不落工作区
+        ws_root = TMP / "workspace"
+        leaked = [p for p in ws_root.rglob("*")
+                  if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg", ".png")]
+        assert not leaked, f"原图不得写入工作区: {leaked}"
+        print("✓ 上传的原始照片只留在数据目录，未写入工作区")
 
         quota_after = client.get("/api/quota", headers=auth(token)).json()["remaining"]
         assert quota_after == quota_before - 1, (quota_before, quota_after)
@@ -175,7 +216,30 @@ try:
         assert legacy_view["status"] in ("done", "waiting_input")
         print("✓ 旧 /api/tasks 入口复用同一鉴权与任务流程")
 
-        # 8. 运行状态脱敏
+        # 8. 家庭设置：未保存时回落配置默认值，保存后如实标注来源
+        settings_view = client.get("/api/settings", headers=auth(token)).json()
+        assert settings_view["source"] == "config_default"
+        saved = client.put("/api/settings", headers=auth(token),
+                           json={"grade_level": "七年级", "subjects": ["数学", "英语"],
+                                 "term_start_date": "2026-09-01"})
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["source"] == "saved"
+        after = client.get("/api/settings", headers=auth(token)).json()
+        assert after["term_start_date"] == "2026-09-01" and after["subjects"] == ["数学", "英语"]
+        print("✓ 家庭设置可保存学期起始日期、年级与学科清单")
+
+        # 9. 训练任务：月考默认区间由服务端计算
+        training = client.post("/api/study/tasks", headers=auth(token),
+                               json={"task_type": "training", "subject": "数学",
+                                     "training_kind": "monthly", "exam_scope": "第一章 有理数",
+                                     "text": "按月考范围出题"})
+        assert training.status_code == 201, training.text
+        scope_info = training.json()["scope"]
+        assert scope_info["start_date"].endswith("-01"), scope_info
+        assert scope_info["note"] and "月考" in scope_info["note"]
+        print("✓ 月考默认区间按规范计算（当月 1 日至今天）")
+
+        # 10. 运行状态脱敏
         providers = client.get("/api/providers").json()
         assert "test-key" not in str(providers)
         print("✓ /api/providers 不泄露密钥")

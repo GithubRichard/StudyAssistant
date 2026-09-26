@@ -21,7 +21,8 @@ from fastapi.responses import FileResponse
 from . import auth, db, tasks, wechat, workspace
 from .config import Settings, provider_chain
 from .hermes import HermesClient
-from .schemas import FollowupCreate, StudyTaskCreate
+from .schemas import (FamilySettingsUpdate, FollowupCreate, LedgerEventCreate,
+                      StudyTaskCreate)
 from .tasks import TaskError
 
 log = logging.getLogger(__name__)
@@ -272,6 +273,11 @@ async def list_tasks(limit: int = Query(20, ge=1, le=100), offset: int = Query(0
         item = {
             "id": t["id"], "status": t["status"], "subject": t.get("subject", ""),
             "task_type": t.get("task_type", "grading"),
+            "training_kind": t.get("training_kind", ""),
+            "scope_start": t.get("scope_start", ""),
+            "scope_end": t.get("scope_end", ""),
+            "git_status": t.get("git_status", ""),
+            "archive_path": workspace.workspace_relative_path(s, t.get("archive_path", "")),
             "created_at": t.get("created_at"), "run_count": t.get("run_count", 0),
             "summary": "", "missing_info_count": 0,
         }
@@ -321,6 +327,8 @@ async def runtime(ctx: dict = Session):
     s = get_settings()
     client = get_hermes()
     hermes_state = (await client.readiness()).as_dict() if client is not None else None
+    root = workspace.workspace_root(s)
+    subjects = workspace.workspace_subjects(s)
     return {
         "engine": {
             "mode": s.engine.mode,
@@ -332,9 +340,27 @@ async def runtime(ctx: dict = Session):
         "delivery": {
             "pdf": s.delivery.pdf_enabled,
             "email": s.delivery.email_enabled,
-            "git": s.delivery.git_enabled,
+            "git": s.git_sync_enabled,
         },
-        "workspace": {"dir": s.workspace.dir, "readonly": s.workspace.readonly},
+        "git": {
+            "enabled": s.git_sync_enabled,
+            "remote": s.git.remote,
+            "last_sync": await db.latest_git_sync(s.db_path),
+        },
+        "family": {
+            "default_grade_level": s.family.default_grade_level,
+            "subjects": list(s.family.subjects),
+            "term_start_date": s.family.term_start_date,
+        },
+        "workspace": {
+            "dir": s.workspace.dir,
+            "readonly": s.workspace.readonly,
+            "subjects": subjects,
+            "readme_exists": (root / "README.md").exists(),
+            "gitignore_exists": (root / ".gitignore").exists(),
+            "original_dir_exists": any(
+                (root / name / workspace.ORIGINAL_SUBDIR).is_dir() for name in subjects),
+        },
         "limits": {
             "max_assets_per_task": s.limits.max_assets_per_task,
             "max_runs_per_task": s.limits.max_runs_per_task,
@@ -358,6 +384,49 @@ async def providers():
              "has_key": bool(cfg.api_key), "in_chain": name in chain}
             for name, cfg in s.llm.providers.items()
         ],
+    }
+
+
+# ---------- 家庭设置 ----------
+
+@router.get("/settings")
+async def read_family_settings(ctx: dict = Session):
+    """家庭设置视图：未保存过时回落配置文件默认值，并如实标注来源。"""
+    s = get_settings()
+    stored = await db.get_family_settings(s.db_path, ctx["openid"])
+    if stored and (stored.get("subjects") or stored.get("grade_level") or stored.get("term_start_date")):
+        return {
+            "grade_level": stored.get("grade_level", ""),
+            "subjects": list(stored.get("subjects") or []),
+            "term_start_date": stored.get("term_start_date", ""),
+            "source": "saved",
+            "updated_at": stored.get("updated_at"),
+        }
+    return {
+        "grade_level": s.family.default_grade_level,
+        "subjects": list(s.family.subjects),
+        "term_start_date": s.family.term_start_date,
+        "source": "config_default",
+        "updated_at": None,
+    }
+
+
+@router.put("/settings")
+async def update_family_settings(payload: FamilySettingsUpdate, ctx: dict = Session):
+    """保存家庭设置。未填写学期起始日期时如实保留为空，不擅自假设开学日期。"""
+    s = get_settings()
+    saved = await db.save_family_settings(
+        s.db_path, ctx["openid"],
+        grade_level=payload.grade_level,
+        subjects=payload.subjects or list(s.family.subjects),
+        term_start_date=payload.term_start_date,
+    )
+    return {
+        "grade_level": saved["grade_level"],
+        "subjects": saved["subjects"],
+        "term_start_date": saved["term_start_date"],
+        "source": "saved",
+        "updated_at": saved["updated_at"],
     }
 
 
@@ -385,3 +454,110 @@ async def get_mistakes(limit: int = Query(100, ge=1, le=200), offset: int = Quer
                        ctx: dict = Session):
     s = get_settings()
     return await db.list_mistakes(s.db_path, ctx["openid"], limit, offset)
+
+
+# ---------- 错题台账与复测登记（复习页）----------
+
+LEDGER_STATES = ("pending_correction", "corrected_pending_retest",
+                 "retest_passed", "retest_failed")
+_LEDGER_STATE_BY_RESULT = {
+    "retest_passed": "retest_passed",
+    "retest_failed": "retest_failed",
+    "corrected": "corrected_pending_retest",
+}
+
+
+def _ledger_view(row: dict) -> dict:
+    """台账条目对外视图：不复读服务器路径，也不暴露 openid。"""
+    return {
+        "id": row.get("id"),
+        "question_uid": row.get("question_uid", ""),
+        "subject": row.get("subject", ""),
+        "source": row.get("source", ""),
+        "page": row.get("page", ""),
+        "no": row.get("question_no", ""),
+        "stem": row.get("stem", ""),
+        "student_answer": row.get("student_answer", ""),
+        "correct_answer": row.get("correct_answer", ""),
+        "error_rule": row.get("error_rule", ""),
+        "knowledge_point": row.get("knowledge_point", ""),
+        "status": row.get("status", ""),
+        "remediation_state": row.get("remediation_state", "pending_correction"),
+        "archive_path": row.get("archive_path", ""),
+        "task_id": row.get("task_id", ""),
+        "note": row.get("note", ""),
+        "created_at": row.get("created_at"),
+        "last_event_at": row.get("last_event_at") or row.get("created_at"),
+    }
+
+
+@router.get("/ledger")
+async def get_ledger(subject: str = Query(""), states: str = Query(""),
+                     limit: int = Query(200, ge=1, le=500), offset: int = Query(0, ge=0),
+                     ctx: dict = Session):
+    """复习台账：按学科与订正状态筛选，并给出状态计数与已有学科清单。"""
+    s = get_settings()
+    state_list = [item.strip() for item in (states or "").split(",") if item.strip()]
+    invalid = [item for item in state_list if item not in LEDGER_STATES]
+    if invalid:
+        raise HTTPException(400, f"states 非法: {', '.join(invalid)}")
+    rows = await db.list_ledger(s.db_path, ctx["openid"], subject=subject,
+                                states=state_list, limit=limit, offset=offset)
+    return {
+        "entries": [_ledger_view(r) for r in rows],
+        "counts": await db.ledger_counts(s.db_path, ctx["openid"]),
+        "subjects": await db.ledger_subjects(s.db_path, ctx["openid"]),
+        "states": list(LEDGER_STATES),
+    }
+
+
+@router.get("/ledger/{entry_id}")
+async def get_ledger_entry(entry_id: int, ctx: dict = Session):
+    s = get_settings()
+    row = await db.get_ledger_entry(s.db_path, ctx["openid"], entry_id)
+    if not row:
+        raise HTTPException(404, "台账条目不存在")
+    events = await db.list_question_events(s.db_path, ctx["openid"],
+                                           row.get("question_uid", ""))
+    return {"entry": _ledger_view(row), "events": events}
+
+
+@router.post("/ledger/{entry_id}/events", status_code=201)
+async def create_ledger_event(entry_id: int, payload: LedgerEventCreate, ctx: dict = Session):
+    """登记一次真实发生的订正/复测：追加事件、更新台账状态并追加到关联归档文件。"""
+    s = get_settings()
+    row = await db.get_ledger_entry(s.db_path, ctx["openid"], entry_id)
+    if not row:
+        raise HTTPException(404, "台账条目不存在")
+
+    occurred = payload.occurred_date or time.strftime("%Y-%m-%d")
+    event = {
+        "question_uid": row.get("question_uid", ""),
+        "subject": row.get("subject", ""),
+        "event_type": "retest",
+        "result": payload.result,
+        "occurred_date": occurred,
+        "student_answer": payload.student_answer,
+        "note": payload.note,
+        "archive_path": row.get("archive_path", ""),
+    }
+    event_id = await db.add_question_event(s.db_path, ctx["openid"], event)
+
+    state = _LEDGER_STATE_BY_RESULT.get(payload.result, "")
+    if state:
+        await db.update_ledger_state(s.db_path, ctx["openid"], entry_id,
+                                     remediation_state=state,
+                                     archive_path=row.get("archive_path", ""))
+
+    appended = await workspace.append_retest_note(s, row, event)
+    return {
+        "event_id": event_id,
+        "result": payload.result,
+        "occurred_date": occurred,
+        "remediation_state": state or row.get("remediation_state", ""),
+        "archive": {
+            "status": appended.get("status", "skipped"),
+            "path": workspace.workspace_relative_path(s, appended.get("path", "")),
+            "note": appended.get("note", ""),
+        },
+    }

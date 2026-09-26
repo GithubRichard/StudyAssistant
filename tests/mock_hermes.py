@@ -9,10 +9,12 @@ import httpx
 SKILL_NAME = "leo-study-assistant"
 
 LEARNING_RESULT: Dict[str, Any] = {
-    "schema_version": 2,
+    "schema_version": 3,
     "task_type": "grading",
     "subject": "数学",
     "grade_level": "七年级",
+    "exam_scope": "",
+    "training_kind": "",
     "scope": {"start_date": "2026-09-20", "end_date": "2026-09-26", "sources": ["模拟作业 P12"]},
     "overview": {"summary": "移项变号仍需巩固"},
     "questions": [
@@ -32,6 +34,7 @@ LEARNING_RESULT: Dict[str, Any] = {
             "review": {"state": "agreed", "note": "核查未发现异议", "basis": "由 2x=8 得 x=4"},
             "final_decision": "kept_wrong",
             "final_decision_basis": "复核原作答后维持原判定",
+            "remediation": {"state": "pending_correction", "note": "等孩子订正后登记复测"},
         },
         {
             "id": "sim-p12-q2",
@@ -42,6 +45,7 @@ LEARNING_RESULT: Dict[str, Any] = {
             "final_decision": "pending",
         },
     ],
+    "retests": [],
     "sections": [{"title": "做得好的题", "body": "第 3 题思路完整。"}],
     "missing_info": ["本学期开学日期未提供"],
     "parent_tips": ["每天 10 分钟重做移项变式题"],

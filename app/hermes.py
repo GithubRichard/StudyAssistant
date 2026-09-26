@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 from .config import HermesConfig, Settings
 from .schemas import StudyResult
+from . import scope
 
 log = logging.getLogger(__name__)
 
@@ -165,8 +166,21 @@ def build_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, Any],
         f"- 本次任务输出目录：{run['output_dir']}\n"
         f"- 提交日期：{time.strftime('%Y-%m-%d')}\n"
     )
-    if task.get("scope_start") or task.get("scope_end"):
+    if task.get("training_kind"):
+        label = scope.TRAINING_KIND_LABELS.get(task["training_kind"], task["training_kind"])
+        header += f"- 训练类型：{label}\n"
+    exam_scope = (task.get("exam_scope") or "").strip()
+    if exam_scope:
+        header += f"- 考试范围（用户提供，优先按此筛选）：{exam_scope}\n"
+    elif task.get("task_type") == "training":
+        header += ("- 考试范围：未提供。本次仅为基于已归档错题的针对性训练，"
+                   "必须在结果中说明它不代表完整考试范围。\n")
+    if task.get("scope_note"):
+        header += f"- 资料区间：{task['scope_note']}\n"
+    elif task.get("scope_start") or task.get("scope_end"):
         header += f"- 指定资料区间：{task.get('scope_start') or '不限'} ~ {task.get('scope_end') or '不限'}\n"
+    for item in task.get("scope_missing") or []:
+        header += f"- 资料缺口（必须写进 missing_info 如实说明）：{item}\n"
 
     header += (
         "\n【执行纪律（必须遵守，避免无意义探索）】\n"
@@ -175,25 +189,41 @@ def build_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, Any],
         "3. 不要为了找材料而扫工作区。图片已随本消息附上；历史资料仅在本消息明确要求时才读取，"
         "且最多读取一次工作区 `README.md`。\n"
         "4. 归档内容写在 JSON 的 `archive.content_markdown`（由服务端落盘），你不要自己写文件。\n"
-        "5. 禁止 git 提交/推送、禁止发送邮件、禁止读取或输出密钥；未配置的能力写 `not_configured`，"
-        "未执行的写 `skipped`，不得声称已生成 PDF / 已发送邮件 / 已提交。\n"
+        "5. **禁止**自行 git 提交/推送、禁止发送邮件、禁止读取或输出密钥"
+        "（学习记录的归档、提交与推送由业务后端在结果校验后执行，你只产出结果 JSON）；"
+        "未配置的能力写 `not_configured`，未执行的写 `skipped`，"
+        "不得声称已生成 PDF / 已发送邮件 / 已提交 / 已推送。\n"
         "6. 请把模型调用控制在 10 次以内，只输出一次最终结果。\n"
         "\n【结果 JSON 契约（照此输出，不必再读文件）】\n"
-        "顶层：schema_version=2, task_type, subject, grade_level, "
-        "overview{checked_questions,summary}, questions[], sections[{title,body}], "
+        "顶层：schema_version=3, task_type, subject, grade_level, exam_scope, training_kind, "
+        "scope{start_date,end_date,sources[]}, "
+        "overview{checked_questions,summary}, questions[], retests[], sections[{title,body}], "
         "missing_info[], parent_tips[], review_summary{state,scope,disagreed,unverified,note}, "
         "archive{suggested_path,action,content_markdown}, "
         "delivery{pdf{status,note},email{status,note},git{status,note}}\n"
         "questions[] 每项：id, no, source, page, stem, student_answer, status, correct_answer, "
         "steps[], error_rule, knowledge_point, evidence, "
-        "review{state,note,basis}, final_decision, final_decision_basis\n"
+        "review{state,note,basis}, final_decision, final_decision_basis, "
+        "remediation{state,updated_date,linked_training,note}\n"
         "status 取值：correct / wrong / unanswered / uncertain / unprocessed\n"
         "review.state 取值：agreed / disagreed / unverified / unprocessed / not_applicable\n"
         "final_decision 取值：kept_wrong / corrected_to_correct / kept_correct / kept_uncertain / "
         "reclassified_unanswered / pending\n"
+        "remediation.state 取值：pending_correction（待订正）/ corrected_pending_retest"
+        "（已订正待复测）/ retest_passed（复测通过）/ retest_failed（复测未通过）/ "
+        "not_applicable（非错题）。标为 wrong 的题必须给出具体状态；"
+        "凡 corrected_pending_retest / retest_passed / retest_failed 都必须给出 updated_date"
+        "（实际发生日期）；没有新结果时保持原状态，不得因为「做过练习」就写通过。\n"
+        "retests[] 每次真实作答记一条：question_uid（可留空，服务端按来源+页码+题号回填）、"
+        "occurred_date（必填，实际发生日期）、result（retest_passed / retest_failed / corrected）、"
+        "student_answer、note；不重复登记同一事件。\n"
         "硬性规则：判定 wrong 必须给 correct_answer 或 steps，且 error_rule 必须具体"
         "（不能写「粗心」）；unanswered / uncertain 不得标为 kept_wrong；"
         "review.state=disagreed 必须给 basis；题目 id 不得重复。\n"
+        "归档路径必须与任务类型一致：grading/qa → 学科/错题解析/，"
+        "weekly_report → 学科/周报分析/，training/retest → 学科/强化训练/"
+        "（文件名 YYYY-MM-DD[-主题].md）。\n"
+        "错误率只在分母（已检查题数）可确认时给出，由服务端重算；不要自己编造百分比。\n"
         "最终回答必须包含且仅包含一个 ```json 代码块。\n"
     )
 

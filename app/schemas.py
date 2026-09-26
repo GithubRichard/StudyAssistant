@@ -9,12 +9,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-SCHEMA_VERSION = 2
-LEGACY_SCHEMA_VERSION = 1
+from .scope import TRAINING_KINDS
+
+SCHEMA_VERSION = 3
+LEGACY_SCHEMA_VERSION = 2      # 上一版协议：仍然只读展示，不回溯改写历史记录
+V1_SCHEMA_VERSION = 1
 
 TASK_TYPES = ("grading", "qa", "weekly_report", "training", "retest")
 QUESTION_STATUSES = ("correct", "wrong", "unanswered", "uncertain", "unprocessed")
@@ -27,6 +32,40 @@ REVIEW_SUMMARY_STATES = ("not_required", "completed", "partial", "failed", "not_
 DELIVERY_STATUSES = (
     "not_configured", "skipped", "generated", "sent", "committed", "failed",
 )
+# 订正与复测：待订正 / 已订正待复测 / 复测通过 / 复测未通过 / 不适用
+REMEDIATION_STATES = (
+    "pending_correction", "corrected_pending_retest",
+    "retest_passed", "retest_failed", "not_applicable",
+)
+REMEDIATION_LABELS = {
+    "pending_correction": "待订正",
+    "corrected_pending_retest": "已订正待复测",
+    "retest_passed": "复测通过",
+    "retest_failed": "复测未通过",
+    "not_applicable": "不适用",
+}
+RETEST_RESULTS = ("retest_passed", "retest_failed", "corrected")
+
+# 归档子目录与任务类型的对应关系（防止周报写进错题解析这类错位）
+ARCHIVE_SUBDIRS_BY_TASK = {
+    "grading": ("错题解析",),
+    "qa": ("错题解析",),
+    "weekly_report": ("周报分析",),
+    "training": ("强化训练",),
+    "retest": ("强化训练", "错题解析"),
+}
+
+# 各任务类型的建议段落标题（内容模板，见工作区 README）；用于提示与自查，不作为硬校验
+SECTION_HINTS = {
+    "grading": ("当日概览", "来源信息", "逐题解析", "未作答与存疑题",
+                "做得好的题", "概念问答", "当日重点"),
+    "qa": ("概念问答", "当日重点"),
+    "weekly_report": ("本周概览", "错题明细", "做得好的题", "概念问答整理",
+                      "错误类型归纳", "下周行动清单"),
+    "training": ("训练目标与资料范围", "问题依据", "分层题目", "独立答案解析区",
+                 "实际作答与复测结果", "下一步建议"),
+    "retest": ("实际作答与复测结果", "下一步建议"),
+}
 
 # 「粗心」类笼统错因不接受：技能要求给出具体误用规则
 _VAGUE_ERROR_RULES = {"粗心", "不认真", "马虎", "不小心", "看错了"}
@@ -60,6 +99,58 @@ class Overview(StrictModel):
     uncertain: int = 0
     unprocessed: int = 0
     summary: str = ""
+    # 订正与复测口径：各状态计数（由服务端按逐题数据重算，避免与题目不一致）
+    remediation: Dict[str, int] = Field(default_factory=dict)
+    # 错误率只在分母（已检查题数）可确认时才计算，否则留空并说明
+    error_rate: float = 0.0
+    error_rate_basis: str = ""
+
+
+class Remediation(StrictModel):
+    """订正与复测状态：只描述当前证据，不美化历史。"""
+
+    state: str = "not_applicable"
+    updated_date: str = ""          # 实际发生日期，取任务发生时日期
+    linked_training: str = ""       # 关联训练/复测记录（相对工作区路径）
+    note: str = ""
+
+    @model_validator(mode="after")
+    def _check(self) -> "Remediation":
+        if self.state not in REMEDIATION_STATES:
+            raise ValueError(f"remediation.state 非法: {self.state}")
+        self.updated_date = (self.updated_date or "").strip()
+        if self.updated_date and not _DATE_RE.match(self.updated_date):
+            raise ValueError("remediation.updated_date 必须形如 YYYY-MM-DD")
+        if self.state in ("corrected_pending_retest", "retest_passed", "retest_failed") \
+                and not self.updated_date:
+            raise ValueError(f"remediation.state={self.state} 必须给出实际发生日期 updated_date")
+        return self
+
+
+class RetestEvent(StrictModel):
+    """一次真实发生的复测/订正事件；只追加，不改写历史判定。"""
+
+    question_uid: str = ""
+    subject: str = ""
+    source: str = ""
+    page: str = ""
+    no: str = ""
+    occurred_date: str = ""
+    result: str = "retest_passed"
+    student_answer: str = ""
+    source_task_id: str = ""
+    note: str = ""
+
+    @model_validator(mode="after")
+    def _check(self) -> "RetestEvent":
+        if self.result not in RETEST_RESULTS:
+            raise ValueError(f"retests.result 非法: {self.result}")
+        self.occurred_date = (self.occurred_date or "").strip()
+        if self.occurred_date and not _DATE_RE.match(self.occurred_date):
+            raise ValueError("retests.occurred_date 必须形如 YYYY-MM-DD")
+        if not self.occurred_date:
+            raise ValueError("复测事件必须给出实际发生日期 occurred_date")
+        return self
 
 
 class QuestionReview(StrictModel):
@@ -78,6 +169,7 @@ class QuestionReview(StrictModel):
 
 class QuestionResult(StrictModel):
     id: str
+    uid: str = ""               # 稳定去重键（来源+日期+页码+题号），由服务端回填
     no: str = ""
     source: str = ""
     page: str = ""
@@ -92,6 +184,7 @@ class QuestionResult(StrictModel):
     review: QuestionReview = Field(default_factory=QuestionReview)
     final_decision: str = "pending"
     final_decision_basis: str = ""
+    remediation: Remediation = Field(default_factory=Remediation)
 
     @model_validator(mode="after")
     def _check(self) -> "QuestionResult":
@@ -139,6 +232,11 @@ class ArchiveSuggestion(StrictModel):
 class DeliveryItem(StrictModel):
     status: str = "not_configured"
     note: str = ""
+    # 以下字段由服务端按真实同步结果填写（模型给的会被服务端覆盖）
+    committed: bool = False
+    pushed: bool = False
+    commit: str = ""
+    conflict_record: str = ""
 
     @model_validator(mode="after")
     def _check_status(self) -> "DeliveryItem":
@@ -147,10 +245,18 @@ class DeliveryItem(StrictModel):
         return self
 
 
+class ArchiveDeliveryItem(DeliveryItem):
+    """学习记录归档状态：由服务端填写，写明相对路径与关联的题目去重键。"""
+
+    path: str = ""
+    questions: List[str] = Field(default_factory=list)
+
+
 class DeliveryReport(StrictModel):
     pdf: DeliveryItem = Field(default_factory=DeliveryItem)
     email: DeliveryItem = Field(default_factory=DeliveryItem)
     git: DeliveryItem = Field(default_factory=DeliveryItem)
+    archive: ArchiveDeliveryItem = Field(default_factory=ArchiveDeliveryItem)
 
 
 class ReviewSummary(StrictModel):
@@ -167,10 +273,10 @@ class ReviewSummary(StrictModel):
         return self
 
 
-class StudyResult(StrictModel):
-    """新协议结果（schema_version=2）。"""
+class StudyResultV2(StrictModel):
+    """上一版协议（schema_version=2）：历史结果只读展示，不再由新任务产出。"""
 
-    schema_version: int = SCHEMA_VERSION
+    schema_version: int = LEGACY_SCHEMA_VERSION
     task_type: str = "grading"
     subject: str = ""
     grade_level: str = ""
@@ -185,7 +291,7 @@ class StudyResult(StrictModel):
     delivery: DeliveryReport = Field(default_factory=DeliveryReport)
 
     @model_validator(mode="after")
-    def _check_all(self) -> "StudyResult":
+    def _check_all(self) -> "StudyResultV2":
         if self.task_type not in TASK_TYPES:
             raise ValueError(f"task_type 非法: {self.task_type}")
 
@@ -195,7 +301,6 @@ class StudyResult(StrictModel):
             raise ValueError(f"题目 id 重复: {', '.join(dup)}")
 
         counts = count_statuses(self.questions)
-        # overview 允许由模型留空（全 0），但填了就必须与逐题数据一致
         for field, actual in counts.items():
             given = getattr(self.overview, field)
             if given and given != actual:
@@ -207,17 +312,183 @@ class StudyResult(StrictModel):
             summary=self.overview.summary,
             **counts,
         )
-
         if self.review_summary.state == "completed" and counts["wrong"] and not self.review_summary.scope:
             raise ValueError("存在判错题且 review_summary.state=completed 时 scope 不能为 0")
         return self
 
+
+class StudyResult(StrictModel):
+    """当前协议结果（schema_version=3）。
+
+    相比 v2 增加：题目稳定去重键 uid、订正与复测状态、复测事件、考试范围与训练子类型，
+    并在服务端重算统计口径（含错误率分母说明）与订正状态计数。
+    """
+
+    schema_version: int = SCHEMA_VERSION
+    task_type: str = "grading"
+    subject: str = ""
+    grade_level: str = ""
+    exam_scope: str = ""
+    training_kind: str = ""
+    scope: ScopeInfo = Field(default_factory=ScopeInfo)
+    overview: Overview = Field(default_factory=Overview)
+    questions: List[QuestionResult] = Field(default_factory=list)
+    retests: List[RetestEvent] = Field(default_factory=list)
+    sections: List[Section] = Field(default_factory=list)
+    missing_info: List[str] = Field(default_factory=list)
+    parent_tips: List[str] = Field(default_factory=list)
+    review_summary: ReviewSummary = Field(default_factory=ReviewSummary)
+    archive: ArchiveSuggestion = Field(default_factory=ArchiveSuggestion)
+    delivery: DeliveryReport = Field(default_factory=DeliveryReport)
+
+    @model_validator(mode="after")
+    def _check_all(self) -> "StudyResult":
+        if self.schema_version != SCHEMA_VERSION:
+            raise ValueError(
+                f"schema_version 必须为 {SCHEMA_VERSION}（当前: {self.schema_version}）")
+        if self.task_type not in TASK_TYPES:
+            raise ValueError(f"task_type 非法: {self.task_type}")
+        if self.task_type != "training" and self.training_kind:
+            raise ValueError("只有 training 任务可以带 training_kind")
+
+        ids = [q.id for q in self.questions]
+        if len(ids) != len(set(ids)):
+            dup = sorted({i for i in ids if ids.count(i) > 1})
+            raise ValueError(f"题目 id 重复: {', '.join(dup)}")
+        uids = [q.uid for q in self.questions if q.uid.strip()]
+        if len(uids) != len(set(uids)):
+            dup = sorted({u for u in uids if uids.count(u) > 1})
+            raise ValueError(f"题目 uid 重复: {', '.join(dup)}")
+
+        counts = count_statuses(self.questions)
+        # overview 允许由模型留空（全 0），但填了就必须与逐题数据一致
+        for field, actual in counts.items():
+            given = getattr(self.overview, field)
+            if given and given != actual:
+                raise ValueError(
+                    f"overview.{field}={given} 与逐题统计 {actual} 不一致"
+                )
+
+        for q in self.questions:
+            state = q.remediation.state
+            if q.status == "wrong":
+                if state == "not_applicable":
+                    raise ValueError(f"题 {q.id}: 判错题必须给出订正/复测状态 remediation.state")
+            elif state != "not_applicable":
+                raise ValueError(
+                    f"题 {q.id}: {q.status} 不是错题，remediation.state 必须为 not_applicable")
+
+        self.overview = build_overview(self.overview, self.questions)
+
+        if self.review_summary.state == "completed" and counts["wrong"] and not self.review_summary.scope:
+            raise ValueError("存在判错题且 review_summary.state=completed 时 scope 不能为 0")
+
+        subdir = archive_subdir(self.archive.suggested_path)
+        allowed = ARCHIVE_SUBDIRS_BY_TASK.get(self.task_type, ())
+        if subdir and allowed and subdir not in allowed:
+            raise ValueError(
+                f"archive.suggested_path 的子目录应为 {' / '.join(allowed)}，当前为「{subdir}」")
+        return self
 
 def count_statuses(questions: List[QuestionResult]) -> Dict[str, int]:
     counts = {s: 0 for s in QUESTION_STATUSES}
     for q in questions:
         counts[q.status] += 1
     return {k: v for k, v in counts.items()}
+
+
+def count_remediations(questions: List[QuestionResult]) -> Dict[str, int]:
+    counts = {s: 0 for s in REMEDIATION_STATES}
+    for q in questions:
+        counts[q.remediation.state] += 1
+    return counts
+
+
+def build_overview(overview: Overview, questions: List[QuestionResult]) -> Overview:
+    """重算统计口径：五态、订正状态计数，以及仅在分母可确认时才给的错误率。"""
+    counts = count_statuses(questions)
+    checked = max(int(overview.checked_questions or 0), len(questions))
+    basis = ""
+    rate = 0.0
+    if checked > 0:
+        rate = round(counts["wrong"] / checked, 4)
+        basis = (f"错误率=确认错题 {counts['wrong']} / 已检查题 {checked}"
+                 f"（分母为已检查题数；未作答与存疑不计入错误）")
+    else:
+        basis = "未检查到题目，分母不可确认，不计算错误率"
+    return Overview(
+        checked_questions=checked,
+        summary=overview.summary,
+        remediation=count_remediations(questions),
+        error_rate=rate,
+        error_rate_basis=basis,
+        **counts,
+    )
+
+
+def question_uid(subject: str, source: str, page: str, no: str, date_str: str = "") -> str:
+    """稳定去重键：学科+来源+日期+页码+题号。
+
+    同一错题出现在日解析与周报中、或重复识图时得到同一 uid，从而不重复计入出错事件；
+    再次实际作答才产生新的复测事件。
+    """
+    raw = "|".join([
+        (subject or "").strip(),
+        (source or "").strip(),
+        (date_str or "").strip(),
+        (page or "").strip(),
+        (no or "").strip(),
+    ])
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    return f"q-{digest}"
+
+
+def archive_subdir(relative_path: str) -> str:
+    """取归档建议路径的第二段（子目录）；不合法时返回空串。"""
+    if not relative_path:
+        return ""
+    parts = Path(relative_path.strip().lstrip("./")).parts
+    return parts[1] if len(parts) >= 3 else ""
+
+
+def fill_question_uids(result: Dict[str, Any], date_str: str) -> Dict[str, Any]:
+    """回填题目与复测事件的稳定去重键。
+
+    去重键 = 学科+来源+日期+页码+题号；同一题重复出现时不重复计入出错事件，
+    重复条目会带 `-2` 后缀并在 missing_info 中如实说明，便于人工核对。
+    """
+    subject = result.get("subject", "") or ""
+    seen: Dict[str, int] = {}
+    duplicated = 0
+
+    def _assign(holder: Dict[str, Any]) -> None:
+        nonlocal duplicated
+        uid = (holder.get("uid") or holder.get("question_uid") or "").strip()
+        if not uid:
+            uid = question_uid(subject, holder.get("source", ""), holder.get("page", ""),
+                               holder.get("no", ""), date_str)
+        if uid in seen:
+            duplicated += 1
+            seen[uid] += 1
+            uid = f"{uid}-{seen[uid]}"
+        else:
+            seen[uid] = 1
+        if "uid" in holder or holder.get("status") is not None:
+            holder["uid"] = uid
+        else:
+            holder["question_uid"] = uid
+
+    for question in result.get("questions") or []:
+        _assign(question)
+    for retest in result.get("retests") or []:
+        _assign(retest)
+
+    if duplicated:
+        missing = result.setdefault("missing_info", [])
+        note = f"检测到 {duplicated} 条重复题目条目（同来源同页码同题号），已按去重键区分，请核对是否重复识图"
+        if note not in missing:
+            missing.append(note)
+    return result
 
 
 # --------------------------- 旧结果（v1）兼容 ---------------------------
@@ -239,9 +510,10 @@ class LegacyResult(StrictModel):
     summary: str = ""
 
 
-def _legacy_question_to_v2(q: LegacyQuestion) -> Dict[str, Any]:
+def _legacy_question_to_display(q: LegacyQuestion) -> Dict[str, Any]:
     return {
         "id": f"legacy-{q.no or 'q'}",
+        "uid": "",
         "no": q.no,
         "source": "（旧版本结果，未记录来源）",
         "page": "",
@@ -256,13 +528,61 @@ def _legacy_question_to_v2(q: LegacyQuestion) -> Dict[str, Any]:
         "review": {"state": "not_applicable", "note": "旧版本结果，未执行二次核查", "basis": ""},
         "final_decision": "kept_correct" if q.is_correct else "kept_wrong",
         "final_decision_basis": "",
+        "remediation": {"state": "not_applicable", "updated_date": "",
+                        "linked_training": "", "note": "旧版本结果未记录订正与复测状态"},
     }
+
+
+def _present(data: Dict[str, Any], *, legacy_schema: int) -> Dict[str, Any]:
+    """统一展示结构：前端只按一种字段布局渲染，并如实标注协议版本。"""
+    data["legacy"] = legacy_schema == V1_SCHEMA_VERSION
+    data["legacy_schema"] = legacy_schema
+    data["task_type_label"] = _TASK_TYPE_LABELS.get(
+        data.get("task_type", ""), data.get("task_type", ""))
+    return data
+
+
+def _upgrade_v2_display(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """把 v2 结果转成统一展示结构，并明确标注「未记录订正与复测状态」。"""
+    data = StudyResultV2.model_validate(raw).model_dump()
+    data["schema_version"] = LEGACY_SCHEMA_VERSION
+    data["schema_note"] = "v2 结果：未记录订正与复测状态"
+    data["exam_scope"] = ""
+    data["training_kind"] = ""
+    data["retests"] = []
+    questions = data.get("questions") or []
+    for q in questions:
+        q["uid"] = ""
+        q["remediation"] = {"state": "not_applicable", "updated_date": "",
+                            "linked_training": "", "note": "v2 结果未记录订正与复测状态"}
+    overview = Overview(**(data.get("overview") or {}))
+    data["overview"] = build_overview(
+        overview, [QuestionResult(**q) for q in questions]).model_dump()
+    return data
+
+
+def _normalize_versioned(raw: Dict[str, Any], version: Any) -> Optional[Dict[str, Any]]:
+    """按声明的 schema_version 归一化；未声明版本号时先试 v3 再试 v2。"""
+    if version in (None, SCHEMA_VERSION):
+        try:
+            return _present(StudyResult.model_validate(raw).model_dump(),
+                            legacy_schema=SCHEMA_VERSION)
+        except Exception:  # noqa: BLE001
+            if version == SCHEMA_VERSION:
+                return None
+    if version in (None, LEGACY_SCHEMA_VERSION):
+        try:
+            return _present(_upgrade_v2_display(raw), legacy_schema=LEGACY_SCHEMA_VERSION)
+        except Exception:  # noqa: BLE001
+            return None
+    return None
 
 
 def normalize_result(raw: Any) -> Optional[Dict[str, Any]]:
     """把数据库中的结果 JSON 转换成统一展示结构。
 
-    返回 None 表示既不是 v1 也不是 v2；调用方应如实说明「结果格式无法识别」。
+    支持 v3（当前）、v2（只读，补齐订正/复测占位）、v1（旧批改结果）。
+    返回 None 表示格式无法识别；调用方应如实说明「结果格式无法识别」，不要猜测。
     """
     if isinstance(raw, str):
         try:
@@ -272,39 +592,41 @@ def normalize_result(raw: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(raw, dict) or not raw:
         return None
 
-    if raw.get("schema_version") == SCHEMA_VERSION or "questions" in raw and "task_type" in raw:
-        try:
-            data = StudyResult.model_validate(raw).model_dump()
-        except Exception:  # noqa: BLE001 - 无法识别时按未知处理
-            pass
-        else:
-            data["legacy"] = False
-            data["task_type_label"] = _TASK_TYPE_LABELS.get(data["task_type"], data["task_type"])
-            return data
+    version = raw.get("schema_version")
+    looks_versioned = version in (SCHEMA_VERSION, LEGACY_SCHEMA_VERSION) or (
+        version is None and "questions" in raw and "task_type" in raw)
+    if looks_versioned:
+        return _normalize_versioned(raw, version)
 
     try:
         legacy = LegacyResult.model_validate(raw)
     except Exception:  # noqa: BLE001
         return None
 
-    questions = [_legacy_question_to_v2(q) for q in legacy.questions]
+    questions = [_legacy_question_to_display(q) for q in legacy.questions]
     counts = {s: 0 for s in QUESTION_STATUSES}
     for q in questions:
         counts[q["status"]] += 1
-    return {
-        "schema_version": LEGACY_SCHEMA_VERSION,
-        "legacy": True,
+    return _present({
+        "schema_version": V1_SCHEMA_VERSION,
+        "legacy_schema": V1_SCHEMA_VERSION,
+        "schema_note": "v1 旧批改结果：未记录来源、错因规则与二次核查",
         "task_type": "grading",
-        "task_type_label": _TASK_TYPE_LABELS["grading"],
         "subject": "",
         "grade_level": "",
+        "exam_scope": "",
+        "training_kind": "",
         "scope": {"start_date": "", "end_date": "", "sources": []},
         "overview": {
             "checked_questions": max(legacy.total_questions, len(questions)),
             "summary": legacy.summary,
             **counts,
+            "remediation": {s: 0 for s in REMEDIATION_STATES},
+            "error_rate": 0.0,
+            "error_rate_basis": "旧版本结果未记录题目明细，分母不可确认，不计算错误率",
         },
         "questions": questions,
+        "retests": [],
         "sections": [],
         "missing_info": [],
         "parent_tips": [],
@@ -318,7 +640,7 @@ def normalize_result(raw: Any) -> Optional[Dict[str, Any]]:
             "email": {"status": "not_configured", "note": "旧版本结果无交付记录"},
             "git": {"status": "not_configured", "note": "旧版本结果无交付记录"},
         },
-    }
+    }, legacy_schema=V1_SCHEMA_VERSION)
 
 
 # --------------------------- 请求模型 ---------------------------
@@ -332,6 +654,8 @@ class StudyTaskCreate(StrictModel):
     asset_ids: List[str] = Field(default_factory=list)
     scope_start: str = ""
     scope_end: str = ""
+    exam_scope: str = ""        # 学校考试范围；未提供时训练只针对已归档错题
+    training_kind: str = ""     # 仅 training 有效：topic / monthly / midterm / final
 
     @model_validator(mode="after")
     def _check(self) -> "StudyTaskCreate":
@@ -341,6 +665,27 @@ class StudyTaskCreate(StrictModel):
             raise ValueError("必须提供文字说明或至少一张图片")
         if len(self.asset_ids) > 20:
             raise ValueError("单次任务图片不能超过 20 张")
+
+        self.exam_scope = (self.exam_scope or "").strip()
+        if len(self.exam_scope) > 500:
+            raise ValueError("考试范围描述不能超过 500 字")
+
+        self.training_kind = (self.training_kind or "").strip()
+        if self.task_type == "training":
+            if not self.training_kind:
+                self.training_kind = "topic"
+            if self.training_kind not in TRAINING_KINDS:
+                raise ValueError(f"training_kind 非法: {self.training_kind}")
+        else:
+            # 非训练任务不接受训练子类型，避免下游误判
+            self.training_kind = ""
+
+        for label, value in (("scope_start", self.scope_start), ("scope_end", self.scope_end)):
+            value = (value or "").strip()
+            if value and not _DATE_RE.match(value):
+                raise ValueError(f"{label} 必须形如 YYYY-MM-DD")
+        self.scope_start = (self.scope_start or "").strip()
+        self.scope_end = (self.scope_end or "").strip()
         return self
 
 
@@ -355,17 +700,67 @@ class FollowupCreate(StrictModel):
         return self
 
 
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+class LedgerEventCreate(StrictModel):
+    """人工登记一次订正/复测结果（真实作答后才登记）。"""
+
+    result: str
+    occurred_date: str = ""
+    student_answer: str = ""
+    note: str = ""
+
+    @model_validator(mode="after")
+    def _check(self) -> "LedgerEventCreate":
+        if self.result not in RETEST_RESULTS:
+            raise ValueError(f"result 非法: {self.result}（可选 {' / '.join(RETEST_RESULTS)}）")
+        self.occurred_date = (self.occurred_date or "").strip()
+        if self.occurred_date and not _DATE_RE.match(self.occurred_date):
+            raise ValueError("occurred_date 必须形如 YYYY-MM-DD")
+        self.student_answer = (self.student_answer or "").strip()
+        self.note = (self.note or "").strip()
+        return self
+
+
+class FamilySettingsUpdate(StrictModel):
+    """家庭设置：学期起始日期、默认年级与学科清单（用于区间计算与任务识别）。"""
+
+    grade_level: str = ""
+    subjects: List[str] = Field(default_factory=list)
+    term_start_date: str = ""
+
+    @model_validator(mode="after")
+    def _check(self) -> "FamilySettingsUpdate":
+        if self.term_start_date and not _DATE_RE.match(self.term_start_date.strip()):
+            raise ValueError("term_start_date 必须形如 YYYY-MM-DD")
+        self.term_start_date = self.term_start_date.strip()
+        self.grade_level = self.grade_level.strip()
+        cleaned: List[str] = []
+        for raw in self.subjects:
+            name = raw.strip()
+            if not name:
+                continue
+            if len(name) > 20:
+                raise ValueError(f"学科名称过长: {name}")
+            if name not in cleaned:
+                cleaned.append(name)
+        self.subjects = cleaned
+        return self
+
+
 def request_hash(payload: Dict[str, Any]) -> str:
     """幂等请求指纹：同一幂等键 + 同一内容 → 返回原任务；内容不同 → 冲突。"""
     blob = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def grading_result_to_v2(grading_result: Any, subject: str = "",
+def grading_result_to_v3(grading_result: Any, subject: str = "",
                          grade_level: str = "", provider: str = "") -> Dict[str, Any]:
-    """把 legacy 单轮批改结果转换为新协议结构。
+    """把 legacy 单轮批改结果转换为当前协议结构。
 
-    关键：明确标注「未执行技能流程与二次核查」，不把旧模式伪装成技能执行成功。
+    关键：明确标注「未执行技能流程与二次核查」，不把旧模式伪装成技能执行成功；
+    旧模式不产出订正/复测记录，一律标为 not_applicable 并在结果中说明。
     """
     questions: List[Dict[str, Any]] = []
     for index, q in enumerate(getattr(grading_result, "questions", []) or [], start=1):
@@ -374,13 +769,13 @@ def grading_result_to_v2(grading_result: Any, subject: str = "",
         correct_answer = getattr(q, "correct_answer", "") or ""
         is_correct = bool(getattr(q, "is_correct", False))
         if is_correct:
-            status, final = "correct", "kept_correct"
+            status, final, state = "correct", "kept_correct", "not_applicable"
             error_rule = ""
         elif correct_answer or steps:
-            status, final = "wrong", "kept_wrong"
+            status, final, state = "wrong", "kept_wrong", "pending_correction"
             error_rule = "旧模式未给出具体错因规则，需人工复核"
         else:
-            status, final = "uncertain", "kept_uncertain"
+            status, final, state = "uncertain", "kept_uncertain", "not_applicable"
             error_rule = ""
         questions.append({
             "id": f"legacy-{qno}-{index}",
@@ -394,6 +789,8 @@ def grading_result_to_v2(grading_result: Any, subject: str = "",
             "knowledge_point": getattr(q, "knowledge_point", "") or "",
             "review": {"state": "not_applicable", "note": "旧模式未执行二次核查", "basis": ""},
             "final_decision": final,
+            "remediation": {"state": state, "updated_date": "", "linked_training": "",
+                            "note": "旧模式未记录订正与复测状态"},
         })
 
     summary = getattr(grading_result, "summary", "") or ""

@@ -15,6 +15,7 @@ import os
 import re
 import time
 import uuid
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,8 +26,19 @@ from .config import Settings
 log = logging.getLogger(__name__)
 
 ALLOWED_SUBDIRS = ("错题解析", "周报分析", "强化训练")
+ORIGINAL_SUBDIR = "原题"                     # 原题资料仅本地保存，不入 Git、不进归档正文
+DEFAULT_SUBJECTS = ("语文", "数学", "英语")
 ARCHIVE_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(-[^/\\]{1,60})?\.md$")
 SUBJECT_RE = re.compile(r"^[^/\\\s.]{1,20}$")
+CONFLICT_NAME_RE = re.compile(r"^冲突记录-\d{4}-\d{2}-\d{2}-\d{6}(-\d+)?\.md$")
+
+# 与学习仓库一致的忽略规则：原题目录内容不上传，仅放行目录骨架与 .gitkeep
+GITIGNORE_CONTENT = """# 各学科「原题」目录下的原始试卷、照片与草稿：仅保存在本地，不上传远端。
+# 只保留目录骨架（.gitkeep），使 clone 后仍能看到 原题/年份/周次 的结构。
+/*/原题/**
+!/*/原题/**/
+!/*/原题/**/.gitkeep
+"""
 
 MAX_ARTIFACT_BYTES = 20 * 1024 * 1024
 ARTIFACT_SUFFIXES = (".md", ".pdf")
@@ -58,10 +70,39 @@ def learning_rules_path() -> Path:
         "leo-study-assistant" / "references" / "learning-rules.md"
 
 
+def workspace_subjects(settings: Settings) -> List[str]:
+    """工作区学科清单：取配置（可被设置页覆盖），过滤非法名并保底默认三科。"""
+    names: List[str] = []
+    for raw in list(settings.family.subjects) + list(DEFAULT_SUBJECTS):
+        name = str(raw).strip()
+        if name and SUBJECT_RE.match(name) and name not in names:
+            names.append(name)
+    return names
+
+
+def _touch_gitkeep(directory: Path, created: List[str], root: Path) -> None:
+    """空目录用 .gitkeep 占位，使 clone 后仍能看到目录骨架；已有文件不干预。"""
+    try:
+        has_files = any(entry.is_file() and entry.name != ".gitkeep"
+                        for entry in directory.iterdir())
+    except OSError:
+        return
+    keep = directory / ".gitkeep"
+    if has_files or keep.exists():
+        return
+    keep.write_text("", encoding="utf-8")
+    created.append(str(keep.relative_to(root)))
+
+
 def ensure_workspace(settings: Settings) -> Dict[str, Any]:
-    """创建工作区骨架；已存在的 README 与记录一律不动。"""
+    """创建工作区骨架；已存在的 README 与记录一律不动。
+
+    - 学科目录：`学科/{错题解析,周报分析,强化训练}` + `学科/原题/<年份>/`
+    - 根级 `.gitignore`：原题内容不上传（已存在时不覆盖）
+    - 冲突记录由同步阶段按需生成到根目录（白名单见 `safe_conflict_path`）
+    """
     root = workspace_root(settings)
-    subjects = ("语文", "数学", "英语")
+    subjects = workspace_subjects(settings)
     created: List[str] = []
     root.mkdir(parents=True, exist_ok=True)
     for subject in subjects:
@@ -70,6 +111,15 @@ def ensure_workspace(settings: Settings) -> Dict[str, Any]:
             if not target.exists():
                 target.mkdir(parents=True, exist_ok=True)
                 created.append(str(target.relative_to(root)))
+            _touch_gitkeep(target, created, root)
+
+        original_dir = root / subject / ORIGINAL_SUBDIR
+        year_dir = original_dir / str(date.today().year)
+        if not year_dir.exists():
+            year_dir.mkdir(parents=True, exist_ok=True)
+            created.append(str(year_dir.relative_to(root)))
+        _touch_gitkeep(original_dir, created, root)
+        _touch_gitkeep(year_dir, created, root)
 
     readme = root / "README.md"
     readme_created = False
@@ -80,7 +130,17 @@ def ensure_workspace(settings: Settings) -> Dict[str, Any]:
             readme_created = True
         else:
             log.warning("工作区规范文件缺失，未初始化 README: %s", rules)
-    return {"root": str(root), "created": created, "readme_created": readme_created}
+
+    gitignore = root / ".gitignore"
+    gitignore_created = False
+    if not gitignore.exists():
+        gitignore.write_text(GITIGNORE_CONTENT, encoding="utf-8")
+        gitignore_created = True
+    elif ORIGINAL_SUBDIR not in gitignore.read_text(encoding="utf-8", errors="ignore"):
+        log.warning("工作区 .gitignore 未包含原题忽略规则，请人工确认: %s", gitignore)
+
+    return {"root": str(root), "created": created, "readme_created": readme_created,
+            "gitignore_created": gitignore_created, "subjects": subjects}
 
 
 def run_output_dir(settings: Settings, task_id: str, run_no: int) -> Path:
@@ -173,8 +233,12 @@ async def apply_archive(settings: Settings, task: Dict[str, Any], run: Dict[str,
     """把结果中的归档建议写入工作区；追加不覆盖，重复轮次不重复写。"""
     archive = result.get("archive") or {}
     markdown = (archive.get("content_markdown") or "").strip()
+    question_uids = [str(q.get("uid") or "").strip()
+                     for q in (result.get("questions") or [])]
+    question_uids = [uid for uid in question_uids if uid]
     if not markdown:
-        return {"status": "skipped", "path": "", "note": "结果未提供归档内容"}
+        return {"status": "skipped", "path": "", "note": "结果未提供归档内容",
+                "questions": question_uids}
 
     target = safe_archive_path(settings, archive.get("suggested_path", ""))
     if target is None:
@@ -182,24 +246,117 @@ async def apply_archive(settings: Settings, task: Dict[str, Any], run: Dict[str,
             "status": "failed",
             "path": "",
             "note": f"归档路径不合法或越界，已拒绝写入：{archive.get('suggested_path')!r}",
+            "questions": question_uids,
         }
 
     marker = f"<!-- task:{task['id']} run:{run['run_no']} -->"
-    block = f"\n\n{markdown}\n\n{marker}\n"
+    # 题目去重键写入注释：便于与台账/复测事件交叉核对，也方便人工定位历史判定的出处
+    meta = f"\n<!-- questions: {','.join(question_uids)} -->" if question_uids else ""
+    block = f"\n\n{markdown}{meta}\n\n{marker}\n"
 
     lock = _lock_for(target)
     async with lock:
         target.parent.mkdir(parents=True, exist_ok=True)
         existing = target.read_text(encoding="utf-8") if target.exists() else ""
         if marker in existing:
-            return {"status": "skipped", "path": str(target), "note": "本轮归档已存在，未重复写入"}
+            return {"status": "skipped", "path": str(target),
+                    "note": "本轮归档已存在，未重复写入", "questions": question_uids}
         if target.exists() and not existing.endswith("\n"):
             existing += "\n"
         temp = target.with_suffix(target.suffix + f".tmp{uuid.uuid4().hex[:6]}")
         temp.write_text(existing + block, encoding="utf-8")
         os.replace(temp, target)
 
-    return {"status": "generated", "path": str(target), "note": "已按追加规则写入工作区", "bytes": target.stat().st_size}
+    return {"status": "generated", "path": str(target), "note": "已按追加规则写入工作区",
+            "bytes": target.stat().st_size, "questions": question_uids}
+
+
+# ---------- 复测登记追加 ----------
+
+_RETEST_LABELS = {
+    "retest_passed": "复测通过",
+    "retest_failed": "复测未通过",
+    "corrected": "已订正（待复测）",
+}
+
+
+async def append_retest_note(settings: Settings, entry: Dict[str, Any], event: Dict[str, Any],
+                             when: Optional[datetime] = None) -> Dict[str, Any]:
+    """把一次复测/订正结果追加到既有归档文件；追加不覆盖，重复登记不重复写。
+
+    只写台账条目已关联、且仍在允许目录内的归档文件；找不到时如实说明，不新建记录。
+    """
+    rel = (entry.get("archive_path") or "").strip()
+    target = safe_archive_path(settings, rel) if rel else None
+    if target is None:
+        return {"status": "skipped", "path": "",
+                "note": "台账条目未关联可写入的归档文件，未追加复测记录"}
+    if not target.exists():
+        return {"status": "skipped", "path": str(target),
+                "note": "关联的归档文件已不存在，未追加复测记录"}
+
+    date_str = (event.get("occurred_date") or "").strip() or \
+        (when or datetime.now()).strftime("%Y-%m-%d")
+    label = _RETEST_LABELS.get(event.get("result", ""), event.get("result", "已登记"))
+    marker = f"<!-- retest:{entry.get('id')}:{date_str} -->"
+    lines = [
+        f"### 复测登记（{date_str}）",
+        (f"- 定位：{(entry.get('source') or '未记录来源')}"
+         f" {entry.get('page') or ''} 第{entry.get('question_no') or '?'}题"),
+        f"- 结果：{label}",
+        f"- 孩子答案：{event.get('student_answer') or '未记录'}",
+    ]
+    if event.get("note"):
+        lines.append(f"- 备注：{event['note']}")
+    block = "\n\n" + "\n".join(lines) + f"\n\n{marker}\n"
+
+    lock = _lock_for(target)
+    async with lock:
+        existing = target.read_text(encoding="utf-8") if target.exists() else ""
+        if marker in existing:
+            return {"status": "skipped", "path": str(target), "note": "该次复测已记录，未重复追加"}
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
+        temp = target.with_suffix(target.suffix + f".tmp{uuid.uuid4().hex[:6]}")
+        temp.write_text(existing + block, encoding="utf-8")
+        os.replace(temp, target)
+    return {"status": "generated", "path": str(target), "note": "已把复测结果追加到归档文件"}
+
+
+# ---------- 冲突记录 ----------
+
+
+def safe_conflict_path(settings: Settings, when: Optional[datetime] = None,
+                       seq: int = 1) -> Path:
+    """冲突记录路径（工作区根，带时间戳）；seq>1 时加序号，绝不覆盖已有记录。"""
+    when = when or datetime.now()
+    stamp = when.strftime("%Y-%m-%d-%H%M%S")
+    name = f"冲突记录-{stamp}.md" if seq <= 1 else f"冲突记录-{stamp}-{seq}.md"
+    return (workspace_root(settings) / name).resolve()
+
+
+def write_conflict_record(settings: Settings, markdown: str,
+                          when: Optional[datetime] = None) -> str:
+    """把冲突记录写到工作区根，返回相对路径；重名自动加序号。
+
+    冲突记录先保存在本地，不自动提交；内容由调用方按 README 要求组织。
+    """
+    content = markdown.strip() + "\n"
+    root = workspace_root(settings)
+    root.mkdir(parents=True, exist_ok=True)
+    for seq in range(1, 100):
+        target = safe_conflict_path(settings, when, seq)
+        try:
+            exists = target.exists()
+        except OSError as e:
+            raise WorkspaceError(f"冲突记录路径不可用: {e}") from e
+        if exists:
+            continue
+        temp = target.with_suffix(target.suffix + f".tmp{uuid.uuid4().hex[:6]}")
+        temp.write_text(content, encoding="utf-8")
+        os.replace(temp, target)
+        return str(target.relative_to(root))
+    raise WorkspaceError("冲突记录文件重名过多，未能写入；请人工整理根目录")
 
 
 # ---------- 成果文件 ----------
@@ -266,26 +423,40 @@ def archive_artifact(settings: Settings, task_id: str, archive: Dict[str, Any]) 
 
 
 def summarize_delivery(settings: Settings, result: Dict[str, Any],
-                       archive: Dict[str, Any]) -> Dict[str, Any]:
-    """把结果自述的交付状态与真实情况对齐，绝不放大为成功。"""
+                       archive: Dict[str, Any],
+                       git_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """把结果自述的交付状态与真实情况对齐，绝不放大为成功。
+
+    - PDF / 邮件：本轮未实现，开关关闭时一律标 not_configured，不接受模型自述；
+    - Git：以服务端受控同步（`git_sync.sync_workspace`）的真实结果为准，
+      未启用时不接受模型自述的 committed。
+    """
     delivery = dict(result.get("delivery") or {})
     pdf = dict(delivery.get("pdf") or {"status": "not_configured", "note": ""})
     email = dict(delivery.get("email") or {"status": "not_configured", "note": ""})
-    git = dict(delivery.get("git") or {"status": "not_configured", "note": ""})
 
     if not settings.delivery.pdf_enabled and pdf.get("status") == "generated":
         pdf = {"status": "not_configured", "note": "服务端未启用 PDF 生成，模型自述不作为成功依据"}
     if not settings.delivery.email_enabled and email.get("status") == "sent":
         email = {"status": "not_configured", "note": "服务端未启用邮件渠道，模型自述不作为成功依据"}
-    if not settings.delivery.git_enabled and git.get("status") == "committed":
-        git = {"status": "not_configured", "note": "服务端未启用学习记录同步，模型自述不作为成功依据"}
-    if git.get("status") in ("committed",) or email.get("status") == "sent":
-        # 服务端当前不会代为执行外部副作用，出现这两种状态一律降级说明
-        note = "服务端不代为提交或发送，请以工作区与本地文件为准"
-        if settings.delivery.git_enabled:
-            git = {"status": "skipped", "note": note}
-        if settings.delivery.email_enabled:
-            email = {"status": "skipped", "note": note}
+    if email.get("status") == "sent" and settings.delivery.email_enabled:
+        email = {"status": "skipped",
+                 "note": "服务端不代为发送邮件，请以工作区与本地文件为准"}
+
+    if not settings.git_sync_enabled:
+        git = {"status": "not_configured",
+               "note": "服务端未启用学习记录同步（模型自述不作为成功依据）"}
+    elif git_result:
+        git = {
+            "status": git_result.get("status", "failed"),
+            "note": git_result.get("reason", ""),
+            "committed": bool(git_result.get("committed")),
+            "pushed": bool(git_result.get("pushed")),
+            "commit": git_result.get("commit", ""),
+            "conflict_record": git_result.get("conflict_record", ""),
+        }
+    else:
+        git = {"status": "failed", "note": "已启用学习记录同步，但本轮未取得同步结果"}
 
     delivery_out = {
         "pdf": pdf,
@@ -295,9 +466,15 @@ def summarize_delivery(settings: Settings, result: Dict[str, Any],
             "status": archive.get("status", "skipped"),
             "path": _rel(settings, archive.get("path", "")),
             "note": archive.get("note", ""),
+            "questions": list(archive.get("questions") or []),
         },
     }
     return delivery_out
+
+
+def workspace_relative_path(settings: Settings, path: str) -> str:
+    """对外暴露工作区相对路径（不泄露服务器绝对路径）。"""
+    return _rel(settings, path)
 
 
 def _rel(settings: Settings, path: str) -> str:

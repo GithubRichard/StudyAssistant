@@ -36,8 +36,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("数据库已备份到 %s", migration["backup"])
 
         ws = workspace.ensure_workspace(settings)
-        log.info("学习工作区: %s（新建目录 %d 个, README 新建=%s）",
-                 ws["root"], len(ws["created"]), ws["readme_created"])
+        log.info("学习工作区: %s（学科 %s；新建 %d 项；README 新建=%s；.gitignore 新建=%s）",
+                 ws["root"], "、".join(ws.get("subjects") or []), len(ws["created"]),
+                 ws["readme_created"], ws.get("gitignore_created"))
 
         client = HermesClient(settings.hermes)
         api.hermes_client = client

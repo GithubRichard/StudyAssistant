@@ -147,6 +147,82 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_openid ON tasks(openid, created_at);
 """
 
+# 版本 3：家庭配置、错题台账升级、订正与复测事件、Git 同步日志
+# 说明：mistakes 的扩展列与索引分开执行（索引依赖 ALTER 之后才存在的列）。
+V3_DDL = """
+CREATE TABLE IF NOT EXISTS family_settings(
+  openid TEXT PRIMARY KEY,
+  grade_level TEXT NOT NULL DEFAULT '',
+  subjects TEXT NOT NULL DEFAULT '',
+  term_start_date TEXT NOT NULL DEFAULT '',
+  updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS question_events(
+  id TEXT PRIMARY KEY,
+  openid TEXT NOT NULL,
+  question_uid TEXT NOT NULL,
+  subject TEXT NOT NULL DEFAULT '',
+  event_type TEXT NOT NULL,
+  result TEXT NOT NULL DEFAULT '',
+  occurred_date TEXT NOT NULL DEFAULT '',
+  student_answer TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  source_task_id TEXT NOT NULL DEFAULT '',
+  archive_path TEXT NOT NULL DEFAULT '',
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_question_events_uid
+  ON question_events(openid, question_uid, occurred_date);
+
+CREATE TABLE IF NOT EXISTS git_sync_log(
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  committed INTEGER NOT NULL DEFAULT 0,
+  pushed INTEGER NOT NULL DEFAULT 0,
+  commit_hash TEXT NOT NULL DEFAULT '',
+  paths TEXT NOT NULL DEFAULT '',
+  conflict_record TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL DEFAULT '',
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_git_sync_task ON git_sync_log(task_id, created_at);
+"""
+
+# mistakes 台账扩展列（列名 → 列定义）：保留旧数据，只加列
+V3_MISTAKE_COLUMNS = {
+    "subject": "TEXT NOT NULL DEFAULT ''",
+    "source": "TEXT NOT NULL DEFAULT ''",
+    "page": "TEXT NOT NULL DEFAULT ''",
+    "question_uid": "TEXT NOT NULL DEFAULT ''",
+    "stem": "TEXT NOT NULL DEFAULT ''",
+    "student_answer": "TEXT NOT NULL DEFAULT ''",
+    "correct_answer": "TEXT NOT NULL DEFAULT ''",
+    "error_rule": "TEXT NOT NULL DEFAULT ''",
+    "status": "TEXT NOT NULL DEFAULT 'wrong'",
+    "remediation_state": "TEXT NOT NULL DEFAULT 'pending_correction'",
+    "last_event_at": "REAL NOT NULL DEFAULT 0",
+    "archive_path": "TEXT NOT NULL DEFAULT ''",
+}
+
+# 依赖 V3 新列的索引与条件唯一索引（question_uid 为空的历史数据不参与去重）
+V3_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS idx_mistakes_ledger
+  ON mistakes(openid, subject, remediation_state);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mistakes_uid
+  ON mistakes(openid, question_uid) WHERE question_uid <> '';
+"""
+
+# tasks 表新增列（列名 → 列定义）
+V3_TASK_COLUMNS = {
+    "exam_scope": "TEXT NOT NULL DEFAULT ''",
+    "training_kind": "TEXT NOT NULL DEFAULT ''",
+    "scope_start": "TEXT NOT NULL DEFAULT ''",
+    "scope_end": "TEXT NOT NULL DEFAULT ''",
+    "git_status": "TEXT NOT NULL DEFAULT ''",
+}
+
 # tasks 表新增列（列名 → 列定义）
 V2_TASK_COLUMNS = {
     "task_type": "TEXT NOT NULL DEFAULT 'grading'",
@@ -158,7 +234,7 @@ V2_TASK_COLUMNS = {
     "archive_path": "TEXT NOT NULL DEFAULT ''",
 }
 
-LATEST_VERSION = 2
+LATEST_VERSION = 3
 
 
 async def _column_names(db: aiosqlite.Connection, table: str) -> set:
@@ -235,6 +311,24 @@ async def run_migrations(path: str) -> dict:
             await db.execute("INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(2, ?)",
                              (time.time(),))
             applied.append(2)
+
+        if 3 not in versions:
+            await db.executescript(V3_DDL)
+            task_columns = await _column_names(db, "tasks")
+            for name, ddl in V3_TASK_COLUMNS.items():
+                if name not in task_columns:
+                    await db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {ddl}")
+            mistake_columns = await _column_names(db, "mistakes")
+            for name, ddl in V3_MISTAKE_COLUMNS.items():
+                if name not in mistake_columns:
+                    await db.execute(f"ALTER TABLE mistakes ADD COLUMN {name} {ddl}")
+            await db.executescript(V3_INDEX_DDL)
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS schema_version("
+                "version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)")
+            await db.execute("INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(3, ?)",
+                             (time.time(),))
+            applied.append(3)
 
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA busy_timeout=5000")

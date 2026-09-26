@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -30,6 +31,7 @@ _TASK_FIELDS = {
     "subject", "grade_level", "task_type", "input_text", "status", "result_json",
     "provider", "model", "input_tokens", "output_tokens", "cost_cny", "error",
     "run_count", "claim_owner", "claim_expires_at", "archive_path", "updated_at",
+    "exam_scope", "training_kind", "scope_start", "scope_end", "git_status",
 }
 _RUN_FIELDS = {
     "status", "started_at", "finished_at", "error", "result_json",
@@ -352,12 +354,15 @@ async def create_task_atomic(db_path: str, task: Dict[str, Any], *,
 
             await db.execute(
                 """INSERT INTO tasks(id, openid, subject, grade_level, image_path, status,
-                                     task_type, input_text, idempotency_key, created_at, updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                                     task_type, input_text, idempotency_key, exam_scope,
+                                     training_kind, scope_start, scope_end, created_at, updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (task["id"], task["openid"], task["subject"], task["grade_level"],
                  task.get("image_path", ""), task.get("status", "pending"),
                  task.get("task_type", "grading"), task.get("input_text", ""),
-                 (idempotency or {}).get("key", ""), task["created_at"], task["created_at"]),
+                 (idempotency or {}).get("key", ""), task.get("exam_scope", ""),
+                 task.get("training_kind", ""), task.get("scope_start", ""),
+                 task.get("scope_end", ""), task["created_at"], task["created_at"]),
             )
             if reserve:
                 now = time.time()
@@ -603,10 +608,11 @@ async def save_mistake(db_path: str, openid: str, task_id: str,
 
 async def list_mistakes(db_path: str, openid: str, limit: int = 100,
                         offset: int = 0) -> List[dict]:
+    """人工收藏的错题（不含自动台账条目：台账条目的 question_uid 非空）。"""
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            """SELECT * FROM mistakes WHERE openid=?
+            """SELECT * FROM mistakes WHERE openid=? AND question_uid=''
                ORDER BY created_at DESC LIMIT ? OFFSET ?""",
             (openid, limit, max(0, offset)),
         ) as cur:
@@ -625,3 +631,277 @@ async def get_mistake(db_path: str, openid: str, mistake_id: int) -> Optional[di
 
 def db_path_for(data_dir: str) -> str:
     return str(Path(data_dir) / "app.db")
+
+
+# ---------- 家庭设置 ----------
+
+async def get_family_settings(db_path: str, openid: str) -> Optional[dict]:
+    """读取家庭设置；未保存过返回 None（由调用方回落到配置文件默认值）。"""
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM family_settings WHERE openid=?", (openid,)
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return None
+    data = dict(row)
+    data["subjects"] = _load_subjects(data.get("subjects", ""))
+    return data
+
+
+def _load_subjects(raw: str) -> List[str]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return [str(s) for s in parsed] if isinstance(parsed, list) else []
+
+
+async def save_family_settings(db_path: str, openid: str, *, grade_level: str,
+                               subjects: List[str], term_start_date: str) -> dict:
+    """保存家庭设置（学科清单以 JSON 文本存储，便于扩展新学科）。"""
+    now = time.time()
+    payload = json.dumps(list(subjects), ensure_ascii=False)
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """INSERT INTO family_settings(openid, grade_level, subjects, term_start_date, updated_at)
+               VALUES(?,?,?,?,?)
+               ON CONFLICT(openid) DO UPDATE SET grade_level=excluded.grade_level,
+                 subjects=excluded.subjects, term_start_date=excluded.term_start_date,
+                 updated_at=excluded.updated_at""",
+            (openid, grade_level, payload, term_start_date, now),
+        )
+        await db.commit()
+    return {"openid": openid, "grade_level": grade_level, "subjects": list(subjects),
+            "term_start_date": term_start_date, "updated_at": now}
+
+
+# ---------- Git 同步日志 ----------
+
+async def log_git_sync(db_path: str, record: Dict[str, Any]) -> str:
+    rid = record.get("id") or uuid.uuid4().hex[:16]
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """INSERT INTO git_sync_log(id, task_id, status, committed, pushed, commit_hash,
+                                        paths, conflict_record, reason, created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (rid, record.get("task_id", ""), record.get("status", "not_configured"),
+             1 if record.get("committed") else 0, 1 if record.get("pushed") else 0,
+             record.get("commit", ""),
+             json.dumps(record.get("paths") or [], ensure_ascii=False),
+             record.get("conflict_record", ""), record.get("reason", ""), time.time()),
+        )
+        await db.commit()
+    return rid
+
+
+async def latest_git_sync(db_path: str) -> Optional[dict]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM git_sync_log ORDER BY created_at DESC LIMIT 1"
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return None
+    data = dict(row)
+    data["committed"] = bool(data.get("committed"))
+    data["pushed"] = bool(data.get("pushed"))
+    try:
+        data["paths"] = json.loads(data.get("paths") or "[]")
+    except (TypeError, ValueError):
+        data["paths"] = []
+    return data
+
+
+# ---------- 错题台账（去重键：来源+日期+页码+题号 → question_uid）----------
+
+_LEDGER_UPDATABLE = (
+    "subject", "source", "page", "stem", "student_answer", "correct_answer",
+    "error_rule", "knowledge_point", "status", "archive_path",
+)
+
+
+async def upsert_ledger_question(db_path: str, openid: str, entry: Dict[str, Any]) -> Dict[str, Any]:
+    """按 (openid, question_uid) 去重写入台账。
+
+    已存在时只更新「可演进字段」，不覆盖 `remediation_state`（该字段由订正/复测事件驱动），
+    也不新增重复条目；返回 {id, created}。
+    """
+    uid = (entry.get("question_uid") or "").strip()
+    now = time.time()
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        existing = None
+        if uid:
+            async with db.execute(
+                "SELECT * FROM mistakes WHERE openid=? AND question_uid=?", (openid, uid)
+            ) as cur:
+                existing = await cur.fetchone()
+
+        if existing:
+            row = dict(existing)
+            fields = {k: entry.get(k, row.get(k, "")) for k in _LEDGER_UPDATABLE}
+            # 只有任务结果显式给出新的订正状态时才覆盖（由结果/事件驱动，不被空值抹掉）
+            new_state = (entry.get("remediation_state") or "").strip()
+            if new_state and new_state != "not_applicable":
+                fields["remediation_state"] = new_state
+            sets = ", ".join(f"{k}=?" for k in fields)
+            await db.execute(
+                f"UPDATE mistakes SET {sets}, last_event_at=? WHERE id=?",
+                (*fields.values(), now, row["id"]),
+            )
+            await db.commit()
+            return {"id": row["id"], "created": False}
+
+        state = entry.get("remediation_state") or "pending_correction"
+        cur = await db.execute(
+            """INSERT INTO mistakes(openid, task_id, question_no, knowledge_point, note,
+                                    created_at, subject, source, page, question_uid, stem,
+                                    student_answer, correct_answer, error_rule, status,
+                                    remediation_state, last_event_at, archive_path)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (openid, entry.get("task_id", ""), entry.get("question_no", ""),
+             entry.get("knowledge_point", ""), entry.get("note", ""), now,
+             entry.get("subject", ""), entry.get("source", ""), entry.get("page", ""),
+             uid, entry.get("stem", ""), entry.get("student_answer", ""),
+             entry.get("correct_answer", ""), entry.get("error_rule", ""),
+             entry.get("status", "wrong"), state, now, entry.get("archive_path", "")),
+        )
+        await db.commit()
+        return {"id": cur.lastrowid, "created": True}
+
+
+async def list_ledger(db_path: str, openid: str, subject: str = "",
+                      states: Optional[Iterable[str]] = None,
+                      limit: int = 200, offset: int = 0) -> List[dict]:
+    sql = "SELECT * FROM mistakes WHERE openid=? AND question_uid<>''"
+    args: List[Any] = [openid]
+    if subject:
+        sql += " AND subject=?"
+        args.append(subject)
+    state_list = list(states or [])
+    if state_list:
+        placeholders = ",".join("?" for _ in state_list)
+        sql += f" AND remediation_state IN ({placeholders})"
+        args.extend(state_list)
+    sql += " ORDER BY COALESCE(NULLIF(last_event_at, 0), created_at) DESC LIMIT ? OFFSET ?"
+    args.extend([limit, max(0, offset)])
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(sql, args) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def ledger_counts(db_path: str, openid: str) -> Dict[str, int]:
+    """按订正状态统计台账条目数（用于复习页概览）；不含人工收藏条目。"""
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT remediation_state, COUNT(*) FROM mistakes
+               WHERE openid=? AND question_uid<>'' GROUP BY remediation_state""",
+            (openid,),
+        ) as cur:
+            return {str(row[0] or "unknown"): int(row[1]) for row in await cur.fetchall()}
+
+
+async def ledger_subjects(db_path: str, openid: str) -> List[str]:
+    """台账中出现过的学科（按学科切换 chips 使用）。"""
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT DISTINCT subject FROM mistakes
+               WHERE openid=? AND subject<>'' AND question_uid<>'' ORDER BY subject""",
+            (openid,),
+        ) as cur:
+            return [str(row[0]) for row in await cur.fetchall()]
+
+
+async def get_ledger_by_uid(db_path: str, openid: str, uid: str) -> Optional[dict]:
+    if not (uid or "").strip():
+        return None
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM mistakes WHERE openid=? AND question_uid=?", (openid, uid)
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def list_ledger_by_task(db_path: str, openid: str, task_id: str) -> List[dict]:
+    """该任务写入台账的条目（用于任务详情展示与人工核对）。"""
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT * FROM mistakes WHERE openid=? AND task_id=?
+               ORDER BY COALESCE(NULLIF(last_event_at, 0), created_at)""",
+            (openid, task_id),
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_ledger_entry(db_path: str, openid: str, entry_id: int) -> Optional[dict]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM mistakes WHERE id=? AND openid=?", (entry_id, openid)
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def update_ledger_state(db_path: str, openid: str, entry_id: int, *,
+                              remediation_state: str, last_event_at: float = 0.0,
+                              archive_path: str = "") -> None:
+    """只更新台账状态相关字段，不改写题目内容与历史判定。"""
+    now = last_event_at or time.time()
+    async with aiosqlite.connect(db_path) as db:
+        if archive_path:
+            await db.execute(
+                """UPDATE mistakes SET remediation_state=?, last_event_at=?, archive_path=?
+                   WHERE id=? AND openid=?""",
+                (remediation_state, now, archive_path, entry_id, openid),
+            )
+        else:
+            await db.execute(
+                """UPDATE mistakes SET remediation_state=?, last_event_at=?
+                   WHERE id=? AND openid=?""",
+                (remediation_state, now, entry_id, openid),
+            )
+        await db.commit()
+
+
+async def add_question_event(db_path: str, openid: str, event: Dict[str, Any]) -> str:
+    """追加订正/复测事件；只追加不改写，历史判定保持可追溯。"""
+    rid = uuid.uuid4().hex[:16]
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """INSERT INTO question_events(id, openid, question_uid, subject, event_type,
+                                           result, occurred_date, student_answer, note,
+                                           source_task_id, archive_path, created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (rid, openid, event.get("question_uid", ""), event.get("subject", ""),
+             event.get("event_type", "retest"), event.get("result", ""),
+             event.get("occurred_date", ""), event.get("student_answer", ""),
+             event.get("note", ""), event.get("source_task_id", ""),
+             event.get("archive_path", ""), time.time()),
+        )
+        await db.commit()
+    return rid
+
+
+async def list_question_events(db_path: str, openid: str, question_uid: str = "",
+                               limit: int = 200) -> List[dict]:
+    sql = "SELECT * FROM question_events WHERE openid=?"
+    args: List[Any] = [openid]
+    if question_uid:
+        sql += " AND question_uid=?"
+        args.append(question_uid)
+    sql += " ORDER BY occurred_date DESC, created_at DESC LIMIT ?"
+    args.append(limit)
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(sql, args) as cur:
+            return [dict(r) for r in await cur.fetchall()]

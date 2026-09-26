@@ -5,14 +5,16 @@ import asyncio
 import io
 import tempfile
 import unittest
+from datetime import date, datetime
 from pathlib import Path
 
 from PIL import Image
 
 from app.config import Settings
-from app.workspace import (WorkspaceError, apply_archive, archive_artifact,
-                           collect_artifacts, ensure_workspace, is_inside_allowed,
-                           run_output_dir, safe_archive_path, store_asset)
+from app.workspace import (CONFLICT_NAME_RE, WorkspaceError, apply_archive,
+                           archive_artifact, collect_artifacts, ensure_workspace,
+                           is_inside_allowed, run_output_dir, safe_archive_path,
+                           store_asset, write_conflict_record)
 
 
 def make_settings(tmp: str, **overrides) -> Settings:
@@ -156,6 +158,62 @@ class ArtifactTest(unittest.TestCase):
             row = archive_artifact(settings, "t1", {"status": "generated", "path": str(target)})
             self.assertIsNotNone(row)
             self.assertEqual(row["kind"], "archive")
+
+
+class OriginalSkeletonTest(unittest.TestCase):
+    """原题边界：目录骨架与 .gitignore 落地，原图不落工作区。"""
+
+    def test_original_dirs_and_gitignore_are_created(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            result = ensure_workspace(settings)
+            root = Path(result["root"])
+            self.assertTrue((root / "数学" / "原题").is_dir())
+            self.assertTrue((root / "数学" / "原题" / str(date.today().year)).is_dir())
+            self.assertTrue((root / "数学" / "原题" / ".gitkeep").exists())
+            gitignore = root / ".gitignore"
+            self.assertTrue(gitignore.exists())
+            self.assertIn("原题", gitignore.read_text(encoding="utf-8"))
+            self.assertTrue(result["gitignore_created"])
+
+            # 已存在的 .gitignore 不被覆盖
+            again = ensure_workspace(settings)
+            self.assertFalse(again["gitignore_created"])
+
+    def test_uploaded_asset_stays_out_of_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            ensure_workspace(settings)
+            asset = store_asset(settings, "u1", png_bytes(), "page1.png")
+            ws_root = Path(settings.workspace_dir).resolve()
+            self.assertNotIn(ws_root, Path(asset["path"]).resolve().parents)
+
+    def test_conflict_record_names_never_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            ensure_workspace(settings)
+            when = datetime(2026, 9, 26, 10, 30, 0)
+            first = write_conflict_record(settings, "# 冲突记录", when=when)
+            second = write_conflict_record(settings, "# 冲突记录", when=when)
+            self.assertNotEqual(first, second)
+            self.assertTrue((Path(settings.workspace_dir) / first).exists())
+            self.assertTrue(CONFLICT_NAME_RE.match(Path(first).name))
+            self.assertTrue(CONFLICT_NAME_RE.match(Path(second).name))
+
+    def test_archive_marks_question_uids_for_ledger_linking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            result_payload = {
+                "archive": {"suggested_path": "数学/错题解析/2026-09-26.md",
+                            "content_markdown": "## 来源：模拟作业\n\n- 第 1 题：移项未变号"},
+                "questions": [{"uid": "q-abc"}, {"uid": "q-def"}, {}],
+            }
+            out = asyncio.run(apply_archive(settings, {"id": "t1"}, {"run_no": 1},
+                                            result_payload))
+            self.assertEqual(out["status"], "generated")
+            self.assertEqual(out["questions"], ["q-abc", "q-def"])
+            text = Path(out["path"]).read_text(encoding="utf-8")
+            self.assertIn("<!-- questions: q-abc,q-def -->", text)
 
 
 if __name__ == "__main__":

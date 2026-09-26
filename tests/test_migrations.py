@@ -41,15 +41,17 @@ class MigrationTest(unittest.IsolatedAsyncioTestCase):
         await build_legacy_db(self.db_path)
         result = await migrations.run_migrations(self.db_path)
 
-        self.assertEqual(sorted(result["applied"]), [1, 2])
+        self.assertEqual(sorted(result["applied"]), [1, 2, 3])
         self.assertIsNotNone(result["backup"], "旧库升级前必须备份")
         self.assertTrue(Path(result["backup"]).exists())
-        self.assertEqual(await migrations.current_version(self.db_path), 2)
+        self.assertEqual(await migrations.current_version(self.db_path), 3)
 
         # 旧任务保留且可读
         task = await db.get_task(self.db_path, "old-task")
         self.assertEqual(task["openid"], "legacy-user")
         self.assertEqual(task["task_type"], "grading")  # 新列默认值
+        self.assertEqual(task["exam_scope"], "")
+        self.assertEqual(task["training_kind"], "")
         self.assertIn("旧结果", task["result_json"])
 
     async def test_second_run_is_noop_without_backup(self):
@@ -61,7 +63,7 @@ class MigrationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_fresh_db_has_no_backup(self):
         result = await migrations.run_migrations(self.db_path)
-        self.assertEqual(sorted(result["applied"]), [1, 2])
+        self.assertEqual(sorted(result["applied"]), [1, 2, 3])
         self.assertIsNone(result["backup"])
 
     async def test_new_tables_exist(self):
@@ -72,7 +74,8 @@ class MigrationTest(unittest.IsolatedAsyncioTestCase):
             ) as cur:
                 names = {r[0] for r in await cur.fetchall()}
         for table in ("sessions", "assets", "task_assets", "task_runs",
-                      "idempotency", "quota_reservations", "artifacts"):
+                      "idempotency", "quota_reservations", "artifacts",
+                      "family_settings", "question_events", "git_sync_log"):
             self.assertIn(table, names)
 
 

@@ -110,8 +110,10 @@ class RunTaskTest(unittest.IsolatedAsyncioTestCase):
     async def test_success_returns_validated_result(self):
         client = HermesClient(make_cfg())
         payload = await client.run_task([{"role": "user", "content": "x"}], "sess-1")
-        self.assertEqual(payload["result"]["schema_version"], 2)
+        self.assertEqual(payload["result"]["schema_version"], 3)
         self.assertEqual(payload["result"]["questions"][0]["status"], "wrong")
+        self.assertEqual(
+            payload["result"]["questions"][0]["remediation"]["state"], "pending_correction")
         self.assertEqual(payload["model"], "hermes-agent")
         sent = [r for r in self.mock.requests if r.url.path == "/v1/chat/completions"][0]
         self.assertEqual(sent.headers.get("x-hermes-session-id"), "sess-1")
@@ -205,6 +207,43 @@ class ResultContractTest(unittest.TestCase):
         data = validate_result(LEARNING_RESULT)
         self.assertEqual(data["overview"]["wrong"], 1)
         self.assertEqual(data["overview"]["unanswered"], 1)
+        self.assertEqual(data["overview"]["remediation"]["pending_correction"], 1)
+        self.assertIn("错误率", data["overview"]["error_rate_basis"])
+
+    def test_v2_result_is_read_only_compatible(self):
+        from app.schemas import normalize_result
+
+        v2 = {
+            "schema_version": 2,
+            "task_type": "grading",
+            "subject": "数学",
+            "overview": {},
+            "questions": [{
+                "id": "q1", "no": "1", "status": "wrong", "correct_answer": "x=4",
+                "error_rule": "移项未变号", "final_decision": "kept_wrong"}],
+            "review_summary": {"state": "not_run"},
+        }
+        data = normalize_result(v2)
+        self.assertIsNotNone(data)
+        self.assertEqual(data["legacy_schema"], 2)
+        self.assertEqual(data["questions"][0]["remediation"]["state"], "not_applicable")
+        self.assertIn("未记录订正与复测状态", data["questions"][0]["remediation"]["note"])
+
+    def test_v3_archive_must_match_task_type(self):
+        broken = dict(LEARNING_RESULT)
+        broken["task_type"] = "weekly_report"
+        broken["archive"] = {"suggested_path": "数学/错题解析/2026-09-26.md",
+                             "action": "append", "content_markdown": "x"}
+        with self.assertRaises(HermesResultInvalid):
+            validate_result(broken)
+
+    def test_wrong_question_requires_remediation_state(self):
+        broken = dict(LEARNING_RESULT)
+        questions = [dict(q) for q in broken["questions"]]
+        questions[0] = dict(questions[0], remediation={"state": "not_applicable"})
+        broken["questions"] = questions
+        with self.assertRaises(HermesResultInvalid):
+            validate_result(broken)
 
 
 class MessageTest(unittest.TestCase):
