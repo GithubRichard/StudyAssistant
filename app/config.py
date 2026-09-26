@@ -105,13 +105,17 @@ class WebConfig(BaseModel):
     """网页版入口：不依赖微信，用配置密码登录，适合「只能用 IP 直连、小程序无法备案」的场景。
 
     安全约定：
-    - 必须显式配置 `password` 才可用；未配置时网页登录接口一律拒绝。
+    - 必须配置了 `password` 才可用；未配置时网页登录接口一律拒绝。
     - 网页账号使用 `web:<user>` 形式的独立身份，与微信 openid 互不影响。
     - 明文密码只从环境变量 `WEB_PASSWORD` 注入，不写入仓库。
+
+    注意：`config.yaml` 不进版本库，服务器上那份不会随 `git pull` 更新，
+    因此 `password` 允许在未显式配置时回落到环境变量 `WEB_PASSWORD`，
+    避免「明明填了 .env 却仍提示未配置密码」。
     """
 
     enabled: bool = True
-    password: str = ""
+    password: str = Field(default_factory=lambda: os.environ.get("WEB_PASSWORD", ""))
     user: str = "family"                     # 网页账号名，最终身份为 web:<user>
     title: str = "Leo 学习助手"
     allowed_origins: List[str] = Field(default_factory=list)  # 跨域部署时填写；同源部署留空

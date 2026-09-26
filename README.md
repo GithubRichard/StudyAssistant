@@ -160,10 +160,14 @@ docker compose up -d --force-recreate   # 改完 .env 必须重建容器
 | 配置项（config.yaml `web`） | 说明 |
 |---|---|
 | `enabled` | 总开关，默认 `true`；设 `false` 时网页登录接口直接拒绝 |
-| `password` | 访问密码，**必须**从环境变量 `WEB_PASSWORD` 注入，不写入仓库 |
+| `password` | 访问密码，从环境变量 `WEB_PASSWORD` 注入，不写入仓库 |
 | `user` | 网页账号名，最终身份为 `web:<user>`，与微信 openid 隔离 |
 | `title` | 页面标题 |
 | `allowed_origins` | 前后端分离部署时的跨域白名单；同源部署留空（默认） |
+
+> `config.yaml` 不在版本库里，`git pull` **不会**更新服务器上那一份。为避免「明明填了 `.env` 仍提示未配置密码」，
+> `web.password` 在 config.yaml 未写 `web:` 段时会自动回落到环境变量，所以**只填 `.env` 的 `WEB_PASSWORD` 也能生效**；
+> 其余新增项（如 `title`、`allowed_origins`）若要自定义，仍需手工补到服务器的 config.yaml。
 
 本地用 Python 直接运行（不经 Docker 时 `.env` **不会**自动加载，需手动导出变量）：
 
