@@ -18,7 +18,7 @@ hermes:
   api_key: "${HERMES_API_KEY}"
   agent_model: "hermes-agent"          # Hermes 的 Agent 别名，不是底层模型 ID
   skill_name: "leo-study-assistant"    # 用于 /v1/skills 就绪校验
-  timeout_seconds: 300                 # 单轮执行上限（秒）
+  timeout_seconds: 900                 # 单轮执行上限（秒）；Agent 多轮工具调用较慢，别设太小
   max_response_bytes: 2000000          # 响应体上限，防止超大输出
   verify_skill: true                   # 启动时校验技能是否已安装
 
