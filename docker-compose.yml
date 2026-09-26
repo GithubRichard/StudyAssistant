@@ -1,0 +1,11 @@
+services:
+  grader:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env                     # API Key 等密钥
+    volumes:
+      - ./data:/srv/app/data     # 数据库 + 上传图片持久化
+      - ./config.yaml:/srv/app/config.yaml:ro   # 配置文件（先 cp config.example.yaml config.yaml）
+    restart: unless-stopped

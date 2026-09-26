@@ -1,0 +1,38 @@
+<view class="container">
+  <view class="disclaimer">⚠️ AI 批改仅供参考，请以老师讲解为准</view>
+
+  <view wx:if="{{status === 'pending' || status === 'grading'}}" class="card loading">
+    <text class="spin">⏳</text>
+    <text>批改中，通常需要 10~30 秒…</text>
+  </view>
+
+  <view wx:if="{{status === 'failed'}}" class="card">
+    <text class="err-title">批改失败了</text>
+    <text class="err-msg">{{error}}</text>
+    <button type="primary" bindtap="retry">返回重拍</button>
+  </view>
+
+  <view wx:if="{{status === 'done' && result}}">
+    <view class="card summary">
+      <text class="score">{{result.correct_count}}<text class="total"> / {{result.total_questions}}</text></text>
+      <text class="summary-text">{{result.summary}}</text>
+    </view>
+
+    <view wx:for="{{result.questions}}" wx:key="no" class="card q">
+      <view class="q-head">
+        <text class="q-no">第 {{item.no}} 题</text>
+        <text class="badge {{item.is_correct ? 'ok' : 'bad'}}">{{item.is_correct ? '✓ 答对' : '✗ 答错'}}</text>
+      </view>
+      <view class="q-row"><text class="k">你的作答：</text><text>{{item.student_answer || '—'}}</text></view>
+      <view wx:if="{{!item.is_correct}}" class="q-row"><text class="k">正确答案：</text><text class="ans">{{item.correct_answer}}</text></view>
+      <view wx:if="{{item.knowledge_point}}" class="q-row"><text class="k">知识点：</text><text>{{item.knowledge_point}}</text></view>
+      <view wx:if="{{item.explanation && item.explanation.length}}" class="explain">
+        <text class="k">讲解：</text>
+        <view wx:for="{{item.explanation}}" wx:for-item="step" wx:key="*this" class="step">
+          <text>{{index + 1}}. {{step}}</text>
+        </view>
+      </view>
+      <button wx:if="{{!item.is_correct}}" size="mini" type="primary" bindtap="addMistake" data-q="{{item}}">加入错题本</button>
+    </view>
+  </view>
+</view>

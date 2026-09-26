@@ -1,0 +1,32 @@
+<view class="container">
+  <view class="card user">
+    <text class="u-title">当前用户</text>
+    <text class="u-id">{{openid || '未登录'}}</text>
+  </view>
+
+  <view class="card">
+    <view class="row">
+      <text>剩余批改次数</text>
+      <text class="big">{{remaining}}</text>
+    </view>
+  </view>
+
+  <view class="card">
+    <text class="sec-title">在线模型</text>
+    <view wx:for="{{providers}}" wx:key="name" class="row">
+      <text>{{item.name}}（{{item.model}}）</text>
+      <text class="tag {{item.active ? 'on' : 'off'}}">{{item.active ? (item.has_key ? '在线' : '未配Key') : '已停用'}}</text>
+    </view>
+    <view wx:if="{{providers.length === 0}}" class="muted">加载中…</view>
+  </view>
+
+  <view class="card">
+    <text class="sec-title">服务器地址</text>
+    <view class="row">
+      <text class="url">{{baseUrl}}</text>
+    </view>
+    <button size="mini" bindtap="copyBaseUrl">复制</button>
+  </view>
+
+  <button bindtap="relogin">切换账号 / 重新登录</button>
+</view>

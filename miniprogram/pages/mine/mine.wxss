@@ -1,0 +1,12 @@
+.user .u-title { color: #999; font-size: 26rpx; display: block; margin-bottom: 8rpx; }
+.user .u-id { font-size: 28rpx; word-break: break-all; }
+.row { display: flex; justify-content: space-between; align-items: center; padding: 14rpx 0; border-bottom: 1rpx solid #f0f0f0; }
+.row:last-child { border-bottom: none; }
+.big { font-size: 44rpx; font-weight: bold; color: #07c160; }
+.sec-title { font-weight: bold; font-size: 30rpx; display: block; margin-bottom: 8rpx; }
+.muted { color: #bbb; }
+.tag { font-size: 24rpx; padding: 6rpx 16rpx; border-radius: 16rpx; }
+.tag.on { background: #e6f9ee; color: #07c160; }
+.tag.off { background: #f0f0f0; color: #999; }
+.url { font-size: 26rpx; color: #666; word-break: break-all; }
+button { margin-top: 20rpx; }

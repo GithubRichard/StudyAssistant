@@ -1,0 +1,6 @@
+.m-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10rpx; }
+.m-no { font-size: 32rpx; font-weight: bold; }
+.m-time { color: #999; font-size: 24rpx; }
+.m-kp { color: #666; margin: 8rpx 0; }
+.m-note { color: #999; font-size: 26rpx; margin: 8rpx 0; }
+.m-link { color: #07c160; font-size: 26rpx; }

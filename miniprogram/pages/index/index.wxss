@@ -1,0 +1,17 @@
+.row {
+  display: flex;
+  align-items: center;
+  padding: 16rpx 0;
+  border-bottom: 1rpx solid #f0f0f0;
+}
+.row:last-child { border-bottom: none; }
+.label { width: 140rpx; color: #666; }
+.picker { flex: 1; text-align: right; }
+.preview { min-height: 380rpx; display: flex; align-items: center; justify-content: center; }
+.img { width: 100%; height: 480rpx; }
+.placeholder { text-align: center; color: #999; }
+.placeholder .big { font-size: 90rpx; display: block; margin-bottom: 16rpx; }
+.placeholder .sub { display: block; margin-top: 12rpx; font-size: 24rpx; color: #bbb; }
+.rechoose { text-align: center; color: #07c160; margin-bottom: 20rpx; }
+.tip { text-align: center; color: #bbb; font-size: 24rpx; margin-top: 24rpx; }
+button { margin-top: 8rpx; }

@@ -1,0 +1,12 @@
+<view class="container">
+  <view wx:if="{{mistakes.length === 0}}" class="empty">错题本空空如也，说明你全对啦 🎉</view>
+  <view wx:for="{{mistakes}}" wx:key="id" class="card" bindtap="goTask" data-task="{{item.task_id}}">
+    <view class="m-head">
+      <text class="m-no">第 {{item.question_no}} 题</text>
+      <text class="m-time">{{item.time}}</text>
+    </view>
+    <view wx:if="{{item.knowledge_point}}" class="m-kp">知识点：{{item.knowledge_point}}</view>
+    <view wx:if="{{item.note}}" class="m-note">{{item.note}}</view>
+    <text class="m-link">查看原批改 ›</text>
+  </view>
+</view>

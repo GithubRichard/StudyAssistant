@@ -1,0 +1,29 @@
+<view class="container">
+  <view class="card">
+    <view class="row">
+      <text class="label">科目</text>
+      <picker mode="selector" range="{{subjects}}" value="{{subjectIndex}}" bindchange="onSubjectChange">
+        <view class="picker">{{subjects[subjectIndex]}} ▾</view>
+      </picker>
+    </view>
+    <view class="row">
+      <text class="label">年级</text>
+      <picker mode="selector" range="{{grades}}" value="{{gradeIndex}}" bindchange="onGradeChange">
+        <view class="picker">{{grades[gradeIndex]}} ▾</view>
+      </picker>
+    </view>
+  </view>
+
+  <view class="card preview" bindtap="chooseImage">
+    <image wx:if="{{imagePath}}" src="{{imagePath}}" mode="aspectFit" class="img" />
+    <view wx:else class="placeholder">
+      <text class="big">📷</text>
+      <text>点击拍照 / 从相册选择作业照片</text>
+      <text class="sub">拍得越正、越清晰，批改越准</text>
+    </view>
+  </view>
+  <view wx:if="{{imagePath}}" class="rechoose" bindtap="chooseImage">重新选择</view>
+
+  <button type="primary" bindtap="submit" loading="{{uploading}}" disabled="{{uploading}}">开始批改</button>
+  <view class="tip">AI 批改仅供参考，请以老师讲解为准</view>
+</view>

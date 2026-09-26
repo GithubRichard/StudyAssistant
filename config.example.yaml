@@ -1,0 +1,81 @@
+# 作业批改服务配置文件
+# 用法：cp config.example.yaml config.yaml，然后按需修改
+# 密钥不要写在这里，写在 .env 文件里，用 ${VAR} 引用
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+# ================= 多大模型配置（核心）=================
+llm:
+  default_provider: "qwen"
+  fallback_order: ["qwen", "glm", "deepseek"]
+  providers:
+    qwen:
+      type: "openai_compatible"
+      base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      api_key: "${QWEN_API_KEY}"
+      model: "qwen-vl-max"
+      timeout: 90
+      max_retries: 2
+      price_input_per_1m: 0.8
+      price_output_per_1m: 2.8
+      enabled: true
+    glm:
+      type: "openai_compatible"
+      base_url: "https://open.bigmodel.cn/api/paas/v4"
+      api_key: "${GLM_API_KEY}"
+      model: "glm-4v"
+      timeout: 90
+      max_retries: 2
+      price_input_per_1m: 0.8
+      price_output_per_1m: 2.8
+      enabled: true
+    deepseek:
+      type: "openai_compatible"
+      base_url: "https://api.deepseek.com/v1"
+      api_key: "${DEEPSEEK_API_KEY}"
+      model: "deepseek-chat"
+      timeout: 90
+      max_retries: 2
+      price_input_per_1m: 3.0
+      price_output_per_1m: 9.0
+      enabled: false
+    doubao:
+      type: "openai_compatible"
+      base_url: "https://ark.cn-beijing.volces.com/api/v3"
+      api_key: "${DOUBAO_API_KEY}"
+      model: "doubao-seed-1-6"
+      timeout: 90
+      max_retries: 2
+      price_input_per_1m: 0.8
+      price_output_per_1m: 2.8
+      enabled: false
+
+# ================= 批改 prompt =================
+# 批改指令写在 prompt_system.txt 纯文本文件里，直接改文字就行，不用动代码也不用管 YAML 缩进
+system_prompt_file: "prompt_system.txt"
+user_prompt_template: "请批改这张{subject}作业照片。严格按系统指令要求的 JSON 格式输出。"
+
+# ================= 配额 =================
+quota:
+  new_user_bonus: 20
+  daily_free: 3
+  max_per_day: 50
+
+# ================= 费用熔断 =================
+budget:
+  daily_max_cny: 50.0
+
+# ================= 微信（可选，不配也能跑）=================
+wechat:
+  appid: "${WECHAT_APPID}"
+  secret: "${WECHAT_SECRET}"
+  seccheck_enabled: false
+  subscribe_template_id: "${WECHAT_TEMPLATE_ID}"
+
+# ================= 其他 =================
+data_dir: "data"
+max_image_mb: 5
+max_image_px: 1600
+grade_concurrency: 4
