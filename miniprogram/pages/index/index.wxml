@@ -2,7 +2,10 @@
   <view class="hero">
     <text class="hero-title">学习助手</text>
     <text class="hero-sub">批改 · 错题解析 · 周报 · 训练 · 复测</text>
-    <view class="runtime {{runtimeOk ? 'runtime-ok' : 'runtime-warn'}}">{{runtimeText}}</view>
+    <view class="runtime-row">
+      <view class="runtime {{runtimeOk ? 'runtime-ok' : 'runtime-warn'}}">{{runtimeText}}</view>
+      <text wx:if="{{!runtimeOk}}" class="runtime-retry" bindtap="retryRuntime">重试</text>
+    </view>
   </view>
 
   <view class="card">

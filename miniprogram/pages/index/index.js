@@ -39,6 +39,7 @@ Page({
     submitting: false,
     runtimeText: '正在检查服务状态…',
     runtimeOk: true,
+    runtimeChecking: false,
   },
 
   onShow() {
@@ -46,7 +47,11 @@ Page({
   },
 
   async checkRuntime() {
+    if (this.data.runtimeChecking) return;
+    this.setData({ runtimeChecking: true });
     try {
+      // 先确保登录完成再查询，避免与 app.js 的启动登录抢跑
+      await api.ensureLogin();
       const rt = await api.getRuntime();
       let state = 'unknown';
       if (rt.engine && rt.engine.mode === 'legacy') state = 'legacy';
@@ -56,8 +61,17 @@ Page({
         runtimeOk: state === 'ready',
       });
     } catch (e) {
-      this.setData({ runtimeText: '无法获取服务状态，请检查服务器地址', runtimeOk: false });
+      this.setData({
+        runtimeText: '无法获取服务状态：' + (e.message || '未知错误'),
+        runtimeOk: false,
+      });
+    } finally {
+      this.setData({ runtimeChecking: false });
     }
+  },
+
+  retryRuntime() {
+    this.checkRuntime();
   },
 
   onTypeChange(e) {

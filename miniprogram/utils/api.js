@@ -92,9 +92,12 @@ function formRequest(path, data, header) {
   });
 }
 
-// 登录：code 换会话令牌
+// 登录：code 换会话令牌。并发调用复用同一个请求，避免多次 wx.login 抢跑
+let loginPromise = null;
+
 function login() {
-  return new Promise((resolve, reject) => {
+  if (loginPromise) return loginPromise;
+  loginPromise = new Promise((resolve, reject) => {
     wx.login({
       success: async (res) => {
         try {
@@ -114,6 +117,9 @@ function login() {
       fail: () => reject(new Error('wx.login 调用失败')),
     });
   });
+  const done = () => { loginPromise = null; };
+  loginPromise.then(done, done);
+  return loginPromise;
 }
 
 function ensureLogin() {

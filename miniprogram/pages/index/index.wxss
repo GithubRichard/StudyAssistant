@@ -14,12 +14,23 @@
   font-size: 26rpx;
   margin-top: 8rpx;
 }
+.runtime-row {
+  display: flex;
+  align-items: center;
+  margin-top: 18rpx;
+}
 .runtime {
   display: inline-block;
-  margin-top: 18rpx;
   padding: 8rpx 20rpx;
   border-radius: 999rpx;
   font-size: 24rpx;
+}
+.runtime-retry {
+  margin-left: 20rpx;
+  color: #126B56;
+  font-size: 26rpx;
+  font-weight: 600;
+  text-decoration: underline;
 }
 .runtime-ok { background: #D5EDE4; color: #126B56; }
 .runtime-warn { background: #F7EDD2; color: #916400; }
