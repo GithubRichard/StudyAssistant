@@ -101,6 +101,26 @@ class AuthConfig(BaseModel):
     session_ttl_days: int = 30
 
 
+class WebConfig(BaseModel):
+    """网页版入口：不依赖微信，用配置密码登录，适合「只能用 IP 直连、小程序无法备案」的场景。
+
+    安全约定：
+    - 必须显式配置 `password` 才可用；未配置时网页登录接口一律拒绝。
+    - 网页账号使用 `web:<user>` 形式的独立身份，与微信 openid 互不影响。
+    - 明文密码只从环境变量 `WEB_PASSWORD` 注入，不写入仓库。
+    """
+
+    enabled: bool = True
+    password: str = ""
+    user: str = "family"                     # 网页账号名，最终身份为 web:<user>
+    title: str = "Leo 学习助手"
+    allowed_origins: List[str] = Field(default_factory=list)  # 跨域部署时填写；同源部署留空
+
+    @property
+    def configured(self) -> bool:
+        return self.enabled and bool(self.password)
+
+
 class LimitsConfig(BaseModel):
     max_assets_per_task: int = 20
     max_total_upload_mb: int = 40
@@ -156,6 +176,7 @@ class Settings(BaseModel):
     quota: QuotaConfig = Field(default_factory=QuotaConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     wechat: WechatConfig = Field(default_factory=WechatConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
     data_dir: str = "data"
     max_image_mb: int = 5
     max_image_px: int = 1600
@@ -179,6 +200,11 @@ class Settings(BaseModel):
     @property
     def workspace_dir(self) -> str:
         return str(Path(self.workspace.dir))
+
+    @property
+    def web_dir(self) -> str:
+        """网页版静态资源目录（默认仓库根目录下的 web/，可用 WEB_DIR 覆盖）。"""
+        return os.environ.get("WEB_DIR", "web")
 
     @property
     def is_hermes(self) -> bool:

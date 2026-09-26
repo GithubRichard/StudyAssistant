@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import (APIRouter, Depends, File, Form, Header, HTTPException, Query,
+                     Request, UploadFile)
 from fastapi.responses import FileResponse
 
 from . import auth, db, tasks, wechat, workspace
@@ -96,6 +98,88 @@ async def logout(ctx: dict = Session):
     s = get_settings()
     await db.delete_session(s.db_path, ctx["session_id"])
     return {"ok": True}
+
+
+# ---------- 网页版（IP 直连，不走微信）----------
+
+# 简易防爆破：同一来源连续输错达上限后短暂锁定，避免 IP 直连被暴力试密码
+_WEB_MAX_FAILURES = 10
+_WEB_LOCK_SECONDS = 300
+_web_failures: dict = {}
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _web_locked(ip: str) -> int:
+    """返回剩余锁定秒数；0 表示未锁定。"""
+    count, until = _web_failures.get(ip, (0, 0.0))
+    remain = until - time.time()
+    return int(remain) if remain > 0 else 0
+
+
+def _web_record_failure(ip: str) -> None:
+    count, _ = _web_failures.get(ip, (0, 0.0))
+    count += 1
+    until = time.time() + _WEB_LOCK_SECONDS if count >= _WEB_MAX_FAILURES else 0.0
+    _web_failures[ip] = (count, until)
+    if until:
+        log.warning("网页登录连续失败 %d 次，来源 %s 已临时锁定", count, ip)
+
+
+@router.get("/web/meta")
+async def web_meta():
+    """网页登录页所需的公开信息（不含任何密钥）。"""
+    s = get_settings()
+    return {
+        "title": s.web.title,
+        "enabled": s.web.enabled,
+        "password_required": True,
+        "configured": s.web.configured,
+    }
+
+
+@router.post("/web/login")
+async def web_login(request: Request, password: str = Form(""), user: str = Form("")):
+    """网页版登录：配置密码换取会话令牌（与小程序共用同一会话体系）。"""
+    s = get_settings()
+    if not s.web.enabled:
+        raise HTTPException(403, "网页版已被管理员关闭")
+    if not s.web.password:
+        raise HTTPException(
+            403, "服务端未配置网页访问密码（.env 中的 WEB_PASSWORD），网页版不可用")
+
+    ip = _client_ip(request)
+    locked = _web_locked(ip)
+    if locked:
+        raise HTTPException(429, f"尝试次数过多，请 {locked} 秒后重试")
+
+    if not auth.verify_password(password, s.web.password):
+        _web_record_failure(ip)
+        raise HTTPException(401, "访问密码不正确")
+
+    _web_failures.pop(ip, None)
+    openid = auth.web_openid(user or s.web.user)
+    try:
+        # 密码已是准入凭证，网页身份不再受微信 openid 白名单约束
+        session = await auth.issue_session(
+            s.db_path, openid, None,
+            ttl_seconds=s.auth.session_ttl_days * 24 * 3600)
+    except auth.AuthError as e:
+        raise HTTPException(e.status_code, e.message) from e
+
+    await db.get_or_create_user(s.db_path, openid, s.quota.new_user_bonus)
+    log.info("网页版登录成功: %s (来源 %s)", openid, ip)
+    return {
+        "token": session["token"],
+        "openid": openid,
+        "expires_at": session["expires_at"],
+        "dev_identity": False,
+    }
 
 
 # ---------- 附件 ----------

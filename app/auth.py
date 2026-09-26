@@ -36,6 +36,23 @@ def new_token() -> str:
     return secrets.token_urlsafe(TOKEN_BYTES)
 
 
+WEB_OPENID_PREFIX = "web:"
+
+
+def verify_password(given: str, expected: str) -> bool:
+    """网页版密码校验：恒定时间比较，避免按字符逐位试探。"""
+    if not expected:
+        return False
+    return secrets.compare_digest((given or "").encode("utf-8"), expected.encode("utf-8"))
+
+
+def web_openid(user: str) -> str:
+    """网页账号身份：加上前缀，避免与微信 openid 混淆，也不会命中微信白名单。"""
+    name = (user or "").strip() or "family"
+    name = "".join(ch for ch in name if ch.isalnum() or ch in "-_")[:32] or "family"
+    return WEB_OPENID_PREFIX + name
+
+
 def is_authorized(openid: str, allowed: Iterable[str] | None) -> bool:
     """白名单为空表示不做账号限制（本地开发）；配置后只允许名单内账号。"""
     allowed = list(allowed or [])

@@ -10,8 +10,12 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from . import api, db, workspace
 from .config import Settings, load_settings
@@ -60,5 +64,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def healthz():
         """存活探针：只说明进程可响应，不代表 Hermes 或技能就绪。"""
         return {"ok": True}
+
+    # 跨域：仅在明确配置 allowed_origins 时开启（前后端分离部署用；同源部署留空更安全）
+    if settings.web.allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.web.allowed_origins),
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    # 网页版：与接口同源，浏览器直接访问 http://<IP>:<port>/ 即可
+    web_dir = Path(settings.web_dir)
+    if not web_dir.is_absolute():
+        web_dir = Path(__file__).resolve().parent.parent / web_dir
+
+    @app.get("/")
+    async def index_web():
+        if not web_dir.is_dir():
+            return {"detail": "网页版静态资源目录不存在，请确认已包含 web/ 目录"}
+        return RedirectResponse(url="/web/")
+
+    if web_dir.is_dir():
+        app.mount("/web", StaticFiles(directory=str(web_dir), html=True), name="web")
+        log.info("网页版入口: /web/ （目录 %s）", web_dir)
+    else:
+        log.warning("未找到网页版静态资源目录 %s，网页版暂不可用", web_dir)
 
     return app

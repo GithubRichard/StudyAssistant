@@ -12,6 +12,7 @@ RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 # 应用代码 + 技能包（技能包需要同步安装到 Hermes 的 profile，见 README）
 COPY app ./app
 COPY hermes ./hermes
+COPY web ./web
 COPY config.example.yaml ./config.example.yaml
 COPY prompt_system.txt ./prompt_system.txt
 
