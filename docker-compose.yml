@@ -1,7 +1,10 @@
-# Linux 部署：应用容器使用宿主网络，只监听 127.0.0.1:8000，
-# 以便直接访问宿主机上的 Hermes API（默认 127.0.0.1:8642）。
-# 公网入口由宿主机上的 HTTPS 反向代理（Caddy/Nginx）提供，容器不再映射端口。
+# Linux 部署：应用容器使用宿主网络，便于直接访问宿主机上的 Hermes API（默认 127.0.0.1:8642）。
 #
+# 监听地址由 APP_HOST 决定（compose 会读取 .env 同目录的变量）：
+#   APP_HOST=127.0.0.1（默认，安全）→ 仅本机可达，公网入口交给 HTTPS 反向代理
+#   APP_HOST=0.0.0.0（调试用）     → 可直接用 http://服务器IP:8000 访问
+#                                      必须同时在云防火墙限制来源 IP，且务必配好 WECHAT_SECRET，
+#                                      否则任何人伪造 code 即可登录并消耗额度
 # 注意：host 网络模式仅适用于 Linux 主机；macOS 本地验证请直接用 Python 运行（见 README）。
 services:
   grader:
@@ -9,8 +12,8 @@ services:
     network_mode: host
     environment:
       CONFIG_PATH: /srv/app/config.yaml
-      APP_HOST: 127.0.0.1
-      APP_PORT: "8000"
+      APP_HOST: "${APP_HOST:-127.0.0.1}"
+      APP_PORT: "${APP_PORT:-8000}"
     env_file:
       - .env
     volumes:

@@ -148,7 +148,11 @@ curl -s localhost:8000/api/runtime   # 需要令牌，也可直接看日志中�
 ```
 
 - 容器用 `network_mode: host` 才能访问宿主机的 Hermes（`127.0.0.1:8642`）；macOS 本地请直接用 Python 运行
-- 应用只监听 `127.0.0.1:8000`，公网由 Caddy/Nginx 反向代理 + 自动 HTTPS
+- 默认只监听 `127.0.0.1:8000`，公网由 Caddy/Nginx 反向代理 + 自动 HTTPS
+- **要用 `http://服务器IP:8000` 直连调试**：在 `.env` 里设 `APP_HOST=0.0.0.0`，同时
+  ① 云防火墙只放行你的出口 IP（不要用 0.0.0.0/0）
+  ② **必须配置 `WECHAT_SECRET`**——否则任何人伪造 `code` 就能登录并消耗额度
+  ③ 仅用于调试，正式使用请换 https + 备案域名（http 下令牌是明文传输）
 - **`.env` 改动后必须 `docker compose up -d --force-recreate`**，仅 `restart` 不会更新环境变量
 - 改技能需两步：更新 `hermes/skills/` 里的文件 + 重新安装到 Hermes profile（或挂载同一目录）
 
