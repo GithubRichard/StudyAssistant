@@ -1,129 +1,192 @@
-# 作业批改服务 · 快速开始
+# Leo 学习任务服务
 
-> 完整技术方案见 [DESIGN.md](./DESIGN.md)
+微信小程序提交学习任务 → 本服务做鉴权、附件与任务管理 → **Hermes Agent 执行学习技能**（作业批改、错题解析、周报、考前训练、复测）→ 结果、归档与交付状态返回小程序。
 
-## 1. 本地试跑（5 分钟）
+> 完整设计见 [DESIGN.md](./DESIGN.md)。技能规则在 `hermes/skills/leo-study-assistant/`。
+> 本服务**不实现 Agent 推理**，也**不会**把模型自述当作已完成归档或已发送邮件。
+
+## 1. 架构
+
+```
+小程序 ──HTTPS──► FastAPI（会话鉴权 / 附件 / 任务队列 / 结果校验 / 受控归档）
+                        │                        │
+                        │ SQLite + 文件            │ 内部 HTTP（仅本机）
+                        ▼                        ▼
+                 data/ 与 workspace/        Hermes Agent（技能 + 工具 + 底层模型）
+```
+
+职责边界：
+
+| 组件 | 负责 | 不负责 |
+|---|---|---|
+| 小程序 | 提交材料、显示真实状态、下载成果 | 不持有 Hermes 地址/密钥 |
+| 本服务 | 身份与归属、配额幂等、队列、结果校验、归档落盘 | 不伪造进度，不代发邮件/代提交 Git |
+| Hermes | 加载技能、多轮推理、产出结构化结果 | 不直接写学习记录 |
+
+## 2. 本地跑起来（不联网）
 
 ```bash
-cd homework-grader-server
-python -m venv .venv && source .venv/bin/activate
+cd StudyAssistant
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 准备配置
 cp config.example.yaml config.yaml
-cp .env.example .env
-# 编辑 .env，填入至少一家的 API Key（通义千问/智谱/DeepSeek/豆包）
+cp .env.example .env          # 本地离线验证可以不填任何密钥
 
-# 烟雾测试（用模拟模型，不花钱）
+# 离线验证：单元测试 + 端到端烟雾测试（全部使用模拟 Hermes）
+python -m unittest discover -s tests -t .
 python test_smoke.py
-
-# 启动服务
-uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-打开 http://localhost:8000/docs 看交互式接口文档。
+真的想连本地 Hermes 时：
 
-## 2. 配置多个大模型（核心操作）
+```bash
+uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
+```
 
-编辑 `config.yaml` 的 `llm` 部分：
+> 使用 `--factory`：导入模块时不加载配置，缺 `config.yaml` 会在启动阶段给出清晰报错。
+
+## 3. 接入 Hermes（关键前置）
+
+本服务调用的是 **Hermes Agent API**，不是大模型 API。默认 `http://127.0.0.1:8642`，且只应服务端内部访问。
+
+1. 开启 Hermes 的 API Server（默认关闭）并设置密钥：
 
 ```yaml
-llm:
-  default_provider: "qwen"                    # 默认用谁，改这里
-  fallback_order: ["qwen", "glm", "deepseek"] # 故障自动切换顺序
-  providers:
-    qwen:
-      api_key: "${QWEN_API_KEY}"              # 去 .env 里填真实 key
-      model: "qwen-vl-max"                    # 换新模型只改这一行
-      enabled: true
-    glm:
-      api_key: "${GLM_API_KEY}"
-      model: "glm-4v"
-      enabled: true                            # 改 false 就停用这家
+# ~/.hermes/config.yaml
+gateway:
+  api_server:
+    enabled: true
+    key: "<API_SERVER_KEY>"
 ```
-
-密钥统一放 `.env`（已加入 `.gitignore`，不会误提交）：
-
-```
-QWEN_API_KEY=sk-xxxx
-GLM_API_KEY=xxxx
-DEEPSEEK_API_KEY=sk-xxxx
-DOUBAO_API_KEY=xxxx
-```
-
-改完配置重启服务即可：`docker compose restart`
-
-用 `GET /api/providers` 确认哪些模型在线（不返回密钥）。
-
-## 3. 部署到云服务器
 
 ```bash
-# 1. 服务器装 Docker
-curl -fsSL https://get.docker.com | sh
-
-# 2. 把代码传上去（scp / git / 宝塔都行），然后：
-cp config.example.yaml config.yaml   # 按第 2 节配好
-cp .env.example .env                 # 填好 API Key
-docker compose up -d --build
-docker compose logs -f               # 看日志确认启动
+# .env（本服务）
+HERMES_BASE_URL=http://127.0.0.1:8642
+HERMES_API_KEY=<API_SERVER_KEY>
 ```
 
-**HTTPS（小程序强制要求）**，用 Caddy 一行搞定，自动申请续期证书：
+2. 安装学习技能到 Hermes 的 profile 技能目录（**放进应用镜像不等于 Hermes 已加载**）：
 
 ```bash
-# 安装 caddy 后执行：
-caddy reverse-proxy --from https://api.你的域名 --to localhost:8000
+mkdir -p ~/.hermes/skills/leo-study-assistant
+cp -r hermes/skills/leo-study-assistant/* ~/.hermes/skills/leo-study-assistant/
+# 已安装技能在新会话生效
 ```
 
-**域名备案**：小程序线上调用要求域名已 ICP 备案（个人可办非经营性备案，免费约 2-4 周）。
-开发调试时可在微信开发者工具勾选"不校验合法域名"先跑通。
+3. 确认技能真的被识别：
 
-## 4. 小程序对接约定
+```bash
+curl -s http://127.0.0.1:8642/v1/skills -H "Authorization: Bearer $HERMES_API_KEY"
+# 然后在小程序「我的」页或 GET /api/runtime 看 hermes.state 是否为 ready
+```
 
-- 所有接口前缀 `/api`，图片用 `multipart/form-data` 上传
-- 批改是异步的：`POST /api/tasks` 返回 `task_id` → 前端轮询 `GET /api/tasks/{task_id}`
-- 用户标识用 `openid`（`POST /api/login` 用微信 `code` 换）
+| `hermes.state` | 含义 | 处理 |
+|---|---|---|
+| `not_configured` | 未配地址/密钥 | 填 `.env` |
+| `unreachable` | 连不上 | 检查 Hermes 是否在跑、地址是否正确 |
+| `skill_missing` | 连上但技能未安装 | 按上面第 2 步安装技能 |
+| `ready` | 可用 | — |
 
-## 5. 常见问题
+## 4. 配置要点（config.yaml）
 
-| 问题 | 排查 |
+| 配置 | 说明 |
 |---|---|
-| 启动报"没有可用的模型 provider" | `.env` 的 key 没填，或对应 `enabled: false` |
-| 任务一直 pending | 看日志，大概率 key 无效/余额不足，已自动走 fallback |
-| 费用异常 | 查 `daily_cost` 表；`GET /api/providers` 确认单价配置 |
-| 想换更便宜的模型 | `config.yaml` 改 `model` + `price_*`，重启 |
+| `engine.mode` | `hermes`（默认）或 `legacy`（旧的多模型直连，结果会标注未执行技能流程） |
+| `hermes.agent_model` | Hermes 的 Agent 别名（默认 `hermes-agent`），**不是**底层模型 ID |
+| `hermes.verify_skill` | 是否用 `/v1/skills` 校验技能已安装 |
+| `auth.allowed_openids` | 允许使用的微信 openid 白名单；为空=不限制（仅开发） |
+| `workspace.dir` | 授权学习工作区（学习记录与归档） |
+| `delivery.{pdf,email,git}_enabled` | 外部交付开关，默认全关；未启用时结果中标注未配置 |
+| `limits.*` | 图片数量/大小、轮次、单任务时长、执行器开关 |
 
-## 6. 小程序前端
+## 5. 接口一览
 
-`miniprogram/` 目录是配套的微信小程序前端（原生开发，5 个页面：批改/结果/历史/错题本/我的）：
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/login` | `code` → 会话令牌（已配微信时失败即拒绝，不再降级开发身份） |
+| POST | `/api/logout` | 失效当前会话 |
+| POST | `/api/assets` | 上传单张图片 → `asset_id` |
+| POST | `/api/study/tasks` | 创建学习任务，可带 `Idempotency-Key` |
+| POST | `/api/tasks/{id}/followups` | 追加补充材料，创建新执行轮次 |
+| POST | `/api/tasks` | 旧版单图入口，复用同一鉴权与任务流程 |
+| GET | `/api/tasks/{id}` | 任务详情：状态、轮次、五态结果、交付状态、成果列表 |
+| GET | `/api/tasks` | 历史（分页） |
+| GET | `/api/tasks/{id}/artifacts/{aid}` | 下载通过校验的成果文件 |
+| GET | `/api/quota` | 剩余可用次数 |
+| GET | `/api/runtime` | 脱敏运行状态（引擎/技能就绪/交付开关/限额） |
+| GET | `/api/providers` | 仅反映 legacy 直连配置，**不代表 Hermes 就绪** |
+| POST/GET | `/api/mistakes` | 错题本（人工收藏索引） |
+| GET | `/healthz` | 存活探针（不代表技能可用） |
 
-1. 微信开发者工具 → 导入项目 → 选择 `miniprogram` 目录，填入你的 AppID
-2. 改 `miniprogram/utils/config.js` 里的 `BASE_URL` 为你的服务器地址
-3. 详情 → 本地设置 → 勾选「不校验合法域名」即可联调；上线前完成域名备案并在小程序后台配置服务器域名
+除 `/api/login`、`/healthz` 外，全部需要 `Authorization: Bearer <token>`。
 
-详细步骤见 `miniprogram/README.md`。
+任务状态：`pending`（排队）→ `grading`（执行中）→ `done` / `waiting_input`（待补充材料）/ `failed` / `interrupted`（结果未确认）。
 
-## 7. 目录结构
+## 6. 小程序
+
+1. 微信开发者工具导入 `miniprogram/`，填入 AppID
+2. 改 `miniprogram/utils/config.js` 的 `BASE_URL`（**只填本服务地址，不要填 Hermes**）
+3. 调试时勾选「不校验合法域名」；上线前完成备案与域名配置（`request` + `uploadFile`）
+
+页面：学习（任务类型/图片/文字/范围）、结果（状态、五态、核查、补充材料、成果）、历史、错题本、我的（运行状态）。
+
+## 7. 部署（Linux，容器 host 网络）
+
+```bash
+git clone <本仓库> /opt/study-assistant && cd /opt/study-assistant
+cp config.example.yaml config.yaml
+cp .env.example .env        # 填 HERMES_API_KEY、WECHAT_APPID/SECRET
+mkdir -p data workspace
+docker compose up -d --build
+docker compose logs -f
+curl -s localhost:8000/api/runtime   # 需要令牌，也可直接看日志中的就绪提示
+```
+
+- 容器用 `network_mode: host` 才能访问宿主机的 Hermes（`127.0.0.1:8642`）；macOS 本地请直接用 Python 运行
+- 应用只监听 `127.0.0.1:8000`，公网由 Caddy/Nginx 反向代理 + 自动 HTTPS
+- **`.env` 改动后必须 `docker compose up -d --force-recreate`**，仅 `restart` 不会更新环境变量
+- 改技能需两步：更新 `hermes/skills/` 里的文件 + 重新安装到 Hermes profile（或挂载同一目录）
+
+## 8. 常见问题
+
+| 现象 | 排查 |
+|---|---|
+| 登录 401 | 已配微信时 code 无效即拒绝；确认 `WECHAT_SECRET` 正确 |
+| `/api/runtime` 显示 `skill_missing` | 技能没装到 Hermes profile，或 Hermes 未重启/未开新会话 |
+| 任务一直 `pending` | 执行器是否启用（`limits.worker_enabled`）、容器是否在运行 |
+| 任务 `interrupted` | 执行超时或服务重启；**不会自动重试**，避免重复归档，可补充材料后重发 |
+| 结果 `failed` 且提示协议校验失败 | 模型输出不含合法结果 JSON 或违反五态/错因规则，查看 `error` |
+| 归档没写入 | 检查 `archive.suggested_path` 是否在允许目录、是否越界 |
+| 改了 `.env` 没生效 | 必须 `--force-recreate` 重建容器 |
+
+## 9. 目录结构
 
 ```
-homework-grader-server/
-├── DESIGN.md              技术方案与设计文档
-├── README.md              本文件
-├── config.example.yaml    配置模板（多模型/配额/预算/prompt）
-├── .env.example           密钥模板
-├── docker-compose.yml / Dockerfile
-├── requirements.txt
-├── test_smoke.py          烟雾测试
-├── miniprogram/             微信小程序前端（导入开发者工具即用）
-│   ├── utils/config.js      改 BASE_URL 为你的服务器地址
-│   └── pages/               index批改 / result结果 / history历史 / mistakes错题本 / mine我的
-└── app/
-    ├── main.py            启动入口
-    ├── api.py             REST 接口 + 后台批改任务
-    ├── config.py          配置加载与校验
-    ├── db.py              SQLite 数据层
-    ├── providers.py       多大模型统一封装（核心）
-    ├── grading.py         批改 Agent（prompt/校验/fallback）
-    ├── wechat.py          微信登录/内容安全/订阅消息
-    └── limits.py          （配额与熔断逻辑在 api.py + db.py 内）
+StudyAssistant/
+├── app/
+│   ├── main.py          启动、迁移、工作区初始化、执行器生命周期
+│   ├── config.py        配置模型（engine/hermes/auth/limits/delivery）
+│   ├── schemas.py       结果协议 v2、请求模型、旧结果兼容
+│   ├── auth.py          会话令牌、白名单、归属校验
+│   ├── hermes.py        Hermes 适配：就绪检查、执行、错误分类
+│   ├── tasks.py         幂等创建、数据库认领执行、轮次与视图
+│   ├── workspace.py     工作区、附件、受控归档、成果登记
+│   ├── migrations.py    版本化增量迁移（旧库先备份）
+│   ├── db.py            SQLite 数据层
+│   ├── providers.py     legacy：OpenAI 兼容协议封装
+│   └── grading.py       legacy：单轮批改与 JSON 校验
+├── hermes/skills/leo-study-assistant/   技能副本（SKILL.md + references/）
+├── miniprogram/                          微信小程序（5 页）
+├── tests/                                离线测试
+├── test_smoke.py                         端到端烟雾测试（模拟 Hermes）
+├── config.example.yaml / .env.example
+└── Dockerfile / docker-compose.yml
 ```
+
+## 10. 尚未实现（如需启用请另行授权）
+
+- 与真实 Hermes 的联调（版本、工具权限、模型工具调用能力）
+- 二次核查模型映射（技能指定的 IDE 模型名不是 API 型号）
+- PDF 生成、云端邮件、学习记录 Git 同步
+- 多家庭隔离（当前定位为家庭自用）

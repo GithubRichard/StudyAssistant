@@ -1,7 +1,12 @@
-.row-card { display: flex; justify-content: space-between; align-items: center; }
-.t { font-size: 32rpx; font-weight: bold; display: block; }
-.time { color: #999; font-size: 24rpx; display: block; margin-top: 8rpx; }
-.st { font-size: 26rpx; padding: 8rpx 20rpx; border-radius: 20rpx; }
-.st-pending, .st-grading { background: #fff7e6; color: #d48806; }
-.st-done { background: #e6f9ee; color: #07c160; }
-.st-failed { background: #fdecec; color: #fa5151; }
+.row-card { display: flex; justify-content: space-between; align-items: flex-start; }
+.row-main { flex: 1; padding-right: 16rpx; }
+.t { font-size: 30rpx; font-weight: 600; display: block; color: #20352F; }
+.time { color: #8A968F; font-size: 24rpx; display: block; margin-top: 8rpx; }
+.summary {
+  display: block;
+  color: #4A5B55;
+  font-size: 25rpx;
+  margin-top: 10rpx;
+  line-height: 1.6;
+}
+.miss-note { display: block; color: #916400; font-size: 24rpx; margin-top: 8rpx; }

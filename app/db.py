@@ -1,62 +1,48 @@
-"""SQLite 数据层（零配置）。日活上万后再考虑换 Postgres。"""
+"""SQLite 数据层（零配置）。
+
+约定：
+- 所有写操作只通过本模块提供的函数，字段名走白名单，避免动态 SQL 注入。
+- 配额检查与预留、任务创建、幂等记录在同一事务内完成。
+- 执行任务由数据库认领（claim + 租约），不依赖进程内 BackgroundTasks 的存活。
+"""
 from __future__ import annotations
 
+import logging
 import time
+import uuid
 from datetime import date
 from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional
 
 import aiosqlite
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users(
-  openid TEXT PRIMARY KEY,
-  bonus_quota INTEGER NOT NULL DEFAULT 0,
-  created_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS quota_usage(
-  openid TEXT NOT NULL,
-  day TEXT NOT NULL,
-  used INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY(openid, day)
-);
-CREATE TABLE IF NOT EXISTS tasks(
-  id TEXT PRIMARY KEY,
-  openid TEXT NOT NULL,
-  subject TEXT NOT NULL,
-  grade_level TEXT NOT NULL,
-  image_path TEXT NOT NULL,
-  status TEXT NOT NULL,              -- pending/grading/done/failed
-  result_json TEXT,
-  provider TEXT,
-  model TEXT,
-  input_tokens INTEGER DEFAULT 0,
-  output_tokens INTEGER DEFAULT 0,
-  cost_cny REAL DEFAULT 0,
-  error TEXT,
-  created_at REAL NOT NULL,
-  updated_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS mistakes(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  openid TEXT NOT NULL,
-  task_id TEXT NOT NULL,
-  question_no TEXT NOT NULL,
-  knowledge_point TEXT NOT NULL DEFAULT '',
-  note TEXT NOT NULL DEFAULT '',
-  created_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS daily_cost(
-  day TEXT PRIMARY KEY,
-  cost REAL NOT NULL DEFAULT 0
-);
-"""
+from . import migrations
+
+log = logging.getLogger(__name__)
+
+# 兼容旧引用：历史代码可能 `from .db import SCHEMA`
+SCHEMA = migrations.V1_DDL
+
+TASK_STATUSES = ("pending", "grading", "waiting_input", "interrupted", "done", "failed")
+RUN_STATUSES = ("queued", "running", "done", "failed", "interrupted", "waiting_input")
+
+_TASK_FIELDS = {
+    "subject", "grade_level", "task_type", "input_text", "status", "result_json",
+    "provider", "model", "input_tokens", "output_tokens", "cost_cny", "error",
+    "run_count", "claim_owner", "claim_expires_at", "archive_path", "updated_at",
+}
+_RUN_FIELDS = {
+    "status", "started_at", "finished_at", "error", "result_json",
+    "hermes_session_id", "input_text",
+}
 
 
-async def init_db(path: str) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    async with aiosqlite.connect(path) as db:
-        await db.executescript(SCHEMA)
-        await db.commit()
+async def init_db(path: str) -> dict:
+    """建库并执行迁移，返回迁移结果（含备份路径，便于启动日志如实记录）。"""
+    result = await migrations.run_migrations(path)
+    if result.get("applied"):
+        log.info("数据库迁移完成: %s 备份=%s", result["applied"], result.get("backup"))
+    return result
 
 
 def _today() -> str:
@@ -96,41 +82,306 @@ async def quota_remaining(db_path: str, openid: str, daily_free: int) -> int:
 
 
 async def consume_quota(db_path: str, openid: str) -> bool:
-    """扣 1 次，优先扣赠送次数。返回是否成功。"""
-    async with aiosqlite.connect(db_path) as db:
-        async with db.execute("SELECT bonus_quota FROM users WHERE openid=?", (openid,)) as cur:
-            row = await cur.fetchone()
-        if not row:
-            return False
-        if row[0] > 0:
+    """兼容旧调用：直接扣 1 次。新流程请用 reserve_quota。"""
+    async with aiosqlite.connect(db_path, isolation_level=None) as db:
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            ok = await _consume_locked(db, openid)
+            await db.execute("COMMIT")
+            return ok
+        except Exception:  # noqa: BLE001
+            await db.execute("ROLLBACK")
+            raise
+
+
+async def _consume_locked(db: aiosqlite.Connection, openid: str) -> Optional[str]:
+    """在已开启的事务中扣 1 次。
+
+    口径：`quota_usage.used` 统计当日实际发起的任务数（含赠送额度），
+    剩余次数 = 赠送额度 + 每日免费 - 当日已用，因此赠送额度不会被重复扣两次。
+    用户不存在返回 None。
+    """
+    async with db.execute("SELECT bonus_quota FROM users WHERE openid=?", (openid,)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return None
+    await db.execute(
+        """INSERT INTO quota_usage(openid, day, used) VALUES(?,?,1)
+           ON CONFLICT(openid, day) DO UPDATE SET used=used+1""",
+        (openid, _today()),
+    )
+    return "daily"
+
+
+async def reserve_quota(db_path: str, openid: str, task_id: str, daily_free: int,
+                        max_per_day: int) -> Dict[str, Any]:
+    """创建任务时预留配额，与任务创建在同一事务中调用。"""
+    async with aiosqlite.connect(db_path, isolation_level=None) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            if not await _user_exists(db, openid):
+                await db.execute("ROLLBACK")
+                return {"ok": False, "reason": "用户不存在，请重新登录"}
+            async with db.execute(
+                "SELECT used FROM quota_usage WHERE openid=? AND day=?", (openid, _today())
+            ) as cur:
+                row = await cur.fetchone()
+            used_today = row[0] if row else 0
+            if max_per_day and used_today >= max_per_day:
+                await db.execute("ROLLBACK")
+                return {"ok": False, "reason": f"今日已达上限 {max_per_day} 次"}
+            remaining = await _remaining_locked(db, openid, daily_free)
+            if remaining <= 0:
+                await db.execute("ROLLBACK")
+                return {"ok": False, "reason": "今日次数已用完，请明天再试"}
+            source = await _consume_locked(db, openid)
+            now = time.time()
             await db.execute(
-                "UPDATE users SET bonus_quota=bonus_quota-1 WHERE openid=?", (openid,)
+                """INSERT INTO quota_reservations(id, openid, task_id, source, state, created_at, updated_at)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (uuid.uuid4().hex[:16], openid, task_id, source, "reserved", now, now),
             )
-        else:
+            await db.execute("COMMIT")
+            return {"ok": True, "source": source}
+        except Exception as e:  # noqa: BLE001
+            await db.execute("ROLLBACK")
+            raise e
+
+
+async def settle_reservation(db_path: str, task_id: str) -> None:
+    """任务执行完成：预留转为已结算，不再重复扣次。"""
+    await _close_reservation(db_path, task_id, "settled", refund=False)
+
+
+async def release_reservation(db_path: str, task_id: str, refund: bool = False) -> None:
+    """确定未执行时才退款；执行结果未知时不要调用（避免与真实扣费不一致）。"""
+    await _close_reservation(db_path, task_id, "released", refund=refund)
+
+
+async def _close_reservation(db_path: str, task_id: str, state: str, refund: bool) -> None:
+    async with aiosqlite.connect(db_path, isolation_level=None) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute(
+                "SELECT id, openid, source, state FROM quota_reservations WHERE task_id=? ORDER BY created_at DESC",
+                (task_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row or row[3] != "reserved":
+                await db.execute("COMMIT")
+                return
+            if refund:
+                await db.execute(
+                    """UPDATE quota_usage SET used=MAX(0, used-1)
+                       WHERE openid=? AND day=?""", (row[1], _today()))
             await db.execute(
-                """INSERT INTO quota_usage(openid, day, used) VALUES(?,?,1)
-                   ON CONFLICT(openid, day) DO UPDATE SET used=used+1""",
-                (openid, _today()),
+                "UPDATE quota_reservations SET state=?, updated_at=? WHERE id=?",
+                (state, time.time(), row[0]),
             )
-        await db.commit()
-        return True
+            await db.execute("COMMIT")
+        except Exception:  # noqa: BLE001
+            await db.execute("ROLLBACK")
+            raise
 
 
-# ---------- 任务 ----------
+async def _user_exists(db: aiosqlite.Connection, openid: str) -> bool:
+    async with db.execute("SELECT 1 FROM users WHERE openid=?", (openid,)) as cur:
+        return await cur.fetchone() is not None
 
-async def create_task(db_path: str, task: dict) -> None:
+
+async def _remaining_locked(db: aiosqlite.Connection, openid: str, daily_free: int) -> int:
+    async with db.execute("SELECT bonus_quota FROM users WHERE openid=?", (openid,)) as cur:
+        row = await cur.fetchone()
+    bonus = row[0] if row else 0
+    async with db.execute(
+        "SELECT used FROM quota_usage WHERE openid=? AND day=?", (openid, _today())
+    ) as cur:
+        row2 = await cur.fetchone()
+    used = row2[0] if row2 else 0
+    return max(0, bonus + daily_free - used)
+
+
+# ---------- 会话 ----------
+
+async def create_session(db_path: str, session: Dict[str, Any]) -> None:
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
-            """INSERT INTO tasks(id, openid, subject, grade_level, image_path, status,
-                                 created_at, updated_at)
-               VALUES(?,?,?,?,?,?,?,?)""",
-            (task["id"], task["openid"], task["subject"], task["grade_level"],
-             task["image_path"], "pending", task["created_at"], task["created_at"]),
+            """INSERT INTO sessions(session_id, openid, token_hash, created_at, expires_at, last_seen_at)
+               VALUES(?,?,?,?,?,?)""",
+            (session["session_id"], session["openid"], session["token_hash"],
+             session["created_at"], session["expires_at"], session["last_seen_at"]),
         )
         await db.commit()
 
 
-async def get_task(db_path: str, task_id: str) -> dict | None:
+async def get_session_by_token(db_path: str, token_hash: str) -> Optional[dict]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM sessions WHERE token_hash=?", (token_hash,)) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def touch_session(db_path: str, session_id: str) -> None:
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("UPDATE sessions SET last_seen_at=? WHERE session_id=?",
+                         (time.time(), session_id))
+        await db.commit()
+
+
+async def delete_session(db_path: str, session_id: str) -> None:
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
+        await db.commit()
+
+
+async def purge_expired_sessions(db_path: str) -> int:
+    async with aiosqlite.connect(db_path) as db:
+        cur = await db.execute("DELETE FROM sessions WHERE expires_at<=?", (time.time(),))
+        await db.commit()
+        return cur.rowcount or 0
+
+
+# ---------- 附件 ----------
+
+async def create_asset(db_path: str, asset: Dict[str, Any]) -> None:
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """INSERT INTO assets(id, openid, sha256, mime, bytes, width, height, path, created_at)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            (asset["id"], asset["openid"], asset["sha256"], asset["mime"], asset["bytes"],
+             asset.get("width", 0), asset.get("height", 0), asset["path"], asset["created_at"]),
+        )
+        await db.commit()
+
+
+async def get_asset(db_path: str, asset_id: str) -> Optional[dict]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM assets WHERE id=?", (asset_id,)) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def list_assets(db_path: str, asset_ids: Iterable[str]) -> List[dict]:
+    ids = list(dict.fromkeys(asset_ids))
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            f"SELECT * FROM assets WHERE id IN ({placeholders})", ids
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def link_task_assets(db_path: str, task_id: str, run_id: str,
+                           asset_ids: Iterable[str]) -> None:
+    now = time.time()
+    async with aiosqlite.connect(db_path) as db:
+        for position, asset_id in enumerate(asset_ids):
+            await db.execute(
+                """INSERT OR IGNORE INTO task_assets(task_id, run_id, asset_id, position, created_at)
+                   VALUES(?,?,?,?,?)""",
+                (task_id, run_id, asset_id, position, now),
+            )
+        await db.commit()
+
+
+async def list_task_assets(db_path: str, task_id: str, run_id: str = "") -> List[dict]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        if run_id:
+            sql = """SELECT a.* FROM task_assets t JOIN assets a ON a.id=t.asset_id
+                     WHERE t.task_id=? AND t.run_id=? ORDER BY t.position"""
+            args = (task_id, run_id)
+        else:
+            sql = """SELECT a.* FROM task_assets t JOIN assets a ON a.id=t.asset_id
+                     WHERE t.task_id=? ORDER BY t.position"""
+            args = (task_id,)
+        async with db.execute(sql, args) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+# ---------- 任务 ----------
+
+async def create_task_atomic(db_path: str, task: Dict[str, Any], *,
+                             daily_free: int = 0, max_per_day: int = 0,
+                             idempotency: Optional[Dict[str, Any]] = None,
+                             reserve: bool = True) -> Dict[str, Any]:
+    """同一事务内完成：幂等查重 → 配额预留 → 任务写入 → 幂等记录。
+
+    返回 {ok, task_id, duplicate, reason}；duplicate=True 表示命中幂等键。
+    """
+    async with aiosqlite.connect(db_path, isolation_level=None) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            if idempotency:
+                async with db.execute(
+                    "SELECT task_id, request_hash FROM idempotency WHERE key=?",
+                    (idempotency["key"],),
+                ) as cur:
+                    row = await cur.fetchone()
+                if row:
+                    await db.execute("COMMIT")
+                    if row[1] != idempotency["request_hash"]:
+                        return {"ok": False, "duplicate": False, "conflict": True,
+                                "reason": "同一幂等键对应不同请求内容"}
+                    return {"ok": True, "duplicate": True, "task_id": row[0]}
+
+            source = None
+            if reserve:
+                if not await _user_exists(db, task["openid"]):
+                    await db.execute("ROLLBACK")
+                    return {"ok": False, "reason": "用户不存在，请重新登录"}
+                if max_per_day:
+                    async with db.execute(
+                        "SELECT used FROM quota_usage WHERE openid=? AND day=?",
+                        (task["openid"], _today()),
+                    ) as cur:
+                        used_row = await cur.fetchone()
+                    if used_row and used_row[0] >= max_per_day:
+                        await db.execute("ROLLBACK")
+                        return {"ok": False, "reason": f"今日已达上限 {max_per_day} 次"}
+                remaining = await _remaining_locked(db, task["openid"], daily_free)
+                if remaining <= 0:
+                    await db.execute("ROLLBACK")
+                    return {"ok": False, "reason": "今日次数已用完，请明天再试"}
+                source = await _consume_locked(db, task["openid"])
+
+            await db.execute(
+                """INSERT INTO tasks(id, openid, subject, grade_level, image_path, status,
+                                     task_type, input_text, idempotency_key, created_at, updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (task["id"], task["openid"], task["subject"], task["grade_level"],
+                 task.get("image_path", ""), task.get("status", "pending"),
+                 task.get("task_type", "grading"), task.get("input_text", ""),
+                 (idempotency or {}).get("key", ""), task["created_at"], task["created_at"]),
+            )
+            if reserve:
+                now = time.time()
+                await db.execute(
+                    """INSERT INTO quota_reservations(id, openid, task_id, source, state, created_at, updated_at)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (uuid.uuid4().hex[:16], task["openid"], task["id"], source or "daily",
+                     "reserved", now, now),
+                )
+            if idempotency:
+                await db.execute(
+                    """INSERT INTO idempotency(key, openid, endpoint, request_hash, task_id, created_at)
+                       VALUES(?,?,?,?,?,?)""",
+                    (idempotency["key"], idempotency["openid"], idempotency["endpoint"],
+                     idempotency["request_hash"], task["id"], time.time()),
+                )
+            await db.execute("COMMIT")
+            return {"ok": True, "duplicate": False, "task_id": task["id"]}
+        except Exception:  # noqa: BLE001
+            await db.execute("ROLLBACK")
+            raise
+
+
+async def get_task(db_path: str, task_id: str) -> Optional[dict]:
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)) as cur:
@@ -139,6 +390,9 @@ async def get_task(db_path: str, task_id: str) -> dict | None:
 
 
 async def update_task(db_path: str, task_id: str, **fields) -> None:
+    unknown = set(fields) - _TASK_FIELDS
+    if unknown:
+        raise ValueError(f"不允许更新的字段: {sorted(unknown)}")
     fields["updated_at"] = time.time()
     keys = ", ".join(f"{k}=?" for k in fields)
     async with aiosqlite.connect(db_path) as db:
@@ -146,14 +400,172 @@ async def update_task(db_path: str, task_id: str, **fields) -> None:
         await db.commit()
 
 
-async def list_tasks(db_path: str, openid: str, limit: int = 20) -> list[dict]:
+async def list_tasks(db_path: str, openid: str, limit: int = 20,
+                     offset: int = 0) -> List[dict]:
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT * FROM tasks WHERE openid=? ORDER BY created_at DESC LIMIT ?",
-            (openid, limit),
+            """SELECT * FROM tasks WHERE openid=?
+               ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            (openid, limit, max(0, offset)),
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
+
+
+async def claim_next_task(db_path: str, owner: str, lease_seconds: int = 300) -> Optional[dict]:
+    """认领一个待执行任务；只认领 pending，避免重复派发有副作用的调用。"""
+    now = time.time()
+    async with aiosqlite.connect(db_path, isolation_level=None) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute(
+                """SELECT * FROM tasks WHERE status='pending'
+                   ORDER BY created_at LIMIT 1"""
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                await db.execute("COMMIT")
+                return None
+            task = dict(row)
+            await db.execute(
+                """UPDATE tasks SET status='grading', claim_owner=?, claim_expires_at=?, updated_at=?
+                   WHERE id=? AND status='pending'""",
+                (owner, now + lease_seconds, now, task["id"]),
+            )
+            await db.execute("COMMIT")
+            return task
+        except Exception:  # noqa: BLE001
+            await db.execute("ROLLBACK")
+            raise
+
+
+async def recover_interrupted(db_path: str) -> List[str]:
+    """启动恢复：已派发但未结束的任务标记为 interrupted，不自动重放。
+
+    返回被标记的任务号，调用方需在日志或状态中原样上报，避免谎称仍在执行。
+    """
+    async with aiosqlite.connect(db_path, isolation_level=None) as db:
+        now = time.time()
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute(
+                "SELECT id FROM tasks WHERE status='grading'"
+            ) as cur:
+                ids = [r[0] for r in await cur.fetchall()]
+            if ids:
+                await db.execute(
+                    """UPDATE tasks SET status='interrupted', claim_owner='', claim_expires_at=0,
+                       error='服务重启，执行结果未确认，需要重新发起或补充材料', updated_at=?
+                       WHERE status='grading'""",
+                    (now,),
+                )
+                await db.execute(
+                    """UPDATE task_runs SET status='interrupted', finished_at=?,
+                       error='服务重启，执行结果未确认' WHERE status IN ('queued','running')""",
+                    (now,),
+                )
+            await db.execute("COMMIT")
+            return ids
+        except Exception:  # noqa: BLE001
+            await db.execute("ROLLBACK")
+            raise
+
+
+# ---------- 执行轮次 ----------
+
+async def create_run(db_path: str, run: Dict[str, Any]) -> None:
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """INSERT INTO task_runs(id, task_id, run_no, kind, input_text, status,
+                                     hermes_session_id, created_at)
+               VALUES(?,?,?,?,?,?,?,?)""",
+            (run["id"], run["task_id"], run["run_no"], run["kind"],
+             run.get("input_text", ""), run.get("status", "queued"),
+             run.get("hermes_session_id", ""), run["created_at"]),
+        )
+        await db.commit()
+
+
+async def update_run(db_path: str, run_id: str, **fields) -> None:
+    unknown = set(fields) - _RUN_FIELDS
+    if unknown:
+        raise ValueError(f"不允许更新的执行轮次字段: {sorted(unknown)}")
+    keys = ", ".join(f"{k}=?" for k in fields)
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(f"UPDATE task_runs SET {keys} WHERE id=?", (*fields.values(), run_id))
+        await db.commit()
+
+
+async def get_run(db_path: str, run_id: str) -> Optional[dict]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM task_runs WHERE id=?", (run_id,)) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def list_runs(db_path: str, task_id: str) -> List[dict]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM task_runs WHERE task_id=? ORDER BY run_no", (task_id,)
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def has_unconfirmed_run(db_path: str, task_id: str) -> bool:
+    """是否存在执行结果未确认的轮次：存在时不允许同任务继续派发。"""
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT 1 FROM task_runs
+               WHERE task_id=? AND status IN ('queued','running','interrupted') LIMIT 1""",
+            (task_id,),
+        ) as cur:
+            return await cur.fetchone() is not None
+
+
+# ---------- 幂等 ----------
+
+async def get_idempotency(db_path: str, key: str) -> Optional[dict]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM idempotency WHERE key=?", (key,)) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+# ---------- 成果文件 ----------
+
+async def add_artifact(db_path: str, artifact: Dict[str, Any]) -> None:
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """INSERT INTO artifacts(id, task_id, run_id, kind, path, bytes, sha256, created_at)
+               VALUES(?,?,?,?,?,?,?,?)""",
+            (artifact["id"], artifact["task_id"], artifact.get("run_id", ""),
+             artifact["kind"], artifact["path"], artifact.get("bytes", 0),
+             artifact.get("sha256", ""), artifact["created_at"]),
+        )
+        await db.commit()
+
+
+async def list_artifacts(db_path: str, task_id: str) -> List[dict]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM artifacts WHERE task_id=? ORDER BY created_at", (task_id,)
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_artifact(db_path: str, task_id: str, artifact_id: str) -> Optional[dict]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM artifacts WHERE task_id=? AND id=?", (task_id, artifact_id)
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
 
 
 # ---------- 费用 ----------
@@ -189,11 +601,27 @@ async def save_mistake(db_path: str, openid: str, task_id: str,
         return cur.lastrowid
 
 
-async def list_mistakes(db_path: str, openid: str, limit: int = 100) -> list[dict]:
+async def list_mistakes(db_path: str, openid: str, limit: int = 100,
+                        offset: int = 0) -> List[dict]:
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT * FROM mistakes WHERE openid=? ORDER BY created_at DESC LIMIT ?",
-            (openid, limit),
+            """SELECT * FROM mistakes WHERE openid=?
+               ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            (openid, limit, max(0, offset)),
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_mistake(db_path: str, openid: str, mistake_id: int) -> Optional[dict]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM mistakes WHERE id=? AND openid=?", (mistake_id, openid)
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+def db_path_for(data_dir: str) -> str:
+    return str(Path(data_dir) / "app.db")

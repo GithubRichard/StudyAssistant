@@ -1,28 +1,35 @@
-"""REST 接口 + 后台批改任务。给小程序前端用的全部 API 都在这里。"""
+"""REST 接口：学习任务、附件、结果与运行状态。
+
+设计要点：
+- 所有业务接口以会话令牌鉴权（Depends(require_session)），并要求资源归属一致；
+  不再相信客户端自称的 openid。
+- 创建任务走持久化队列（幂等 + 配额预留），由执行器认领执行。
+- 结果统一通过 tasks.build_task_view 输出，新旧结果都可读。
+"""
 from __future__ import annotations
 
-import asyncio
-import io
+import json
 import logging
-import time
-import uuid
 from pathlib import Path
+from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
-from PIL import Image, UnidentifiedImageError
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 
-from . import db, grading, wechat
+from . import auth, db, tasks, wechat, workspace
 from .config import Settings, provider_chain
-from .providers import ProviderError
+from .hermes import HermesClient
+from .schemas import FollowupCreate, StudyTaskCreate
+from .tasks import TaskError
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 router = APIRouter(prefix="/api")
 
-# 由 main.create_app() 注入；测试时可直接替换
-settings: Settings | None = None
-_sem: asyncio.Semaphore | None = None
+# 由 main.create_app() 注入
+settings: Optional[Settings] = None
+hermes_client: Optional[HermesClient] = None
 
 
 def get_settings() -> Settings:
@@ -30,157 +37,236 @@ def get_settings() -> Settings:
     return settings
 
 
-def get_sem() -> asyncio.Semaphore:
-    global _sem
-    if _sem is None:
-        _sem = asyncio.Semaphore(get_settings().grade_concurrency)
-    return _sem
+def get_hermes() -> Optional[HermesClient]:
+    return hermes_client
 
 
-def process_image(raw: bytes) -> tuple[bytes, str]:
-    """校验并压缩图片：最长边压到 max_image_px，转 JPEG。省 token = 省钱。"""
+async def require_session(
+    authorization: Optional[str] = Header(default=None),
+) -> dict:
+    """统一鉴权依赖：返回会话信息（含 openid）。"""
     s = get_settings()
-    if len(raw) > s.max_image_mb * 1024 * 1024:
-        raise HTTPException(413, f"图片超过 {s.max_image_mb}MB 上限")
+    token = auth.extract_bearer(authorization)
     try:
-        img = Image.open(io.BytesIO(raw))
-        img.load()
-    except (UnidentifiedImageError, OSError):
-        raise HTTPException(400, "不是有效的图片文件")
-    if img.mode in ("RGBA", "P", "LA"):
-        img = img.convert("RGB")
-    w, h = img.size
-    scale = min(1.0, s.max_image_px / max(w, h))
-    if scale < 1:
-        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=85)
-    return buf.getvalue(), "image/jpeg"
+        return await auth.authenticate(s.db_path, token)
+    except auth.AuthError as e:
+        raise HTTPException(e.status_code, e.message) from e
+
+
+Session = Depends(require_session)
 
 
 # ---------- 登录 ----------
 
 @router.post("/login")
 async def login(code: str = Form(...)):
-    """小程序 wx.login() 拿到 code 后调这里换 openid。"""
+    """小程序 wx.login() 的 code 换会话令牌。
+
+    已配置微信 appid/secret 时登录失败必须拒绝，不得降级为开发身份。
+    """
     s = get_settings()
-    openid = await wechat.code2session(code, s.wechat)
+    configured = bool(s.wechat.appid and s.wechat.secret)
+    openid, err = await wechat.code2session_result(code, s.wechat)
+
     if not openid:
-        # 开发模式：没配微信 appid 时用 code 派生一个假 openid，方便联调
+        if configured:
+            log.warning("微信登录失败: %s", err)
+            raise HTTPException(401, f"微信登录失败：{err or '未知错误'}")
         openid = f"dev_{code[:16]}"
-        log.info("微信未配置，走开发模式 openid=%s", openid)
+        log.warning("未配置微信，使用开发身份 openid=%s", openid)
+
+    try:
+        session = await auth.issue_session(
+            s.db_path, openid, s.auth.allowed_openids,
+            ttl_seconds=s.auth.session_ttl_days * 24 * 3600)
+    except auth.AuthError as e:
+        raise HTTPException(e.status_code, e.message) from e
+
     await db.get_or_create_user(s.db_path, openid, s.quota.new_user_bonus)
-    return {"openid": openid}
+    return {
+        "token": session["token"],
+        "openid": openid,
+        "expires_at": session["expires_at"],
+        "dev_identity": not configured,
+    }
 
 
-# ---------- 批改任务 ----------
-
-@router.post("/tasks", status_code=201)
-async def create_task(
-    background: BackgroundTasks,
-    openid: str = Form(...),
-    subject: str = Form("数学"),
-    grade_level: str = Form("七年级"),
-    file: UploadFile = File(...),
-):
+@router.post("/logout")
+async def logout(ctx: dict = Session):
     s = get_settings()
-    img_bytes, mime = process_image(await file.read())
+    await db.delete_session(s.db_path, ctx["session_id"])
+    return {"ok": True}
 
-    # 配额检查
-    if await db.quota_remaining(s.db_path, openid, s.quota.daily_free) <= 0:
-        raise HTTPException(429, "今日批改次数已用完，明天再来")
-    # 费用熔断
-    if await db.get_daily_cost(s.db_path) >= s.budget.daily_max_cny:
-        raise HTTPException(503, "今日服务额度已用完，请明天再试")
 
-    # 微信内容安全（默认关闭）
-    if not await wechat.img_sec_check(img_bytes, s.wechat):
+# ---------- 附件 ----------
+
+@router.post("/assets", status_code=201)
+async def upload_asset(file: UploadFile = File(...), ctx: dict = Session):
+    s = get_settings()
+    raw = await file.read()
+    try:
+        asset = workspace.store_asset(s, ctx["openid"], raw, file.filename or "")
+    except workspace.WorkspaceError as e:
+        raise HTTPException(400, str(e)) from e
+
+    if not await wechat.img_sec_check(raw, s.wechat):
         raise HTTPException(400, "图片未通过内容安全检查")
 
-    task_id = uuid.uuid4().hex[:16]
-    Path(s.upload_dir).mkdir(parents=True, exist_ok=True)
-    image_path = str(Path(s.upload_dir) / f"{task_id}.jpg")
-    Path(image_path).write_bytes(img_bytes)
-
-    now = time.time()
-    await db.create_task(s.db_path, {
-        "id": task_id, "openid": openid, "subject": subject,
-        "grade_level": grade_level, "image_path": image_path, "created_at": now,
-    })
-    await db.consume_quota(s.db_path, openid)
-    background.add_task(run_grading, task_id)
-    log.info("创建批改任务 task_id=%s openid=%s", task_id, openid)
-    return {"task_id": task_id, "status": "pending"}
+    await db.create_asset(s.db_path, asset)
+    return {"asset_id": asset["id"], "bytes": asset["bytes"],
+            "width": asset["width"], "height": asset["height"]}
 
 
-async def run_grading(task_id: str) -> None:
-    """后台批改 worker：按 provider 链调用，成功入库，失败标记。"""
+# ---------- 学习任务 ----------
+
+@router.post("/study/tasks", status_code=201)
+async def create_study_task(payload: StudyTaskCreate,
+                            idempotency_key: Optional[str] = Header(
+                                default=None, alias="Idempotency-Key"),
+                            ctx: dict = Session):
     s = get_settings()
-    async with get_sem():
-        task = await db.get_task(s.db_path, task_id)
-        if not task:
-            return
-        await db.update_task(s.db_path, task_id, status="grading")
-        try:
-            img_bytes = Path(task["image_path"]).read_bytes()
-            result, provider, model, itok, otok, cost = await grading.grade_image(
-                img_bytes, "image/jpeg", task["subject"], task["grade_level"], s)
-            await db.update_task(
-                s.db_path, task_id, status="done",
-                result_json=result.model_dump_json(),
-                provider=provider, model=model,
-                input_tokens=itok, output_tokens=otok, cost_cny=cost)
-            await db.add_daily_cost(s.db_path, cost)
-            # TODO: 配好订阅消息模板后，取消下面这行的注释
-            # await wechat.send_subscribe_message(task["openid"], task_id, result.summary, s.wechat)
-            log.info("任务完成 task_id=%s provider=%s", task_id, provider)
-        except ProviderError as e:
-            await db.update_task(s.db_path, task_id, status="failed", error=str(e)[:500])
-            log.error("任务失败 task_id=%s: %s", task_id, e)
-        except Exception as e:  # noqa: BLE001
-            await db.update_task(s.db_path, task_id, status="failed", error=f"内部错误: {e}"[:500])
-            log.exception("任务异常 task_id=%s", task_id)
+    try:
+        return await tasks.create_study_task(
+            s, ctx["openid"], payload.model_dump(), idempotency_key or "")
+    except TaskError as e:
+        raise HTTPException(e.status_code, e.message) from e
+
+
+@router.post("/tasks/{task_id}/followups", status_code=201)
+async def create_followup(task_id: str, payload: FollowupCreate, ctx: dict = Session):
+    s = get_settings()
+    try:
+        return await tasks.add_followup(s, ctx["openid"], task_id, payload.model_dump())
+    except TaskError as e:
+        raise HTTPException(e.status_code, e.message) from e
+
+
+@router.post("/tasks", status_code=201)
+async def create_task_compat(file: UploadFile = File(...),
+                             subject: str = Form("数学"),
+                             grade_level: str = Form(""),
+                             openid: str = Form(""),  # 兼容旧字段，一律忽略
+                             ctx: dict = Session):
+    """旧版单图入口：包装成同一学习任务流程，同样强制鉴权。"""
+    s = get_settings()
+    raw = await file.read()
+    try:
+        asset = workspace.store_asset(s, ctx["openid"], raw, file.filename or "")
+    except workspace.WorkspaceError as e:
+        raise HTTPException(400, str(e)) from e
+    await db.create_asset(s.db_path, asset)
+    try:
+        created = await tasks.create_study_task(s, ctx["openid"], {
+            "task_type": "grading", "subject": subject, "grade_level": grade_level,
+            "text": "", "asset_ids": [asset["id"]],
+        }, "")
+    except TaskError as e:
+        raise HTTPException(e.status_code, e.message) from e
+    return {"task_id": created["task_id"], "status": created["status"]}
 
 
 @router.get("/tasks/{task_id}")
-async def get_task(task_id: str):
+async def get_task(task_id: str, ctx: dict = Session):
     s = get_settings()
     task = await db.get_task(s.db_path, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
-    out = {k: task[k] for k in (
-        "id", "status", "subject", "grade_level", "provider", "model",
-        "input_tokens", "output_tokens", "cost_cny", "error",
-        "created_at", "updated_at")}
-    out["result"] = None
-    if task["status"] == "done" and task["result_json"]:
-        import json
-        out["result"] = json.loads(task["result_json"])
-    return out
+    try:
+        auth.ensure_owner(task["openid"], ctx)
+    except auth.AuthError as e:
+        raise HTTPException(e.status_code, e.message) from e
+    return await tasks.build_task_view(s, task)
 
 
 @router.get("/tasks")
-async def list_tasks(openid: str, limit: int = 20):
+async def list_tasks(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),
+                     ctx: dict = Session):
     s = get_settings()
-    tasks = await db.list_tasks(s.db_path, openid, min(limit, 100))
-    return [{"id": t["id"], "status": t["status"], "subject": t["subject"],
-             "created_at": t["created_at"]} for t in tasks]
+    rows = await db.list_tasks(s.db_path, ctx["openid"], limit, offset)
+    out = []
+    for t in rows:
+        item = {
+            "id": t["id"], "status": t["status"], "subject": t.get("subject", ""),
+            "task_type": t.get("task_type", "grading"),
+            "created_at": t.get("created_at"), "run_count": t.get("run_count", 0),
+            "summary": "", "missing_info_count": 0,
+        }
+        if t.get("result_json"):
+            try:
+                data = json.loads(t["result_json"])
+                item["summary"] = (data.get("overview") or {}).get("summary", "") or ""
+                item["missing_info_count"] = len(data.get("missing_info") or [])
+            except (ValueError, TypeError):
+                item["summary"] = ""
+        out.append(item)
+    return out
 
 
-# ---------- 配额 / 模型 ----------
+@router.get("/tasks/{task_id}/artifacts/{artifact_id}")
+async def download_artifact(task_id: str, artifact_id: str, ctx: dict = Session):
+    s = get_settings()
+    task = await db.get_task(s.db_path, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    try:
+        auth.ensure_owner(task["openid"], ctx)
+    except auth.AuthError as e:
+        raise HTTPException(e.status_code, e.message) from e
+
+    artifact = await db.get_artifact(s.db_path, task_id, artifact_id)
+    if not artifact:
+        raise HTTPException(404, "成果文件不存在")
+    path = Path(artifact["path"])
+    if not path.exists() or path.is_symlink() or not workspace.is_inside_allowed(s, str(path)):
+        raise HTTPException(410, "成果文件已不可用")
+    return FileResponse(str(path), filename=path.name)
+
+
+# ---------- 配额与运行状态 ----------
 
 @router.get("/quota")
-async def quota(openid: str):
+async def quota(ctx: dict = Session):
     s = get_settings()
-    return {"remaining": await db.quota_remaining(s.db_path, openid, s.quota.daily_free)}
+    return {"remaining": await db.quota_remaining(
+        s.db_path, ctx["openid"], s.quota.daily_free)}
+
+
+@router.get("/runtime")
+async def runtime(ctx: dict = Session):
+    """脱敏运行状态：区分「已配置」与「实际就绪」。"""
+    s = get_settings()
+    client = get_hermes()
+    hermes_state = (await client.readiness()).as_dict() if client is not None else None
+    return {
+        "engine": {
+            "mode": s.engine.mode,
+            "legacy_available": bool(provider_chain(s)),
+            "agent_model": s.hermes.agent_model if s.is_hermes else "",
+            "hermes_base_url_configured": bool(s.hermes.base_url),
+        },
+        "hermes": hermes_state,
+        "delivery": {
+            "pdf": s.delivery.pdf_enabled,
+            "email": s.delivery.email_enabled,
+            "git": s.delivery.git_enabled,
+        },
+        "workspace": {"dir": s.workspace.dir, "readonly": s.workspace.readonly},
+        "limits": {
+            "max_assets_per_task": s.limits.max_assets_per_task,
+            "max_runs_per_task": s.limits.max_runs_per_task,
+            "max_task_minutes": s.limits.max_task_minutes,
+        },
+    }
 
 
 @router.get("/providers")
 async def providers():
-    """当前启用的模型列表（不含密钥，供确认配置用）。"""
+    """legacy 引擎的配置视图（不代表 Hermes 就绪）。"""
     s = get_settings()
     chain = provider_chain(s)
     return {
+        "engine_mode": s.engine.mode,
+        "note": "该接口只反映 legacy 直连模型的配置，不代表 Hermes 技能已就绪",
         "default": s.llm.default_provider,
         "chain": chain,
         "providers": [
@@ -194,19 +280,24 @@ async def providers():
 # ---------- 错题本 ----------
 
 @router.post("/mistakes", status_code=201)
-async def add_mistake(
-    openid: str = Form(...),
-    task_id: str = Form(...),
-    question_no: str = Form(...),
-    knowledge_point: str = Form(""),
-    note: str = Form(""),
-):
+async def add_mistake(task_id: str = Form(...), question_no: str = Form(...),
+                      knowledge_point: str = Form(""), note: str = Form(""),
+                      ctx: dict = Session):
     s = get_settings()
-    mid = await db.save_mistake(s.db_path, openid, task_id, question_no, knowledge_point, note)
+    task = await db.get_task(s.db_path, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    try:
+        auth.ensure_owner(task["openid"], ctx)
+    except auth.AuthError as e:
+        raise HTTPException(e.status_code, e.message) from e
+    mid = await db.save_mistake(s.db_path, ctx["openid"], task_id, question_no,
+                               knowledge_point, note)
     return {"id": mid}
 
 
 @router.get("/mistakes")
-async def get_mistakes(openid: str, limit: int = 100):
+async def get_mistakes(limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0),
+                       ctx: dict = Session):
     s = get_settings()
-    return await db.list_mistakes(s.db_path, openid, min(limit, 200))
+    return await db.list_mistakes(s.db_path, ctx["openid"], limit, offset)

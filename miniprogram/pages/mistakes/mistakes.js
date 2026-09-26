@@ -9,8 +9,8 @@ Page({
 
   async load() {
     try {
-      const openid = await api.ensureLogin();
-      const mistakes = await api.getMistakes(openid);
+      await api.ensureLogin();
+      const mistakes = await api.getMistakes(100, 0);
       this.setData({
         mistakes: mistakes.map((m) => ({
           ...m,

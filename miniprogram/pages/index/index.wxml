@@ -1,7 +1,43 @@
 <view class="container">
+  <view class="hero">
+    <text class="hero-title">学习助手</text>
+    <text class="hero-sub">批改 · 错题解析 · 周报 · 训练 · 复测</text>
+    <view class="runtime {{runtimeOk ? 'runtime-ok' : 'runtime-warn'}}">{{runtimeText}}</view>
+  </view>
+
+  <view class="card">
+    <text class="sec-title">任务类型</text>
+    <view class="chips">
+      <view
+        wx:for="{{taskTypes}}"
+        wx:key="key"
+        class="chip {{typeIndex === index ? 'chip-on' : ''}}"
+        data-index="{{index}}"
+        bindtap="onTypeChange">{{item.label}}</view>
+    </view>
+    <text class="muted">{{taskHint}}</text>
+  </view>
+
+  <view wx:if="{{needsScope}}" class="card">
+    <text class="sec-title">资料区间</text>
+    <view class="row">
+      <text class="label">开始</text>
+      <picker mode="date" value="{{scopeStart}}" bindchange="onScopeStart">
+        <view class="picker">{{scopeStart || '未指定'}} ▾</view>
+      </picker>
+    </view>
+    <view class="row">
+      <text class="label">结束</text>
+      <picker mode="date" value="{{scopeEnd}}" bindchange="onScopeEnd">
+        <view class="picker">{{scopeEnd || '未指定'}} ▾</view>
+      </picker>
+    </view>
+    <text class="muted">未指定时按技能默认规则：月考取当月、期中期末取本学期</text>
+  </view>
+
   <view class="card">
     <view class="row">
-      <text class="label">科目</text>
+      <text class="label">学科</text>
       <picker mode="selector" range="{{subjects}}" value="{{subjectIndex}}" bindchange="onSubjectChange">
         <view class="picker">{{subjects[subjectIndex]}} ▾</view>
       </picker>
@@ -14,16 +50,34 @@
     </view>
   </view>
 
-  <view class="card preview" bindtap="chooseImage">
-    <image wx:if="{{imagePath}}" src="{{imagePath}}" mode="aspectFit" class="img" />
-    <view wx:else class="placeholder">
-      <text class="big">📷</text>
-      <text>点击拍照 / 从相册选择作业照片</text>
-      <text class="sub">拍得越正、越清晰，批改越准</text>
+  <view class="card">
+    <text class="sec-title">图片（{{images.length}}/{{maxImages}}）</text>
+    <view class="grid">
+      <view wx:for="{{images}}" wx:key="path" class="thumb-wrap">
+        <image src="{{item.path}}" mode="aspectFill" class="thumb" data-index="{{index}}" bindtap="previewImage" />
+        <view class="thumb-state state-{{item.status}}">
+          {{item.status === 'ready' ? '已上传' : (item.status === 'uploading' ? '上传中' : (item.status === 'failed' ? '失败' : '待上传'))}}
+        </view>
+        <view class="thumb-del" data-index="{{index}}" catchtap="removeImage">×</view>
+      </view>
+      <view wx:if="{{images.length < maxImages}}" class="thumb add" bindtap="chooseImages">
+        <text class="add-plus">+</text>
+        <text class="add-text">拍照/相册</text>
+      </view>
     </view>
+    <text class="muted">按作业页码顺序添加，拍得越正越清晰，结果越准</text>
   </view>
-  <view wx:if="{{imagePath}}" class="rechoose" bindtap="chooseImage">重新选择</view>
 
-  <button type="primary" bindtap="submit" loading="{{uploading}}" disabled="{{uploading}}">开始批改</button>
-  <view class="tip">AI 批改仅供参考，请以老师讲解为准</view>
+  <view class="card">
+    <text class="sec-title">补充说明（可选）</text>
+    <textarea
+      class="textarea"
+      value="{{text}}"
+      maxlength="2000"
+      placeholder="例如：这是今天的数学作业，第 12 页；只看第 3、4 题"
+      bindinput="onTextInput" />
+  </view>
+
+  <button type="primary" bindtap="submit" loading="{{submitting}}" disabled="{{submitting}}">提交学习任务</button>
+  <view class="tip">AI 批改仅供参考，请以老师讲解为准；缺少材料时会在结果中列出待补充项</view>
 </view>

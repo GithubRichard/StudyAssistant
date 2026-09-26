@@ -1,32 +1,54 @@
 <view class="container">
   <view class="card user">
-    <text class="u-title">当前用户</text>
+    <text class="u-title">当前账号</text>
     <text class="u-id">{{openid || '未登录'}}</text>
+    <button size="mini" bindtap="copyOpenid">复制 openid</button>
   </view>
 
   <view class="card">
     <view class="row">
-      <text>剩余批改次数</text>
+      <text>剩余可用次数</text>
       <text class="big">{{remaining}}</text>
     </view>
   </view>
 
   <view class="card">
-    <text class="sec-title">在线模型</text>
-    <view wx:for="{{providers}}" wx:key="name" class="row">
-      <text>{{item.name}}（{{item.model}}）</text>
-      <text class="tag {{item.active ? 'on' : 'off'}}">{{item.active ? (item.has_key ? '在线' : '未配Key') : '已停用'}}</text>
+    <text class="sec-title">执行引擎</text>
+    <view class="row">
+      <text>模式</text>
+      <text class="muted">{{engineText}}</text>
     </view>
-    <view wx:if="{{providers.length === 0}}" class="muted">加载中…</view>
+    <view class="row">
+      <text>Hermes</text>
+      <text class="status-pill {{hermesOk ? 'pill-done' : 'pill-waiting'}}">{{hermesText}}</text>
+    </view>
+    <text wx:if="{{error}}" class="muted">{{error}}</text>
+    <text class="muted">「已配置」不等于「已就绪」：只有技能确实加载完成才会显示就绪。</text>
+  </view>
+
+  <view class="card">
+    <text class="sec-title">交付能力</text>
+    <view wx:for="{{delivery}}" wx:key="key" class="row">
+      <text>{{item.label}}</text>
+      <text class="status-pill {{item.enabled ? 'pill-done' : 'pill-interrupted'}}">{{item.enabled ? '已启用' : '未配置'}}</text>
+    </view>
+    <text class="muted">未启用的能力会在结果中标注为未配置，不会被模型自述替代。</text>
+  </view>
+
+  <view class="card" wx:if="{{limits}}">
+    <text class="sec-title">限额</text>
+    <view class="row"><text>单次图片上限</text><text class="muted">{{limits.max_assets_per_task}} 张</text></view>
+    <view class="row"><text>单任务最多轮次</text><text class="muted">{{limits.max_runs_per_task}} 轮</text></view>
+    <view class="row"><text>单轮执行上限</text><text class="muted">{{limits.max_task_minutes}} 分钟</text></view>
+    <view class="row" wx:if="{{workspace}}"><text>学习工作区</text><text class="muted">{{workspace.dir}}</text></view>
   </view>
 
   <view class="card">
     <text class="sec-title">服务器地址</text>
-    <view class="row">
-      <text class="url">{{baseUrl}}</text>
-    </view>
+    <view class="row"><text class="url">{{baseUrl}}</text></view>
     <button size="mini" bindtap="copyBaseUrl">复制</button>
+    <text class="muted">小程序只连接本服务；Hermes 地址与密钥不会出现在前端。</text>
   </view>
 
-  <button bindtap="relogin">切换账号 / 重新登录</button>
+  <button bindtap="relogin">重新登录</button>
 </view>

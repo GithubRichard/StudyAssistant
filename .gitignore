@@ -1,10 +1,23 @@
 .DS_Store
 __pycache__/
 *.py[cod]
-venv/
 .venv/
+venv/
 *.log
+
+# 真实配置与凭据
 config.yaml
 .env
 .env.*
 !.env.example
+
+# 运行数据：数据库、上传图片、任务输出、PDF 成果
+data/
+*.bak-*
+*.tmp
+
+# 授权学习工作区：学习记录与原件都在服务器/本地维护，不进代码仓库
+workspace/
+
+# IDE 计划与本地会话文件（保留在本地，不进仓库）
+.codebuddy/

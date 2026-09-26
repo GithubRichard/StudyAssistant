@@ -1,106 +1,172 @@
-// 后端 API 封装：所有网络请求都走这里
+// 后端 API 封装：会话令牌鉴权 + 学习任务接口
 const { BASE_URL } = require('./config');
 
-function request(path, { method = 'GET', data = {} } = {}) {
+const TOKEN_KEY = 'session_token';
+const OPENID_KEY = 'openid';
+
+function getToken() {
+  return wx.getStorageSync(TOKEN_KEY) || '';
+}
+
+function getOpenid() {
+  return wx.getStorageSync(OPENID_KEY) || '';
+}
+
+function clearSession() {
+  wx.removeStorageSync(TOKEN_KEY);
+  wx.removeStorageSync(OPENID_KEY);
+}
+
+function authHeader(extra) {
+  const header = Object.assign({}, extra || {});
+  const token = getToken();
+  if (token) header.Authorization = 'Bearer ' + token;
+  return header;
+}
+
+function errorText(res, fallback) {
+  const data = res && res.data;
+  if (data && typeof data === 'object' && data.detail) {
+    return typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+  }
+  return (res && res.statusCode ? fallback + ' ' + res.statusCode : fallback);
+}
+
+// 需要登录的请求：401 时自动重新登录并重试一次
+function request(path, options = {}, retried = false) {
+  const { method = 'GET', data = {}, header = {} } = options;
   return new Promise((resolve, reject) => {
     wx.request({
       url: BASE_URL + path,
       method,
       data,
-      success: (res) => {
+      header: authHeader(header),
+      success: async (res) => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve(res.data);
-        } else {
-          const msg = (res.data && (res.data.detail || res.data.msg)) || ('请求失败 ' + res.statusCode);
-          reject(new Error(msg));
+          return;
         }
+        if (res.statusCode === 401 && !retried) {
+          clearSession();
+          try {
+            await login();
+            resolve(await request(path, options, true));
+          } catch (e) {
+            reject(e);
+          }
+          return;
+        }
+        reject(new Error(errorText(res, '请求失败')));
       },
       fail: () => reject(new Error('网络错误：请检查服务器地址配置和网络')),
     });
   });
 }
 
-function formRequest(path, data) {
-  return new Promise((resolve, reject) => {
-    wx.request({
-      url: BASE_URL + path,
-      method: 'POST',
-      header: { 'content-type': 'application/x-www-form-urlencoded' },
-      data,
-      success: (res) => {
-        if (res.statusCode >= 200 && res.statusCode < 300) resolve(res.data);
-        else reject(new Error((res.data && res.data.detail) || '请求失败'));
-      },
-      fail: () => reject(new Error('网络错误')),
-    });
+function requestJson(path, body, header) {
+  return request(path, {
+    method: 'POST',
+    data: body,
+    header: Object.assign({ 'content-type': 'application/json' }, header || {}),
   });
 }
 
-function getOpenid() {
-  return wx.getStorageSync('openid') || '';
+function formRequest(path, data, header) {
+  return request(path, {
+    method: 'POST',
+    data,
+    header: Object.assign({ 'content-type': 'application/x-www-form-urlencoded' }, header || {}),
+  });
 }
 
-// 确保已登录：有 openid 直接用，没有就 wx.login 换一个
-function ensureLogin() {
-  const cached = getOpenid();
-  if (cached) return Promise.resolve(cached);
+// 登录：code 换会话令牌
+function login() {
   return new Promise((resolve, reject) => {
     wx.login({
       success: async (res) => {
         try {
-          const data = await formRequest('/api/login', { code: res.code });
-          wx.setStorageSync('openid', data.openid);
-          resolve(data.openid);
+          const data = await formRequest(
+            '/api/login', { code: res.code }, { Authorization: '' });
+          if (!data.token) {
+            reject(new Error('登录失败：服务器未返回会话令牌'));
+            return;
+          }
+          wx.setStorageSync(TOKEN_KEY, data.token);
+          wx.setStorageSync(OPENID_KEY, data.openid);
+          resolve(data);
         } catch (e) {
           reject(e);
         }
       },
-      fail: reject,
+      fail: () => reject(new Error('wx.login 调用失败')),
     });
   });
 }
 
-// 上传作业图，返回 { task_id, status }
-function uploadTask({ openid, subject, gradeLevel, filePath }) {
+function ensureLogin() {
+  if (getToken()) return Promise.resolve(getOpenid());
+  return login().then((data) => data.openid);
+}
+
+function logout() {
+  return request('/api/logout', { method: 'POST' })
+    .catch(() => null)
+    .then(() => clearSession());
+}
+
+// 上传单张图片，返回 { asset_id }
+function uploadAsset(filePath) {
   return new Promise((resolve, reject) => {
     wx.uploadFile({
-      url: BASE_URL + '/api/tasks',
+      url: BASE_URL + '/api/assets',
       filePath,
       name: 'file',
-      formData: { openid, subject, grade_level: gradeLevel },
+      header: authHeader({}),
       success: (res) => {
         let data;
         try {
           data = JSON.parse(res.data);
         } catch (e) {
-          return reject(new Error('服务器返回异常'));
+          reject(new Error('服务器返回异常'));
+          return;
         }
-        if (res.statusCode === 201) resolve(data);
-        else reject(new Error(data.detail || '上传失败'));
+        if (res.statusCode === 201 && data.asset_id) resolve(data);
+        else reject(new Error(data.detail || ('上传失败 ' + res.statusCode)));
       },
       fail: () => reject(new Error('上传失败，请检查网络')),
     });
   });
 }
 
+// 提交学习任务（幂等：同一 idempotencyKey 重复提交返回同一任务）
+function createStudyTask(payload, idempotencyKey) {
+  return requestJson('/api/study/tasks', payload, { 'Idempotency-Key': idempotencyKey });
+}
+
+function createFollowup(taskId, payload) {
+  return requestJson('/api/tasks/' + taskId + '/followups', payload);
+}
+
 const getTask = (taskId) => request('/api/tasks/' + taskId);
-const getTasks = (openid, limit = 20) =>
-  request('/api/tasks', { data: { openid, limit } });
-const getQuota = (openid) => request('/api/quota', { data: { openid } });
+const getTasks = (limit = 20, offset = 0) =>
+  request('/api/tasks', { data: { limit, offset } });
+const getQuota = () => request('/api/quota');
+const getRuntime = () => request('/api/runtime');
 const getProviders = () => request('/api/providers');
 
-function addMistake({ openid, task_id, question_no, knowledge_point, note }) {
-  return formRequest('/api/mistakes', { openid, task_id, question_no, knowledge_point, note });
+function addMistake({ task_id, question_no, knowledge_point, note }) {
+  return formRequest('/api/mistakes', { task_id, question_no, knowledge_point, note });
 }
-const getMistakes = (openid, limit = 100) =>
-  request('/api/mistakes', { data: { openid, limit } });
+const getMistakes = (limit = 100, offset = 0) =>
+  request('/api/mistakes', { data: { limit, offset } });
 
-function logout() {
-  wx.removeStorageSync('openid');
+function artifactUrl(taskId, artifactId) {
+  return BASE_URL + '/api/tasks/' + taskId + '/artifacts/' + artifactId;
 }
 
 module.exports = {
-  ensureLogin, getOpenid, logout,
-  uploadTask, getTask, getTasks, getQuota, getProviders,
-  addMistake, getMistakes,
+  ensureLogin, login, logout, getOpenid, getToken,
+  uploadAsset, createStudyTask, createFollowup,
+  getTask, getTasks, getQuota, getRuntime, getProviders,
+  addMistake, getMistakes, artifactUrl,
 };

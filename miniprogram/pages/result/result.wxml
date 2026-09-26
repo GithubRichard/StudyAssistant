@@ -1,38 +1,145 @@
 <view class="container">
-  <view class="disclaimer">⚠️ AI 批改仅供参考，请以老师讲解为准</view>
+  <view class="disclaimer">AI 批改仅供参考，请以老师讲解为准</view>
+
+  <view class="card head">
+    <view class="head-row">
+      <text class="head-title">任务 {{taskId}}</text>
+      <text class="status-pill {{statusPill}}">{{statusText}}</text>
+    </view>
+    <text class="muted" wx:if="{{result}}">{{result.task_type_label || ''}} · {{result.subject || ''}} {{result.grade_level || ''}}</text>
+  </view>
 
   <view wx:if="{{status === 'pending' || status === 'grading'}}" class="card loading">
-    <text class="spin">⏳</text>
-    <text>批改中，通常需要 10~30 秒…</text>
+    <text class="state-line">正在执行学习任务…</text>
+    <text class="muted">技能会先读取工作区规范与历史记录，再逐题分析并做错题核查，耗时较长属正常。</text>
+    <text class="muted">可以离开本页，回来后会自动继续查询。</text>
+  </view>
+
+  <view wx:if="{{exhausted}}" class="card">
+    <text class="state-line">自动查询已暂停</text>
+    <text class="muted">任务可能仍在远端执行。点击下方按钮继续查询，不会重复提交任务。</text>
+    <button size="mini" bindtap="refresh">继续查询</button>
+  </view>
+
+  <view wx:if="{{status === 'interrupted'}}" class="card">
+    <text class="state-line">执行结果未确认</text>
+    <text class="muted">{{error}}</text>
+    <text class="muted">服务不会自动重试，以免重复归档。可补充材料后再次发起。</text>
   </view>
 
   <view wx:if="{{status === 'failed'}}" class="card">
-    <text class="err-title">批改失败了</text>
-    <text class="err-msg">{{error}}</text>
-    <button type="primary" bindtap="retry">返回重拍</button>
+    <text class="state-line err">任务失败</text>
+    <text class="muted">{{error}}</text>
+    <button size="mini" bindtap="retry">返回重新发起</button>
   </view>
 
-  <view wx:if="{{status === 'done' && result}}">
-    <view class="card summary">
-      <text class="score">{{result.correct_count}}<text class="total"> / {{result.total_questions}}</text></text>
-      <text class="summary-text">{{result.summary}}</text>
+  <block wx:if="{{result}}">
+    <view wx:if="{{result.legacy}}" class="card warn">
+      <text>旧版本结果：未记录二次核查，也不含五态判定与交付状态。</text>
     </view>
 
-    <view wx:for="{{result.questions}}" wx:key="no" class="card q">
-      <view class="q-head">
-        <text class="q-no">第 {{item.no}} 题</text>
-        <text class="badge {{item.is_correct ? 'ok' : 'bad'}}">{{item.is_correct ? '✓ 答对' : '✗ 答错'}}</text>
+    <view class="card">
+      <text class="sec-title">概览</text>
+      <view class="stat-row">
+        <view class="stat"><text class="stat-n">{{result.overview.checked_questions}}</text><text class="stat-l">已检查</text></view>
+        <view class="stat"><text class="stat-n ok">{{result.overview.correct}}</text><text class="stat-l">答对</text></view>
+        <view class="stat"><text class="stat-n bad">{{result.overview.wrong}}</text><text class="stat-l">答错</text></view>
+        <view class="stat"><text class="stat-n wait">{{result.overview.unanswered}}</text><text class="stat-l">未作答</text></view>
+        <view class="stat"><text class="stat-n info">{{result.overview.uncertain}}</text><text class="stat-l">待核实</text></view>
       </view>
-      <view class="q-row"><text class="k">你的作答：</text><text>{{item.student_answer || '—'}}</text></view>
-      <view wx:if="{{!item.is_correct}}" class="q-row"><text class="k">正确答案：</text><text class="ans">{{item.correct_answer}}</text></view>
-      <view wx:if="{{item.knowledge_point}}" class="q-row"><text class="k">知识点：</text><text>{{item.knowledge_point}}</text></view>
-      <view wx:if="{{item.explanation && item.explanation.length}}" class="explain">
-        <text class="k">讲解：</text>
-        <view wx:for="{{item.explanation}}" wx:for-item="step" wx:key="*this" class="step">
+      <text class="muted" wx:if="{{result.overview.summary}}">{{result.overview.summary}}</text>
+    </view>
+
+    <view class="card" wx:if="{{result.scope.start_date || result.scope.end_date || result.scope.sources.length}}">
+      <text class="sec-title">资料范围</text>
+      <text class="muted" wx:if="{{result.scope.start_date || result.scope.end_date}}">区间：{{result.scope.start_date || '不限'}} ~ {{result.scope.end_date || '不限'}}</text>
+      <text class="muted" wx:for="{{result.scope.sources}}" wx:key="*this">来源：{{item}}</text>
+    </view>
+
+    <view class="card" wx:if="{{result.missing_info.length}}">
+      <text class="sec-title">需要补充</text>
+      <text class="miss" wx:for="{{result.missing_info}}" wx:key="*this">· {{item}}</text>
+    </view>
+
+    <view class="card" wx:if="{{result.review_summary.state !== 'not_required'}}">
+      <text class="sec-title">错题二次核查</text>
+      <text class="muted">状态：{{result.review_summary.state}} · 送核查 {{result.review_summary.scope}} 题 · 有异议 {{result.review_summary.disagreed}} 题 · 无法核查 {{result.review_summary.unverified}} 题</text>
+      <text class="muted" wx:if="{{result.review_summary.note}}">{{result.review_summary.note}}</text>
+    </view>
+
+    <view wx:for="{{result.questions}}" wx:key="id" class="card q">
+      <view class="q-head">
+        <text class="q-no">第 {{item.no}} 题<text class="q-src" wx:if="{{item.page}}"> · {{item.page}}</text></text>
+        <text class="qtag qtag-{{item.status}}">{{qLabel[item.status]}}</text>
+      </view>
+      <text class="q-src" wx:if="{{item.source}}">来源：{{item.source}}</text>
+      <view class="q-row" wx:if="{{item.stem}}"><text class="k">题目：</text><text>{{item.stem}}</text></view>
+      <view class="q-row"><text class="k">孩子原答案：</text><text>{{item.student_answer || '—'}}</text></view>
+      <view class="q-row" wx:if="{{item.correct_answer}}"><text class="k">正确答案：</text><text class="ans">{{item.correct_answer}}</text></view>
+      <view class="q-row" wx:if="{{item.knowledge_point}}"><text class="k">知识点：</text><text>{{item.knowledge_point}}</text></view>
+      <view class="q-row" wx:if="{{item.error_rule}}"><text class="k">错因规则：</text><text>{{item.error_rule}}</text></view>
+      <view class="q-row" wx:if="{{item.review.state !== 'not_applicable'}}">
+        <text class="k">核查：</text>
+        <text>{{reviewLabel[item.review.state]}}</text>
+      </view>
+      <view class="q-row" wx:if="{{item.review.note}}"><text class="k">核查说明：</text><text>{{item.review.note}}</text></view>
+      <view class="q-row" wx:if="{{item.final_decision_basis}}"><text class="k">复核依据：</text><text>{{item.final_decision_basis}}</text></view>
+      <view wx:if="{{item.steps.length}}" class="explain">
+        <text class="k">解题步骤：</text>
+        <view wx:for="{{item.steps}}" wx:for-item="step" wx:key="*this" class="step">
           <text>{{index + 1}}. {{step}}</text>
         </view>
       </view>
-      <button wx:if="{{!item.is_correct}}" size="mini" type="primary" bindtap="addMistake" data-q="{{item}}">加入错题本</button>
+      <button wx:if="{{item.status === 'wrong'}}" size="mini" bindtap="addMistake" data-q="{{item}}">加入错题本</button>
     </view>
-  </view>
+
+    <view wx:for="{{result.sections}}" wx:key="title" class="card">
+      <text class="sec-title">{{item.title}}</text>
+      <text class="body">{{item.body}}</text>
+    </view>
+
+    <view class="card" wx:if="{{result.parent_tips.length}}">
+      <text class="sec-title">给家长的建议</text>
+      <text class="body" wx:for="{{result.parent_tips}}" wx:key="*this">· {{item}}</text>
+    </view>
+
+    <view class="card" wx:if="{{deliveryRows.length}}">
+      <text class="sec-title">交付状态</text>
+      <view wx:for="{{deliveryRows}}" wx:key="key" class="delivery-row">
+        <text class="d-label">{{item.label}}</text>
+        <text class="d-status d-{{item.status}}">{{item.text}}</text>
+      </view>
+      <text class="muted" wx:for="{{deliveryRows}}" wx:key="key" wx:if="{{item.note}}">{{item.label}}：{{item.note}}</text>
+    </view>
+
+    <view class="card" wx:if="{{artifacts.length}}">
+      <text class="sec-title">可下载成果</text>
+      <view wx:for="{{artifacts}}" wx:key="id" class="artifact-row" data-a="{{item}}" bindtap="downloadArtifact">
+        <text>{{item.kind === 'pdf' ? 'PDF 文件' : '归档文本'}}（{{item.bytes}} 字节）</text>
+        <text class="link">下载 ›</text>
+      </view>
+      <text class="muted">只有真实存在并通过校验的文件才会出现在这里。</text>
+    </view>
+
+    <view class="card" wx:if="{{status === 'waiting_input' || status === 'interrupted' || status === 'done'}}">
+      <text class="sec-title">补充材料</text>
+      <textarea class="textarea" value="{{followupText}}" placeholder="补充说明，例如：本学期开学日期是 9 月 1 日；这是第 2 页的作答" bindinput="onFollowupInput" />
+      <view class="grid">
+        <view wx:for="{{followupImages}}" wx:key="path" class="thumb-wrap">
+          <image src="{{item.path}}" mode="aspectFill" class="thumb" />
+          <view class="thumb-del" data-index="{{index}}" catchtap="removeFollowupImage">×</view>
+        </view>
+        <view wx:if="{{followupImages.length < 9}}" class="thumb add" bindtap="chooseFollowupImages">+</view>
+      </view>
+      <button size="mini" type="primary" bindtap="submitFollowup" loading="{{submitting}}" disabled="{{submitting}}">提交补充材料</button>
+    </view>
+
+    <view class="card" wx:if="{{runs.length}}">
+      <text class="sec-title">执行轮次</text>
+      <view wx:for="{{runs}}" wx:key="id" class="run-row">
+        <text>第 {{item.run_no}} 轮（{{item.kind === 'followup' ? '补充材料' : '首次提交'}}）</text>
+        <text class="status-pill {{item.status === 'done' ? 'pill-done' : (item.status === 'failed' ? 'pill-failed' : 'pill-running')}}">{{item.status}}</text>
+      </view>
+    </view>
+  </block>
 </view>

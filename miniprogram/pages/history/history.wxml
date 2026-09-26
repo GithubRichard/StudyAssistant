@@ -1,10 +1,20 @@
 <view class="container">
-  <view wx:if="{{tasks.length === 0}}" class="empty">还没有批改记录，去拍第一张作业吧 📷</view>
+  <view wx:if="{{failed}}" class="empty">
+    <text>加载失败：请检查网络或服务器地址</text>
+    <button size="mini" bindtap="load">重试</button>
+  </view>
+  <view wx:elif="{{!loading && tasks.length === 0}}" class="empty">
+    <text>还没有学习记录</text>
+    <text class="muted">去首页提交第一份作业吧</text>
+  </view>
+
   <view wx:for="{{tasks}}" wx:key="id" class="card row-card" bindtap="goResult" data-id="{{item.id}}">
-    <view>
-      <text class="t">{{item.subject}}</text>
-      <text class="time">{{item.time}}</text>
+    <view class="row-main">
+      <text class="t">{{item.typeLabel}} · {{item.subject || '未指定学科'}}</text>
+      <text class="time">{{item.time}}<text wx:if="{{item.run_count > 1}}"> · 第 {{item.run_count}} 轮</text></text>
+      <text wx:if="{{item.summary}}" class="summary">{{item.summary}}</text>
+      <text wx:if="{{item.missing_info_count}}" class="miss-note">有 {{item.missing_info_count}} 项待补充</text>
     </view>
-    <text class="st st-{{item.status}}">{{statusText[item.status]}}</text>
+    <text class="status-pill {{item.pill}}">{{item.statusText}}</text>
   </view>
 </view>

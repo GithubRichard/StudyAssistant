@@ -1,0 +1,19 @@
+.git
+.gitignore
+.DS_Store
+__pycache__
+*.py[cod]
+.venv
+venv
+
+# 真实配置与凭据不进镜像
+config.yaml
+.env
+.env.*
+!.env.example
+
+# 运行数据与学习记录不进镜像
+data
+workspace
+tests
+*.log

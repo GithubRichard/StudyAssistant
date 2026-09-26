@@ -1,11 +1,20 @@
+# Linux 部署：应用容器使用宿主网络，只监听 127.0.0.1:8000，
+# 以便直接访问宿主机上的 Hermes API（默认 127.0.0.1:8642）。
+# 公网入口由宿主机上的 HTTPS 反向代理（Caddy/Nginx）提供，容器不再映射端口。
+#
+# 注意：host 网络模式仅适用于 Linux 主机；macOS 本地验证请直接用 Python 运行（见 README）。
 services:
   grader:
     build: .
-    ports:
-      - "8000:8000"
+    network_mode: host
+    environment:
+      CONFIG_PATH: /srv/app/config.yaml
+      APP_HOST: 127.0.0.1
+      APP_PORT: "8000"
     env_file:
-      - .env                     # API Key 等密钥
+      - .env
     volumes:
-      - ./data:/srv/app/data     # 数据库 + 上传图片持久化
-      - ./config.yaml:/srv/app/config.yaml:ro   # 配置文件（先 cp config.example.yaml config.yaml）
+      - ./data:/srv/app/data                       # 数据库、上传图片、任务输出
+      - ./workspace:/srv/app/workspace             # 授权学习工作区（记录 + 归档）
+      - ./config.yaml:/srv/app/config.yaml:ro      # 配置文件（先 cp config.example.yaml config.yaml）
     restart: unless-stopped

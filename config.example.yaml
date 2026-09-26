@@ -1,81 +1,96 @@
-# 作业批改服务配置文件
-# 用法：cp config.example.yaml config.yaml，然后按需修改
-# 密钥不要写在这里，写在 .env 文件里，用 ${VAR} 引用
+# Leo 学习任务服务配置模板
+# 用法：cp config.example.yaml config.yaml，再按需修改
+# 密钥不写在这里，写在 .env 中，用 ${VAR} 引用
 
 server:
-  host: "0.0.0.0"
+  # 只监听本机，由 HTTPS 反向代理对外（Linux 上用宿主网络模式时保持 127.0.0.1）
+  host: "127.0.0.1"
   port: 8000
 
-# ================= 多大模型配置（核心）=================
-llm:
-  default_provider: "qwen"
-  fallback_order: ["qwen", "glm", "deepseek"]
-  providers:
-    qwen:
-      type: "openai_compatible"
-      base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-      api_key: "${QWEN_API_KEY}"
-      model: "qwen-vl-max"
-      timeout: 90
-      max_retries: 2
-      price_input_per_1m: 0.8
-      price_output_per_1m: 2.8
-      enabled: true
-    glm:
-      type: "openai_compatible"
-      base_url: "https://open.bigmodel.cn/api/paas/v4"
-      api_key: "${GLM_API_KEY}"
-      model: "glm-4v"
-      timeout: 90
-      max_retries: 2
-      price_input_per_1m: 0.8
-      price_output_per_1m: 2.8
-      enabled: true
-    deepseek:
-      type: "openai_compatible"
-      base_url: "https://api.deepseek.com/v1"
-      api_key: "${DEEPSEEK_API_KEY}"
-      model: "deepseek-chat"
-      timeout: 90
-      max_retries: 2
-      price_input_per_1m: 3.0
-      price_output_per_1m: 9.0
-      enabled: false
-    doubao:
-      type: "openai_compatible"
-      base_url: "https://ark.cn-beijing.volces.com/api/v3"
-      api_key: "${DOUBAO_API_KEY}"
-      model: "doubao-seed-1-6"
-      timeout: 90
-      max_retries: 2
-      price_input_per_1m: 0.8
-      price_output_per_1m: 2.8
-      enabled: false
+# ================= 执行引擎 =================
+# hermes：由 Hermes Agent 执行学习技能（默认，推荐）
+# legacy：旧的多模型直连单轮批改（结果会明确标注未执行技能流程与二次核查）
+engine:
+  mode: "hermes"
 
-# ================= 批改 prompt =================
-# 批改指令写在 prompt_system.txt 纯文本文件里，直接改文字就行，不用动代码也不用管 YAML 缩进
-system_prompt_file: "prompt_system.txt"
-user_prompt_template: "请批改这张{subject}作业照片。严格按系统指令要求的 JSON 格式输出。"
+hermes:
+  base_url: "${HERMES_BASE_URL:-http://127.0.0.1:8642}"
+  api_key: "${HERMES_API_KEY}"
+  agent_model: "hermes-agent"          # Hermes 的 Agent 别名，不是底层模型 ID
+  skill_name: "leo-study-assistant"    # 用于 /v1/skills 就绪校验
+  timeout_seconds: 300                 # 单轮执行上限（秒）
+  max_response_bytes: 2000000          # 响应体上限，防止超大输出
+  verify_skill: true                   # 启动时校验技能是否已安装
 
-# ================= 配额 =================
+# ================= 访问授权（家庭私用）=================
+auth:
+  # 留空表示不限制账号（仅适合本地开发）。上线前填入允许使用的微信 openid。
+  allowed_openids: []
+  session_ttl_days: 30
+
+# ================= 授权学习工作区 =================
+workspace:
+  dir: "workspace"        # 学习记录目录
+  # 说明：本服务不修改工作区历史，归档由服务端校验路径后执行；
+  # 若要 Hermes 也拿不到写权限，请在部署时为它挂载只读卷（本开关仅作声明，不由代码强制执行）
+  readonly: true
+  init_readme: true       # 工作区为空时用技能内置规范初始化 README（不覆盖已有内容）
+
+# ================= 任务与资源上限 =================
+limits:
+  max_assets_per_task: 20
+  max_total_upload_mb: 40
+  max_runs_per_task: 6
+  max_task_minutes: 30
+  claim_lease_seconds: 600
+  worker_poll_seconds: 2.0
+  worker_enabled: true
+
+# ================= 外部交付开关（默认全关）=================
+# 未启用时结果中如实标注 not_configured，不会因为模型自述而变成成功
+delivery:
+  pdf_enabled: false
+  email_enabled: false
+  git_enabled: false
+
+# ================= 配额与费用 =================
 quota:
   new_user_bonus: 20
   daily_free: 3
   max_per_day: 50
-
-# ================= 费用熔断 =================
 budget:
   daily_max_cny: 50.0
 
-# ================= 微信（可选，不配也能跑）=================
+# ================= 微信（正式环境必填）=================
 wechat:
   appid: "${WECHAT_APPID}"
   secret: "${WECHAT_SECRET}"
   seccheck_enabled: false
   subscribe_template_id: "${WECHAT_TEMPLATE_ID}"
 
-# ================= 其他 =================
+# ================= 图片处理 =================
 data_dir: "data"
 max_image_mb: 5
 max_image_px: 1600
-grade_concurrency: 4
+
+# ================= legacy 引擎（engine.mode=legacy 时生效）=================
+# Hermes 模式下这里保持全关；底层模型由 Hermes 自己配置，密钥不下发到本服务。
+llm:
+  default_provider: "qwen"
+  fallback_order: []
+  providers:
+    qwen:
+      type: "openai_compatible"
+      base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      api_key: "${QWEN_API_KEY}"
+      model: "qwen-vl-max"
+      enabled: false
+    glm:
+      type: "openai_compatible"
+      base_url: "https://open.bigmodel.cn/api/paas/v4"
+      api_key: "${GLM_API_KEY}"
+      model: "glm-4v-flash"
+      enabled: false
+grade_concurrency: 2
+system_prompt_file: "prompt_system.txt"
+user_prompt_template: "请批改这张{subject}作业照片（{grade_level}）。严格按系统指令要求的 JSON 格式输出。"

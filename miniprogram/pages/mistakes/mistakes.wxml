@@ -1,5 +1,8 @@
 <view class="container">
-  <view wx:if="{{mistakes.length === 0}}" class="empty">错题本空空如也，说明你全对啦 🎉</view>
+  <view wx:if="{{mistakes.length === 0}}" class="empty">
+    <text>错题本里还没有内容</text>
+    <text class="muted">这里只保存你手动加入的题目；空不代表全部答对</text>
+  </view>
   <view wx:for="{{mistakes}}" wx:key="id" class="card" bindtap="goTask" data-task="{{item.task_id}}">
     <view class="m-head">
       <text class="m-no">第 {{item.question_no}} 题</text>
