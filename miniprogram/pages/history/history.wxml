@@ -12,8 +12,10 @@
     <view class="row-main">
       <text class="t">{{item.typeLabel}} · {{item.subject || '未指定学科'}}</text>
       <text class="time">{{item.time}}<text wx:if="{{item.run_count > 1}}"> · 第 {{item.run_count}} 轮</text></text>
+      <text wx:if="{{item.scopeText}}" class="summary">资料区间：{{item.scopeText}}</text>
       <text wx:if="{{item.summary}}" class="summary">{{item.summary}}</text>
       <text wx:if="{{item.missing_info_count}}" class="miss-note">有 {{item.missing_info_count}} 项待补充</text>
+      <text wx:if="{{item.gitText}}" class="miss-note">{{item.gitText}}</text>
     </view>
     <text class="status-pill {{item.pill}}">{{item.statusText}}</text>
   </view>

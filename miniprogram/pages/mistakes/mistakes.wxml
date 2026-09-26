@@ -1,6 +1,12 @@
 <view class="container">
+  <view class="card">
+    <text class="sec-title">这里是人工收藏的错题</text>
+    <text class="muted">批改产生的错题与存疑题已自动进入「复习」台账，并按订正与复测状态跟进。</text>
+    <button size="mini" type="primary" bindtap="goReview">去复习台账</button>
+  </view>
+
   <view wx:if="{{mistakes.length === 0}}" class="empty">
-    <text>错题本里还没有内容</text>
+    <text>错题本里还没有手动收藏的题目</text>
     <text class="muted">这里只保存你手动加入的题目；空不代表全部答对</text>
   </view>
   <view wx:for="{{mistakes}}" wx:key="id" class="card" bindtap="goTask" data-task="{{item.task_id}}">

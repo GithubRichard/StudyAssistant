@@ -4,7 +4,7 @@
     <text class="hero-sub">批改 · 错题解析 · 周报 · 训练 · 复测</text>
     <view class="runtime-row">
       <view class="runtime {{runtimeOk ? 'runtime-ok' : 'runtime-warn'}}">{{runtimeText}}</view>
-      <text wx:if="{{!runtimeOk}}" class="runtime-retry" bindtap="retryRuntime">重试</text>
+      <text class="runtime-retry" bindtap="goSettings">学习设置 ›</text>
     </view>
   </view>
 
@@ -21,21 +21,46 @@
     <text class="muted">{{taskHint}}</text>
   </view>
 
-  <view wx:if="{{needsScope}}" class="card">
+  <view wx:if="{{needsKind}}" class="card">
+    <text class="sec-title">训练类型</text>
+    <view class="chips">
+      <view
+        wx:for="{{trainingKinds}}"
+        wx:key="key"
+        class="chip {{kindIndex === index ? 'chip-on' : ''}}"
+        data-index="{{index}}"
+        bindtap="onKindChange">{{item.label}}</view>
+    </view>
+    <text class="muted">月考读当月记录；期中、期末读本学期开学至今天的累计记录。</text>
+  </view>
+
+  <view class="card">
     <text class="sec-title">资料区间</text>
-    <view class="row">
+    <text class="muted">{{scopeHint}}</text>
+    <view class="row" wx:if="{{needsScope}}">
       <text class="label">开始</text>
       <picker mode="date" value="{{scopeStart}}" bindchange="onScopeStart">
-        <view class="picker">{{scopeStart || '未指定'}} ▾</view>
+        <view class="picker">{{scopeStart || '按默认'}} ▾</view>
       </picker>
     </view>
-    <view class="row">
+    <view class="row" wx:if="{{needsScope}}">
       <text class="label">结束</text>
       <picker mode="date" value="{{scopeEnd}}" bindchange="onScopeEnd">
-        <view class="picker">{{scopeEnd || '未指定'}} ▾</view>
+        <view class="picker">{{scopeEnd || '按默认'}} ▾</view>
       </picker>
     </view>
-    <text class="muted">未指定时按技能默认规则：月考取当月、期中期末取本学期</text>
+    <text class="muted" wx:if="{{!termStart}}" bindtap="goSettings">未配置学期开学日期，点此去填写 ›</text>
+  </view>
+
+  <view wx:if="{{needsExamScope}}" class="card">
+    <text class="sec-title">考试范围（可选）</text>
+    <textarea
+      class="textarea"
+      value="{{examScope}}"
+      maxlength="500"
+      placeholder="例如：第一章 有理数与整式；老师说明本次只考 1—3 单元"
+      bindinput="onExamScopeInput" />
+    <text class="muted">不填则只做基于已归档错题的针对性训练，不代表完整考试范围。</text>
   </view>
 
   <view class="card">
@@ -51,6 +76,7 @@
         <view class="picker">{{grades[gradeIndex]}} ▾</view>
       </picker>
     </view>
+    <text class="muted">不确定就选「未指定」，系统不会替你假定年级或学科。</text>
   </view>
 
   <view class="card">
@@ -68,7 +94,8 @@
         <text class="add-text">拍照/相册</text>
       </view>
     </view>
-    <text class="muted">按作业页码顺序添加，拍得越正越清晰，结果越准</text>
+    <text class="muted">按页码顺序添加，拍得越正越清晰，结果越准。</text>
+    <text class="muted">照片仅用于本次批改，存在服务器私有目录：不写入学习记录、不进入 Git、不随记录分发。原题请自行留在本地。</text>
   </view>
 
   <view class="card">
@@ -82,5 +109,5 @@
   </view>
 
   <button type="primary" bindtap="submit" loading="{{submitting}}" disabled="{{submitting}}">提交学习任务</button>
-  <view class="tip">AI 批改仅供参考，请以老师讲解为准；缺少材料时会在结果中列出待补充项</view>
+  <view class="tip">AI 批改仅供参考，请以老师讲解为准；缺少材料时会在结果中列出待补充项。</view>
 </view>

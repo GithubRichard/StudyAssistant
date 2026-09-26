@@ -13,6 +13,19 @@
   </view>
 
   <view class="card">
+    <text class="sec-title">学习设置</text>
+    <text class="muted">{{familyText}}</text>
+    <button size="mini" type="primary" bindtap="goSettings">打开学习设置</button>
+  </view>
+
+  <view class="card">
+    <text class="sec-title">学习记录同步</text>
+    <text class="muted">{{gitText}}</text>
+    <text class="muted" wx:if="{{lastSyncNote}}">{{lastSyncNote}}</text>
+    <text class="muted">只提交本次归档的学习记录；原题资料不会上传，冲突时会停止上传并生成冲突记录。</text>
+  </view>
+
+  <view class="card">
     <text class="sec-title">执行引擎</text>
     <view class="row">
       <text>模式</text>

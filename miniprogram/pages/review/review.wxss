@@ -1,0 +1,50 @@
+.chips { display: flex; flex-wrap: wrap; margin-bottom: 12rpx; }
+.chip {
+  padding: 14rpx 26rpx;
+  border-radius: 999rpx;
+  background: #F1F4F1;
+  color: #4A5B55;
+  margin: 0 16rpx 16rpx 0;
+  font-size: 26rpx;
+}
+.chip-on { background: #126B56; color: #FFFFFF; font-weight: 600; }
+
+.q { padding: 24rpx 28rpx; }
+.q-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8rpx; }
+.q-no { font-size: 29rpx; font-weight: 600; color: #20352F; }
+.q-src { display: block; color: #66766F; font-size: 25rpx; margin-bottom: 6rpx; }
+.q-row { display: flex; margin-bottom: 6rpx; line-height: 1.6; }
+.q-row .k { color: #66766F; width: 190rpx; flex-shrink: 0; }
+.ans { color: #126B56; font-weight: 600; }
+
+.actions { display: flex; margin-top: 14rpx; }
+.actions button { margin-right: 16rpx; }
+
+.mask {
+  position: fixed;
+  left: 0; top: 0; right: 0; bottom: 0;
+  background: rgba(20, 32, 28, 0.42);
+  z-index: 10;
+}
+.sheet {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  background: #FFFFFF;
+  border-radius: 24rpx 24rpx 0 0;
+  padding: 28rpx 28rpx 44rpx;
+  z-index: 11;
+  box-shadow: 0 -6rpx 24rpx rgba(18, 107, 86, 0.12);
+  max-height: 78vh;
+  overflow-y: auto;
+}
+.input {
+  width: 100%;
+  background: #F7F9F6;
+  border-radius: 14rpx;
+  padding: 18rpx 20rpx;
+  font-size: 27rpx;
+  box-sizing: border-box;
+  margin-bottom: 12rpx;
+}
+.state-line { display: block; font-weight: 600; margin-bottom: 8rpx; }
+.err { color: #BA4343; }

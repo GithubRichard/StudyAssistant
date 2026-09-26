@@ -1,0 +1,96 @@
+<view class="container">
+  <view class="card">
+    <text class="sec-title">复习概览</text>
+    <text class="muted">{{countsText || '暂无台账记录'}}</text>
+    <text class="muted">优先安排反复出错、尚未订正、复测未通过的知识点；答对一次不等于稳定掌握。</text>
+  </view>
+
+  <view class="card">
+    <text class="sec-title">学科</text>
+    <view class="chips">
+      <view
+        wx:for="{{subjects}}"
+        wx:key="*this"
+        class="chip {{subjectIndex === index ? 'chip-on' : ''}}"
+        data-index="{{index}}"
+        bindtap="switchSubject">{{item}}</view>
+      <view wx:if="{{!subjects.length}}" class="muted">还没有错题记录</view>
+    </view>
+    <text class="sec-title">筛选</text>
+    <view class="chips">
+      <view
+        wx:for="{{filters}}"
+        wx:key="key"
+        class="chip {{filterIndex === index ? 'chip-on' : ''}}"
+        data-index="{{index}}"
+        bindtap="switchFilter">{{item.label}}</view>
+    </view>
+  </view>
+
+  <view wx:if="{{failed}}" class="card">
+    <text class="state-line err">加载失败</text>
+    <text class="muted">请检查网络与服务器地址后重试。</text>
+    <button size="mini" bindtap="refresh">重新加载</button>
+  </view>
+
+  <view wx:if="{{loading}}" class="card">
+    <text class="muted">正在加载台账…</text>
+  </view>
+
+  <view wx:if="{{!loading && !failed && !entries.length}}" class="empty">
+    <text>没有符合条件的错题条目。\n没有记录不等于没有错误，历史不足时保留缺口，不补造记录。</text>
+  </view>
+
+  <view wx:for="{{entries}}" wx:key="id" class="card q">
+    <view class="q-head">
+      <text class="q-no">{{item.located}}</text>
+      <text class="status-pill {{item.pill}}">{{item.stateLabel}}</text>
+    </view>
+    <text class="q-src" wx:if="{{item.knowledge_point}}">知识点：{{item.knowledge_point}}</text>
+    <view class="q-row" wx:if="{{item.stem}}"><text class="k">题目：</text><text>{{item.stem}}</text></view>
+    <view class="q-row"><text class="k">孩子原答案：</text><text>{{item.student_answer || '—'}}</text></view>
+    <view class="q-row" wx:if="{{item.correct_answer}}"><text class="k">正确答案：</text><text class="ans">{{item.correct_answer}}</text></view>
+    <view class="q-row" wx:if="{{item.error_rule}}"><text class="k">错因规则：</text><text>{{item.error_rule}}</text></view>
+    <view class="q-row" wx:if="{{item.archive_path}}"><text class="k">归档：</text><text class="muted">{{item.archive_path}}</text></view>
+    <text class="muted" wx:if="{{item.when}}">最近更新：{{item.when}}</text>
+    <view class="actions">
+      <button size="mini" type="primary" data-entry="{{item}}" bindtap="openSheet">登记复测结果</button>
+      <button size="mini" data-task="{{item.task_id}}" bindtap="goTask">查看任务与归档</button>
+    </view>
+  </view>
+
+  <view wx:if="{{sheetVisible}}" class="mask" bindtap="closeSheet"></view>
+  <view wx:if="{{sheetVisible}}" class="sheet">
+    <text class="sec-title">登记复测结果</text>
+    <text class="muted">{{activeEntry.located}} · 当前状态：{{activeEntry.stateLabel}}</text>
+
+    <text class="sec-title">结果</text>
+    <view class="chips">
+      <view
+        wx:for="{{resultOptions}}"
+        wx:key="key"
+        class="chip {{resultIndex === index ? 'chip-on' : ''}}"
+        data-index="{{index}}"
+        bindtap="pickResult">{{item.label}}</view>
+    </view>
+
+    <view class="row">
+      <text class="label">发生日期</text>
+      <picker mode="date" value="{{occurredDate}}" bindchange="onDateChange">
+        <view class="picker">{{occurredDate}} ▾</view>
+      </picker>
+    </view>
+
+    <text class="sec-title">孩子本次答案</text>
+    <input class="input" value="{{studentAnswer}}" placeholder="例如：x=4" bindinput="onAnswerInput" />
+
+    <text class="sec-title">备注（可选）</text>
+    <input class="input" value="{{note}}" placeholder="例如：重新讲解了移项规则后独立完成" bindinput="onNoteInput" />
+
+    <view class="actions">
+      <button size="mini" type="primary" bindtap="saveEvent" loading="{{saving}}" disabled="{{saving}}">保存</button>
+      <button size="mini" bindtap="closeSheet">取消</button>
+    </view>
+    <text class="muted">只记录真实发生的作答；不会把练习完成当成已掌握。</text>
+  </view>
+</view>

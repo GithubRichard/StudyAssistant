@@ -1,0 +1,50 @@
+<view class="container">
+  <view class="card">
+    <text class="sec-title">学习设置</text>
+    <text class="muted">当前来源：{{source}}</text>
+    <text class="muted">学期起始日期用于期中考、期末考默认读取整学期记录；未填写时如实说明缺口，不擅自假设。</text>
+  </view>
+
+  <view class="card">
+    <text class="sec-title">默认年级</text>
+    <view class="row">
+      <text class="label">年级</text>
+      <picker mode="selector" range="{{grades}}" value="{{gradeIndex}}" bindchange="onGradeChange">
+        <view class="picker">{{grades[gradeIndex]}} ▾</view>
+      </picker>
+    </view>
+    <view class="row">
+      <text class="label">开学日期</text>
+      <picker mode="date" value="{{termStartDate}}" bindchange="onTermChange">
+        <view class="picker">{{termStartDate || '未填写'}} ▾</view>
+      </picker>
+    </view>
+    <text class="muted" wx:if="{{termStartDate}}" bindtap="onTermChange">如需清空，请重新选择或联系维护者。</text>
+  </view>
+
+  <view class="card">
+    <text class="sec-title">学科清单</text>
+    <view class="chips">
+      <view wx:for="{{subjects}}" wx:key="*this" class="chip chip-on">
+        <text>{{item}}</text>
+        <text class="chip-del" data-index="{{index}}" catchtap="removeSubject">×</text>
+      </view>
+    </view>
+    <view class="row">
+      <input class="input inline" value="{{newSubject}}" placeholder="新增学科，如 物理" bindinput="onNewSubjectInput" />
+      <button size="mini" bindtap="addSubject">添加</button>
+    </view>
+    <text class="muted">学科清单决定工作区要创建哪些目录骨架；新增学科会自动套用同一套子目录与原题忽略规则。</text>
+  </view>
+
+  <button type="primary" bindtap="save" loading="{{saving}}" disabled="{{saving}}">保存设置</button>
+
+  <view class="card">
+    <text class="sec-title">服务端状态</text>
+    <text class="muted">{{runtimeText}}</text>
+    <text class="muted">{{workspaceText}}</text>
+    <text class="muted">{{gitText}}</text>
+    <text class="muted" wx:if="{{lastSyncNote}}">{{lastSyncNote}}</text>
+    <text class="muted">未启用的能力会如实标注，不把模型自述当成已完成。</text>
+  </view>
+</view>

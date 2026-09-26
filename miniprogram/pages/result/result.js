@@ -28,6 +28,20 @@ const DELIVERY_LABEL = {
   not_configured: '未配置', skipped: '已跳过', generated: '已生成',
   sent: '已请求发送', committed: '已提交', failed: '失败',
 };
+// 订正与复测状态（与结果协议 v3 一致）
+const REMEDIATION_LABEL = {
+  pending_correction: '待订正', corrected_pending_retest: '已订正待复测',
+  retest_passed: '复测通过', retest_failed: '复测未通过', not_applicable: '不适用',
+};
+const REMEDIATION_PILL = {
+  pending_correction: 'pill-waiting', corrected_pending_retest: 'pill-running',
+  retest_passed: 'pill-done', retest_failed: 'pill-failed',
+};
+const RETEST_ACTIONS = [
+  { label: '复测通过', result: 'retest_passed' },
+  { label: '复测未通过', result: 'retest_failed' },
+  { label: '已订正，待复测', result: 'corrected' },
+];
 // 自动轮询上限（毫秒）：超过后不再自动查询，改为手动「继续查询」，绝不假装仍在进行
 const AUTO_POLL_LIMIT = 30 * 60 * 1000;
 const TERMINAL = ['done', 'failed', 'waiting_input', 'interrupted'];
@@ -51,7 +65,10 @@ Page({
     qLabel: Q_LABEL,
     reviewLabel: REVIEW_LABEL,
     deliveryLabel: DELIVERY_LABEL,
+    remediationLabel: REMEDIATION_LABEL,
     deliveryRows: [],
+    gitConflictRecord: '',
+    authError: '',
   },
 
   onLoad(options) {
@@ -83,6 +100,23 @@ Page({
     try {
       const t = await api.getTask(this.data.taskId);
       const result = t.result || null;
+      const ledgerById = {};
+      (t.ledger || []).forEach((row) => {
+        if (row.question_uid) ledgerById[row.question_uid] = row;
+      });
+      if (result && result.questions) {
+        result.questions = result.questions.map((q) => {
+          const state = (q.remediation && q.remediation.state) || 'not_applicable';
+          const ledger = (q.uid && ledgerById[q.uid]) || null;
+          return Object.assign({}, q, {
+            remediationText: REMEDIATION_LABEL[state] || state,
+            remediationPill: REMEDIATION_PILL[state] || 'pill-pending',
+            remediationDate: (q.remediation && q.remediation.updated_date) || '',
+            ledgerId: ledger ? ledger.id : 0,
+          });
+        });
+      }
+      const gitItem = (result && result.delivery && result.delivery.git) || null;
       this.setData({
         status: t.status,
         statusText: STATUS_TEXT[t.status] || t.status,
@@ -93,6 +127,7 @@ Page({
         error: t.error || '',
         missingInfo: (result && result.missing_info) || [],
         deliveryRows: this.buildDeliveryRows(result),
+        gitConflictRecord: (gitItem && gitItem.conflict_record) || '',
       });
       if (TERMINAL.includes(t.status)) {
         this.clearTimer();
@@ -206,6 +241,38 @@ Page({
       wx.showToast({ title: '保存失败', icon: 'none' });
     } finally {
       wx.hideLoading();
+    }
+  },
+
+  // 登记一次真实发生的复测结果（只追加事件，不改写历史判定）
+  retest(e) {
+    const q = e.currentTarget.dataset.q;
+    if (!q.ledgerId) {
+      wx.showToast({ title: '该题尚未写入台账', icon: 'none' });
+      return;
+    }
+    wx.showActionSheet({
+      itemList: RETEST_ACTIONS.map((a) => a.label),
+      success: (res) => {
+        const action = RETEST_ACTIONS[res.tapIndex];
+        if (action) this.submitRetest(q.ledgerId, action.result);
+      },
+    });
+  },
+
+  async submitRetest(entryId, result) {
+    wx.showLoading({ title: '登记中', mask: true });
+    try {
+      const res = await api.addLedgerEvent(entryId, { result });
+      wx.hideLoading();
+      wx.showToast({
+        title: '已登记：' + (REMEDIATION_LABEL[res.remediation_state] || ''),
+        icon: 'none',
+      });
+      this.tick();
+    } catch (err) {
+      wx.hideLoading();
+      wx.showModal({ title: '登记失败', content: err.message || '未知错误', showCancel: false });
     }
   },
 

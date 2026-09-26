@@ -92,3 +92,6 @@
   display: flex; align-items: center; justify-content: center;
   color: #126B56; font-size: 46rpx; background: #FBFCFA;
 }
+
+.q-actions { display: flex; flex-wrap: wrap; margin-top: 12rpx; }
+.q-actions button { margin: 0 16rpx 12rpx 0; }

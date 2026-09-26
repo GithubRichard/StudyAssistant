@@ -22,6 +22,11 @@ Page({
     }
   },
 
+  // 复习台账是主入口：按知识点与订正状态聚合，并支持登记复测
+  goReview() {
+    wx.switchTab({ url: '/pages/review/review' });
+  },
+
   goTask(e) {
     wx.navigateTo({ url: '/pages/result/result?task_id=' + e.currentTarget.dataset.task });
   },

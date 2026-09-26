@@ -1,0 +1,31 @@
+.row {
+  display: flex;
+  align-items: center;
+  padding: 16rpx 0;
+  border-bottom: 1rpx solid #F0F2EF;
+}
+.row:last-child { border-bottom: none; }
+.label { width: 180rpx; color: #66766F; }
+.picker { flex: 1; text-align: right; color: #20352F; }
+
+.chips { display: flex; flex-wrap: wrap; margin-bottom: 12rpx; }
+.chip {
+  padding: 12rpx 24rpx;
+  border-radius: 999rpx;
+  background: #F1F4F1;
+  color: #4A5B55;
+  margin: 0 16rpx 16rpx 0;
+  font-size: 26rpx;
+}
+.chip-on { background: #E4F1EB; color: #126B56; font-weight: 600; }
+.chip-del { margin-left: 12rpx; color: #126B56; font-weight: 600; }
+
+.input {
+  width: 100%;
+  background: #F7F9F6;
+  border-radius: 14rpx;
+  padding: 18rpx 20rpx;
+  font-size: 27rpx;
+  box-sizing: border-box;
+}
+.input.inline { flex: 1; margin-right: 16rpx; }

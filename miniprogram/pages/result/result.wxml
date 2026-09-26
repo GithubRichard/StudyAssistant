@@ -34,8 +34,8 @@
   </view>
 
   <block wx:if="{{result}}">
-    <view wx:if="{{result.legacy}}" class="card warn">
-      <text>旧版本结果：未记录二次核查，也不含五态判定与交付状态。</text>
+    <view wx:if="{{result.legacy || result.schema_note}}" class="card warn">
+      <text>{{result.schema_note || '旧版本结果：未记录二次核查，也不含五态判定与交付状态。'}}</text>
     </view>
 
     <view class="card">
@@ -48,6 +48,13 @@
         <view class="stat"><text class="stat-n info">{{result.overview.uncertain}}</text><text class="stat-l">待核实</text></view>
       </view>
       <text class="muted" wx:if="{{result.overview.summary}}">{{result.overview.summary}}</text>
+      <text class="muted" wx:if="{{result.overview.error_rate_basis}}">{{result.overview.error_rate_basis}}</text>
+    </view>
+
+    <view class="card" wx:if="{{result.overview.remediation}}">
+      <text class="sec-title">订正与复测</text>
+      <text class="muted">待订正 {{result.overview.remediation.pending_correction || 0}} · 已订正待复测 {{result.overview.remediation.corrected_pending_retest || 0}} · 复测通过 {{result.overview.remediation.retest_passed || 0}} · 复测未通过 {{result.overview.remediation.retest_failed || 0}}</text>
+      <text class="muted">生成练习不等于完成练习，完成订正不等于已经掌握；没有新结果时保持待复测。</text>
     </view>
 
     <view class="card" wx:if="{{result.scope.start_date || result.scope.end_date || result.scope.sources.length}}">
@@ -84,13 +91,22 @@
       </view>
       <view class="q-row" wx:if="{{item.review.note}}"><text class="k">核查说明：</text><text>{{item.review.note}}</text></view>
       <view class="q-row" wx:if="{{item.final_decision_basis}}"><text class="k">复核依据：</text><text>{{item.final_decision_basis}}</text></view>
+      <view class="q-row" wx:if="{{item.status === 'wrong' || item.status === 'uncertain'}}">
+        <text class="k">订正/复测：</text>
+        <text class="status-pill {{item.remediationPill}}">{{item.remediationText}}</text>
+      </view>
+      <view class="q-row" wx:if="{{item.remediationDate}}"><text class="k">状态更新：</text><text class="muted">{{item.remediationDate}}</text></view>
       <view wx:if="{{item.steps.length}}" class="explain">
         <text class="k">解题步骤：</text>
         <view wx:for="{{item.steps}}" wx:for-item="step" wx:key="*this" class="step">
           <text>{{index + 1}}. {{step}}</text>
         </view>
       </view>
-      <button wx:if="{{item.status === 'wrong'}}" size="mini" bindtap="addMistake" data-q="{{item}}">加入错题本</button>
+      <view class="q-actions">
+        <button wx:if="{{item.status === 'wrong'}}" size="mini" bindtap="addMistake" data-q="{{item}}">加入错题本</button>
+        <button wx:if="{{item.status === 'wrong' || item.status === 'uncertain'}}" size="mini" type="primary"
+                bindtap="retest" data-q="{{item}}">登记复测结果</button>
+      </view>
     </view>
 
     <view wx:for="{{result.sections}}" wx:key="title" class="card">
@@ -110,6 +126,7 @@
         <text class="d-status d-{{item.status}}">{{item.text}}</text>
       </view>
       <text class="muted" wx:for="{{deliveryRows}}" wx:key="key" wx:if="{{item.note}}">{{item.label}}：{{item.note}}</text>
+      <text class="muted" wx:if="{{gitConflictRecord}}">同步冲突：已生成 {{gitConflictRecord}}，本次未推送成功，请人工处理（冲突记录不代表冲突已解决）。</text>
     </view>
 
     <view class="card" wx:if="{{artifacts.length}}">
@@ -140,6 +157,11 @@
         <text>第 {{item.run_no}} 轮（{{item.kind === 'followup' ? '补充材料' : '首次提交'}}）</text>
         <text class="status-pill {{item.status === 'done' ? 'pill-done' : (item.status === 'failed' ? 'pill-failed' : 'pill-running')}}">{{item.status}}</text>
       </view>
+    </view>
+
+    <view class="card">
+      <text class="sec-title">隐私说明</text>
+      <text class="muted">提交的作业照片只用于本次批改，存放在服务端私有目录：不写入学习记录、不进入 Git、不随记录分发。</text>
     </view>
   </block>
 </view>

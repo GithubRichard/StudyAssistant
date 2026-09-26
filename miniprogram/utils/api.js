@@ -175,6 +175,21 @@ const getQuota = () => request('/api/quota');
 const getRuntime = () => request('/api/runtime');
 const getProviders = () => request('/api/providers');
 
+// 家庭设置（学期起始日期、年级、学科清单）
+const getSettings = () => request('/api/settings');
+const updateSettings = (payload) =>
+  request('/api/settings', {
+    method: 'PUT',
+    data: payload,
+    header: { 'content-type': 'application/json' },
+  });
+
+// 复习台账与复测登记
+const getLedger = (params = {}) => request('/api/ledger', { data: params });
+const getLedgerEntry = (entryId) => request('/api/ledger/' + entryId);
+const addLedgerEvent = (entryId, payload) =>
+  requestJson('/api/ledger/' + entryId + '/events', payload);
+
 function addMistake({ task_id, question_no, knowledge_point, note }) {
   return formRequest('/api/mistakes', { task_id, question_no, knowledge_point, note });
 }
@@ -189,5 +204,7 @@ module.exports = {
   ensureLogin, login, logout, getOpenid, getToken,
   uploadAsset, createStudyTask, createFollowup,
   getTask, getTasks, getQuota, getRuntime, getProviders,
+  getSettings, updateSettings,
+  getLedger, getLedgerEntry, addLedgerEvent,
   addMistake, getMistakes, artifactUrl,
 };
