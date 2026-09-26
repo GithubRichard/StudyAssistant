@@ -92,9 +92,26 @@ class MockHermes:
         self.requests.append(request)
         path = request.url.path
 
+        if self.fail_mode == "unreachable":
+            raise httpx.ConnectError("mock: 连不上", request=request)
+
+        if path == "/health":
+            # 复现真实环境：/health 在该版本上返回 5xx，但 /v1/health 正常
+            if self.fail_mode == "health_500":
+                return httpx.Response(500, json={"error": "degraded"})
+            return httpx.Response(200, json={"status": "ok"})
+
+        if path == "/v1/health":
+            return httpx.Response(200, json={"status": "ok"})
+
         if path == "/v1/skills":
-            if self.fail_mode == "unreachable":
-                raise httpx.ConnectError("mock: 连不上", request=request)
+            if self.fail_mode == "skills_500":
+                # 复现真实环境：/v1/skills 内部 500，但网关本身是活的
+                return httpx.Response(500, json={
+                    "error": {"message": "Failed to enumerate skills",
+                              "type": "server_error"}})
+            if self.fail_mode == "auth":
+                return httpx.Response(401, json={"error": "unauthorized"})
             return httpx.Response(200, json={"skills": [{"name": s} for s in self.skills]})
 
         if path == "/v1/capabilities":

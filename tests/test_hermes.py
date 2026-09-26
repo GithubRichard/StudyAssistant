@@ -56,6 +56,40 @@ class ReadinessTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["state"], "unreachable")
         await client.aclose()
 
+    async def test_health_5xx_does_not_mean_unreachable(self):
+        """/health 返回 500 但网关可用时，不能误报「连不上」（真实遇到过的情形）。"""
+        self.mock.uninstall()
+        self.mock = MockHermes(fail_mode="health_500")
+        self.mock.install()
+        client = HermesClient(make_cfg())
+        state = (await client.readiness()).as_dict()
+        self.assertTrue(state["reachable"])
+        self.assertEqual(state["state"], "ready")
+        self.assertIn("500", state["detail"])
+        await client.aclose()
+
+    async def test_invalid_key_reports_auth_failed(self):
+        self.mock.fail_mode = "auth"
+        client = HermesClient(make_cfg())
+        state = (await client.readiness()).as_dict()
+        self.assertTrue(state["reachable"])
+        self.assertEqual(state["state"], "auth_failed")
+        self.assertFalse(state["auth_ok"])
+        await client.aclose()
+
+    async def test_skill_list_failure_does_not_mean_unreachable(self):
+        """真实案例：/v1/skills 内部 500，但网关可用，不能误报成 unreachable。"""
+        self.mock.uninstall()
+        self.mock = MockHermes(fail_mode="skills_500")
+        self.mock.install()
+        client = HermesClient(make_cfg())
+        state = (await client.readiness()).as_dict()
+        self.assertEqual(state["state"], "skill_unknown")
+        self.assertTrue(state["reachable"])
+        self.assertIsNone(state["skill_installed"])
+        self.assertIn("不可用", state["detail"])
+        await client.aclose()
+
     async def test_readiness_is_cached(self):
         client = HermesClient(make_cfg())
         await client.readiness()

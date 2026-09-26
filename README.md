@@ -86,7 +86,11 @@ curl -s http://127.0.0.1:8642/v1/skills -H "Authorization: Bearer $HERMES_API_KE
 | `not_configured` | 未配地址/密钥 | 填 `.env` |
 | `unreachable` | 连不上 | 检查 Hermes 是否在跑、地址是否正确 |
 | `skill_missing` | 连上但技能未安装 | 按上面第 2 步安装技能 |
+| `auth_failed` | 网关可达，但密钥不一致 | 核对 `HERMES_API_KEY` 与 Hermes 的 `gateway.api_server.key` |
+| `skill_unknown` | 网关可用，但 `/v1/skills` 接口异常，无法确认技能状态（任务仍会尝试执行） | 查 Hermes 日志，必要时 `hermes doctor` / `hermes update` |
 | `ready` | 可用 | — |
+
+> 就绪判定分三步：先用 `/health`（依次回退 `/v1/health`、`/v1/capabilities`）判断网关是否**有响应**（非 2xx 也算活着），再识别密钥是否有效，最后才枚举技能。**探针返回 5xx 或技能列表接口坏了，都不会被误报成「连不上」，也不会阻止任务执行。**
 
 ## 4. 配置要点（config.yaml）
 

@@ -4,6 +4,6 @@
 //
 // 注意：这里不要出现 Hermes 地址、Hermes 密钥或任何大模型 Key。
 // 小程序只与本服务通信，Hermes 由服务端在内部网络调用。
-const BASE_URL = 'https://api.你的域名';
+const BASE_URL = 'http://106.54.224.208:8000';
 
 module.exports = { BASE_URL };

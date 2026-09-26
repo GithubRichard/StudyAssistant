@@ -12,6 +12,8 @@ const MAX_IMAGES = 9;
 
 const RUNTIME_TEXT = {
   ready: '技能服务已就绪',
+  auth_failed: '服务端与 Hermes 的密钥不一致，请检查配置',
+  skill_unknown: '无法确认技能是否已安装（技能列表接口异常），任务仍会尝试执行',
   skill_missing: 'Hermes 未加载学习技能，任务可能无法完成',
   unreachable: '暂时连不上 Hermes，请稍后再试',
   not_configured: '服务端尚未配置 Hermes，无法执行学习任务',

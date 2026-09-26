@@ -7,6 +7,8 @@ const ENGINE_TEXT = {
 };
 const HERMES_TEXT = {
   ready: '就绪（技能已安装）',
+  auth_failed: '密钥不一致',
+  skill_unknown: '无法确认（技能列表接口异常）',
   skill_missing: '技能未安装',
   unreachable: '连不上 Hermes',
   not_configured: '未配置 Hermes',

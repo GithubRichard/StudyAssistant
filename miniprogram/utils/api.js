@@ -32,9 +32,22 @@ function errorText(res, fallback) {
   return (res && res.statusCode ? fallback + ' ' + res.statusCode : fallback);
 }
 
+// BASE_URL 还是占位符时给出明确提示，避免出现 ERR_NAME_NOT_RESOLVED 这类难懂的报错
+const PLACEHOLDER_HINT =
+  '请先修改 miniprogram/utils/config.js 里的 BASE_URL 为你的服务器地址（调试可用 http://服务器IP:8000）';
+
+function baseUrlError() {
+  if (!BASE_URL || BASE_URL.indexOf('你的域名') >= 0 || BASE_URL.indexOf('example.com') >= 0) {
+    return new Error(PLACEHOLDER_HINT);
+  }
+  return null;
+}
+
 // 需要登录的请求：401 时自动重新登录并重试一次
 function request(path, options = {}, retried = false) {
   const { method = 'GET', data = {}, header = {} } = options;
+  const invalid = baseUrlError();
+  if (invalid) return Promise.reject(invalid);
   return new Promise((resolve, reject) => {
     wx.request({
       url: BASE_URL + path,
@@ -116,6 +129,8 @@ function logout() {
 
 // 上传单张图片，返回 { asset_id }
 function uploadAsset(filePath) {
+  const invalid = baseUrlError();
+  if (invalid) return Promise.reject(invalid);
   return new Promise((resolve, reject) => {
     wx.uploadFile({
       url: BASE_URL + '/api/assets',

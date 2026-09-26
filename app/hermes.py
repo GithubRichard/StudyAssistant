@@ -78,28 +78,44 @@ class HermesResultInvalid(HermesError):
 
 
 class HermesReadiness:
+    """就绪状态。
+
+    区分三件独立的事，避免把「技能列表接口坏了」误报成「Hermes 不可用」：
+    - configured：地址与密钥是否配置
+    - reachable：网关是否响应（用公开的 /health 探测）
+    - skill_installed：技能是否出现在 /v1/skills；None 表示**无法确认**
+      （例如该接口在本机版本上有 bug），此时执行任务仍会照常尝试。
+    """
+
     def __init__(self, configured: bool, reachable: bool, skills: List[str],
-                 skill_installed: bool, checked_at: float, detail: str) -> None:
+                 skill_installed: Optional[bool], checked_at: float, detail: str,
+                 auth_ok: Optional[bool] = None) -> None:
         self.configured = configured
         self.reachable = reachable
         self.skills = skills
         self.skill_installed = skill_installed
         self.checked_at = checked_at
         self.detail = detail
+        self.auth_ok = auth_ok
 
     def as_dict(self) -> Dict[str, Any]:
         if not self.configured:
             state = "not_configured"
         elif not self.reachable:
             state = "unreachable"
-        elif not self.skill_installed:
+        elif self.auth_ok is False:
+            state = "auth_failed"
+        elif self.skill_installed is True:
+            state = "ready"
+        elif self.skill_installed is False:
             state = "skill_missing"
         else:
-            state = "ready"
+            state = "skill_unknown"
         return {
             "state": state,
             "configured": self.configured,
             "reachable": self.reachable,
+            "auth_ok": self.auth_ok,
             "skill_installed": self.skill_installed,
             "skills": self.skills,
             "checked_at": self.checked_at,
@@ -253,30 +269,70 @@ class HermesClient:
             return self._readiness
 
         if not self.cfg.configured:
-            result = HermesReadiness(False, False, [], False, now,
+            result = HermesReadiness(False, False, [], None, now,
                                      "未配置 HERMES_BASE_URL / HERMES_API_KEY")
             self._readiness = result
             return result
 
-        skills: List[str] = []
-        try:
-            resp = await self._request("GET", "/v1/skills", timeout=10.0)
-            skills = _extract_skill_names(resp.json())
-            detail = ""
-        except HermesError as e:
-            result = HermesReadiness(True, False, [], False, now, e.message)
+        # ① 可达性：依次探测几个公开端点，**拿到任何 HTTP 响应都算网关活着**
+        #    （只看 200 会把「降级但可用」的网关误判成连不上）
+        status: Optional[int] = None
+        probe_errors: List[str] = []
+        for path in ("/health", "/v1/health", "/v1/capabilities"):
+            try:
+                status = await self._probe(path, timeout=10.0)
+                break
+            except HermesError as e:
+                probe_errors.append(f"{path}: {e.message}")
+        if status is None:
+            result = HermesReadiness(True, False, [], None, now,
+                                     "无法连接 Hermes：" + "；".join(probe_errors))
             self._readiness = result
             return result
 
-        installed = self.cfg.skill_name in skills
-        if not self.cfg.verify_skill:
-            installed = True
-            detail = detail or "已按配置跳过技能校验"
-        elif not installed:
-            detail = f"技能 {self.cfg.skill_name} 未出现在 /v1/skills 列表"
-        result = HermesReadiness(True, True, skills, installed, now, detail)
+        notes: List[str] = []
+        if status >= 500:
+            notes.append(f"网关存活探针返回 HTTP {status}（可能处于降级状态）")
+
+        # ② 鉴权：401/403 说明密钥不对，任务必然失败，单独识别
+        auth_ok: Optional[bool] = None
+        if status in (401, 403):
+            auth_ok = False
+
+        # ③ 技能枚举：失败只表示「无法确认」，不代表不能用
+        skills: List[str] = []
+        installed: Optional[bool] = None
+        try:
+            resp = await self._request("GET", "/v1/skills", timeout=10.0)
+            skills = _extract_skill_names(resp.json())
+            installed = self.cfg.skill_name in skills
+            auth_ok = True
+            if not installed:
+                notes.append(f"技能 {self.cfg.skill_name} 未出现在 /v1/skills 列表")
+        except HermesAuthError as e:
+            auth_ok = False
+            notes.append(f"API Server 密钥无效：{e.message}")
+        except HermesError as e:
+            notes.append(f"技能列表接口不可用（{e.message}），无法确认技能是否已安装，"
+                         "任务仍会尝试执行")
+
+        result = HermesReadiness(True, True, skills, installed, now,
+                                 "；".join(notes), auth_ok=auth_ok)
         self._readiness = result
         return result
+
+    async def _probe(self, path: str, timeout: float) -> int:
+        """只判断「有没有响应」，不把非 2xx 当成连不上。"""
+        if not self.cfg.configured:
+            raise HermesNotConfigured("未配置 Hermes 地址或密钥")
+        client = await self._http()
+        try:
+            resp = await client.get(path, timeout=timeout)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            raise HermesUnavailable(f"无法连接 Hermes：{e}") from e
+        except httpx.HTTPError as e:
+            raise HermesUnavailable(f"请求失败：{e}") from e
+        return resp.status_code
 
     # ---------- 执行 ----------
 
