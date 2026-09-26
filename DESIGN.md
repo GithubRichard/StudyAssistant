@@ -1,6 +1,6 @@
 # Leo 学习任务服务 · 技术方案与设计文档
 
-> 版本：v0.2.0（接入 Hermes 技能执行）| 日期：2026-09-26
+> 版本：v0.3.0（对齐学习规范：订正复测、台账、受控 Git 同步）| 日期：2026-09-26
 > 目标读者：个人开发者（家庭自用，业余时间维护）
 > v0.1 的「多模型直连批改」保留为 legacy 引擎，见 §7
 
@@ -8,11 +8,14 @@
 
 ## 1. 项目目标与范围
 
-微信小程序提交学习任务 → 云服务器上的业务后端负责身份、附件与任务 → 由 **Hermes Agent 执行学习技能**（批改、错题解析、周报、考前训练、复测）→ 结果与归档状态返回小程序。
+微信小程序提交学习任务 → 云服务器上的业务后端负责身份、附件与任务 → 由 **Hermes Agent 执行学习技能**（批改、错题解析、周报、考前训练、复测）→ 结果校验、受控归档、错题台账与受控 Git 同步，状态如实返回前端。
+
+学习闭环：**每日错题解析 → 周报归纳 → 专项或考前训练 → 实际复测 → 更新记录**。
 
 - 技能规则来自 `hermes/skills/leo-study-assistant/`（本仓库副本，已解除与本机 IDE 的耦合）
-- 业务后端不实现 Agent 推理，只负责：鉴权、附件、任务队列、结果校验、受控归档、状态如实呈现
-- 本轮不做：服务器部署、真实 Hermes 联调、PDF 生成、云端邮件、学习记录 Git 同步（能力开关默认关闭）
+- 业务后端不实现 Agent 推理，只负责：鉴权、附件、任务队列、结果校验、受控归档、台账去重、
+  受控提交推送、状态如实呈现
+- 本轮不做：服务器部署、真实 Hermes 联调、PDF 生成、云端邮件（`delivery.pdf/email` 如实标注未配置）
 
 ---
 
@@ -43,9 +46,12 @@
 
 | 层 | 职责 | 不做什么 |
 |---|---|---|
-| 小程序 | 提交材料、展示状态与结果、下载成果 | 不持有 Hermes 地址/密钥，不直接调用 Agent |
-| 业务后端 | 身份与归属、配额、幂等、队列、结果校验、归档落盘 | 不实现 Agent 工具循环，不伪造进度 |
-| Hermes Agent | 加载技能与工具、多轮推理、产出结构化结果 | 不直接写学习记录（写入由后端校验后执行） |
+| 小程序 | 提交材料、展示状态与结果、复习台账与复测登记、下载成果 | 不持有 Hermes 地址/密钥，不直接调用 Agent |
+| 业务后端 | 身份与归属、配额、幂等、队列、结果校验、归档落盘、台账去重、受控提交推送 | 不实现 Agent 工具循环，不伪造进度，不代发邮件 |
+| Hermes Agent | 加载技能与工具、多轮推理、产出结构化结果 | 不直接写学习记录、不执行 git（写入与推送由后端校验后执行） |
+
+原题资料边界：上传的作业照片只落在 `data/`（服务端私有目录），**不写入工作区、不进入归档 Markdown、不进入 Git**；
+工作区保留 `学科/原题/年份/周次/` 目录骨架与 `.gitignore` 忽略规则，仅 `.gitkeep` 可被跟踪。
 
 ---
 
@@ -68,6 +74,7 @@
 | `not_configured` | 未配置地址或密钥 |
 | `unreachable` | 配置了但连不上 |
 | `skill_missing` | 连上了但技能未出现在 `/v1/skills` |
+| `skill_unknown` | 网关可用但技能接口异常，无法确认；任务仍会尝试执行 |
 | `ready` | 地址、密钥、技能三者齐备 |
 
 ### 3.3 错误分类与重试边界
@@ -83,25 +90,32 @@
 
 ---
 
-## 4. 结果协议（schema_version = 2）
+## 4. 结果协议（schema_version = 3）
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "task_type": "grading",
+  "exam_scope": "",
+  "training_kind": "",
+  "scope": {"start_date": "2026-09-01", "end_date": "2026-09-26", "sources": ["9月3周作业"]},
   "questions": [{
     "id": "math-p12-q1", "no": "1", "source": "9月3周作业", "page": "P12",
     "student_answer": "x=5", "status": "wrong",
     "correct_answer": "x=4", "steps": ["2x=8", "x=4"],
     "error_rule": "移项时忘记变号", "knowledge_point": "一元一次方程",
     "review": {"state": "agreed", "note": "核查未发现异议", "basis": "由 2x=8 得 x=4"},
-    "final_decision": "kept_wrong", "final_decision_basis": "复核后维持原判定"
+    "final_decision": "kept_wrong", "final_decision_basis": "复核后维持原判定",
+    "remediation": {"state": "pending_correction", "updated_date": "", "linked_training": "", "note": ""}
   }],
+  "retests": [{"source": "9月3周作业", "page": "P12", "no": "1",
+              "occurred_date": "2026-09-28", "result": "retest_passed", "student_answer": "x=4"}],
   "review_summary": {"state": "completed", "scope": 1, "disagreed": 0, "unverified": 0},
   "archive": {"suggested_path": "数学/错题解析/2026-09-26.md", "action": "append",
               "content_markdown": "..."},
   "delivery": {"pdf": {"status": "not_configured"}, "email": {"status": "not_configured"},
-               "git": {"status": "not_configured"}}
+               "git": {"status": "not_configured", "committed": false, "pushed": false,
+                       "commit": "", "conflict_record": ""}}
 }
 ```
 
@@ -111,8 +125,13 @@
 - 判错题必须给出 `correct_answer` 或 `steps`，且 `error_rule` 不能是「粗心」这类笼统表述
 - 未作答与存疑题不得标为 `kept_wrong`
 - 核查有异议（`review.state=disagreed`）必须给出可核验依据
-- 题目 `id` 唯一；`overview` 若填写则必须与逐题统计一致（后端会重算）
-- 旧结果（v1）只读转换展示，并明确标注「未记录二次核查」
+- 题目 `id` 唯一；`overview` 若填写则必须与逐题统计一致（后端会重算五态、订正状态计数与错误率口径）
+- 归档子目录必须与任务类型匹配（`错题解析` / `周报分析` / `强化训练`）
+- 订正与复测：判错题必须给出 `remediation.state`；`corrected_pending_retest` / `retest_passed` /
+  `retest_failed` 必须给出实际发生日期；非错题必须为 `not_applicable`
+- `retests[]` 每项必须有真实发生日期（`occurred_date`），只追加、不改写历史判定
+- 题目稳定去重键 `uid`（学科+来源+日期+页码+题号）由服务端回填，用于台账去重与复测关联
+- 旧结果（v2）只读转换展示并标注「未记录订正与复测状态」；v1 旧批改结果同样只读转换
 
 ---
 
@@ -134,6 +153,19 @@ v2 新增：
 
 `tasks` 新增 `task_type`、`input_text`、`run_count`、`claim_owner`、`claim_expires_at`、`idempotency_key`、`archive_path`。
 
+v3 新增：
+
+| 表 / 列 | 用途 |
+|---|---|
+| `family_settings` | 家庭设置（学期起始日期、默认年级、学科清单 JSON） |
+| `question_events` | 订正与复测事件（只追加，历史判定不被改写） |
+| `git_sync_log` | 每次受控 Git 同步的真实结果（状态、提交号、冲突记录路径、原因） |
+| `mistakes` 扩展列 | `subject`/`source`/`page`/`question_uid`/`stem`/`student_answer`/`correct_answer`/`error_rule`/`status`/`remediation_state`/`last_event_at`/`archive_path`，并加 `(openid, subject, remediation_state)` 索引与 `question_uid` 条件唯一索引 |
+| `tasks` 扩展列 | `exam_scope`、`training_kind`、`scope_start`、`scope_end`、`git_status` |
+
+台账与人工收藏共用 `mistakes` 表：**台账条目 `question_uid` 非空**（自动去重入账），
+人工收藏条目 `question_uid` 为空，两者在接口层分开返回。
+
 迁移规则：有数据的旧库先备份为 `app.db.bak-<时间戳>`，失败即中止；只加表加列，不删不改历史数据。
 
 ---
@@ -149,9 +181,12 @@ v2 新增：
 | 幂等 | `Idempotency-Key` + 请求指纹；同键同内容返回原任务，同键不同内容返回 409 |
 | 配额 | 创建任务时同一事务内预留；重复提交不重复扣次；确认未执行才退还 |
 | 队列 | 数据库认领（claim + 租约）；重启时把已派发未结束的任务标记 `interrupted`，不自动重放 |
-| 归档 | 只允许 `学科/{错题解析,周报分析,强化训练}/YYYY-MM-DD*.md`；读—合并—原子替换；同一轮次重复写会被标记跳过 |
+| 归档 | 只允许 `学科/{错题解析,周报分析,强化训练}/YYYY-MM-DD*.md`，且子目录必须与任务类型匹配；读—合并—原子替换；同一轮次重复写会被标记跳过；复测结果追加到既有文件，不覆盖历史 |
+| 原题边界 | 上传图片只存 `data/`；工作区只创建 `学科/原题/<年份>/` 骨架与 `.gitignore`；归档 Markdown 不含原图 |
+| 台账 | 错题与存疑题按 `uid`（学科+来源+日期+页码+题号）去重入账；复测事件只追加；状态由结果与事件驱动 |
 | 成果 | 只有授权目录内真实存在、类型与大小合规的文件才登记下载 |
-| 交付状态 | 服务端未启用的 PDF/邮件/同步一律 `not_configured`，模型自述不作为成功依据 |
+| 交付状态 | 服务端未启用的 PDF/邮件一律 `not_configured`；`delivery.git` 以受控同步的真实结果为准，模型自述不作为成功依据 |
+| 学习记录同步 | 只 `git add -- <本次归档文件>`，禁止全量暂存与强制添加；推送前校验分支、上游与暂存区；不带 force、不 merge/rebase、不改 Git 配置；冲突或非快进时生成 `冲突记录-YYYY-MM-DD-HHmmss.md` 并停止上传；无变化不建空提交 |
 | 密钥 | Hermes 密钥只在服务端 `.env`；小程序只拿业务会话令牌；日志不打印令牌与原图 |
 
 任务状态机：`pending → grading → (done | waiting_input | failed | interrupted)`；`waiting_input` 表示结果已产出但需要补充材料，可追加新轮次。
@@ -163,7 +198,7 @@ v2 新增：
 v0.1 的「单图 + 多模型直连」路径保留，用于显式回退：
 
 - `app/providers.py` 仍按 OpenAI 兼容协议封装多家厂商，`provider_chain()` 决定顺序与备胎
-- 结果会通过 `grading_result_to_v2()` 转成 v2 结构，并标注「旧模式不执行技能流程与二次核查」
+- 结果会通过 `grading_result_to_v3()` 转成当前协议结构，并标注「旧模式不执行技能流程与二次核查」
 - 默认 `engine.mode: hermes`；Hermes 不可用时**不会静默退回** legacy，必须由配置显式切换
 
 ---
@@ -188,11 +223,14 @@ v0.1 的「单图 + 多模型直连」路径保留，用于显式回退：
 
 | 层次 | 文件 | 说明 |
 |---|---|---|
-| 协议与错误分类 | `tests/test_hermes.py` | 用 `httpx.MockTransport` 模拟 Hermes，验证就绪判定、不重试、结果校验 |
-| 任务链路 | `tests/test_tasks.py` | 鉴权归属、幂等、配额结算/退还、执行器结果、中断恢复、补充材料 |
-| 工作区 | `tests/test_workspace.py` | 路径越界、归档追加幂等、成果真实性 |
-| 迁移 | `tests/test_migrations.py` | 旧库备份升级、旧任务保留 |
-| 端到端 | `test_smoke.py` | TestClient + 模拟 Hermes 跑通完整闭环（不联网） |
+| 协议与错误分类 | `tests/test_hermes.py` | 用 `httpx.MockTransport` 模拟 Hermes，验证就绪判定、不重试、结果校验与 v3 约束 |
+| 任务链路 | `tests/test_tasks.py` | 鉴权归属、幂等、配额结算/退还、执行器结果、中断恢复、补充材料、归档与 Git 交付串联 |
+| 资料区间 | `tests/test_scope.py` | 月考/期中/期末/周报默认区间、用户指定优先与缺口标注 |
+| 台账 | `tests/test_ledger.py` | 去重入账、状态流转、事件追加不改写历史、复测追加与路径边界 |
+| 受控 Git | `tests/test_git_sync.py` | 临时仓库验证只提交授权文件、原题不入库、无变化不建空提交、非快进停止并生成冲突记录 |
+| 工作区 | `tests/test_workspace.py` | 路径越界、归档追加幂等、原题骨架与 .gitignore、冲突记录命名、成果真实性 |
+| 迁移 | `tests/test_migrations.py` | 旧库备份升级（V1→V3）、旧任务保留 |
+| 端到端 | `test_smoke.py` | TestClient + 模拟 Hermes 跑通完整闭环（不联网），含台账、复测登记、设置与区间 |
 
 **验证边界**：以上全部为离线模拟验证，不代表真实 Hermes 版本、工具权限、模型工具调用能力已验证。
 
@@ -202,8 +240,10 @@ v0.1 的「单图 + 多模型直连」路径保留，用于显式回退：
 
 - [ ] 未与真实 Hermes 联调：实例版本、运行用户、技能安装路径、沙箱能力需部署前核实
 - [ ] 二次核查模型映射未确认：技能指定的 IDE 模型名不是 API 型号，未配置时如实报告「核查未完成」
-- [ ] PDF 生成、云端邮件、学习记录 Git 同步未实现（开关默认关闭）
-- [ ] 错题本仍是人工收藏索引，尚未与归档记录双向关联
+- [ ] PDF 生成与云端邮件未实现（开关默认关闭，结果中如实标注）
+- [ ] 网页版前端未同步复习台账与学习设置界面（接口已就绪）
+- [ ] 学习记录同步仅在单进程执行器内串行执行；多实例部署前需要外部锁
+- [ ] 错题台账与归档 Markdown 通过 `uid` 注释关联，尚无回溯重建索引的工具
 - [ ] 单进程单并发执行器：横向扩容前需要把认领机制换成外部队列
 - [ ] SQLite 在高并发写下仍可能锁库；家庭自用场景足够
 - [ ] 微信订阅消息：`wechat.py` 保留函数，前端授权流程未接入

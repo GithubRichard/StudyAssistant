@@ -1,6 +1,6 @@
 # Leo 学习任务服务
 
-微信小程序**或网页版**提交学习任务 → 本服务做鉴权、附件与任务管理 → **Hermes Agent 执行学习技能**（作业批改、错题解析、周报、考前训练、复测）→ 结果、归档与交付状态返回前端。
+微信小程序**或网页版**提交学习任务 → 本服务做鉴权、附件与任务管理 → **Hermes Agent 执行学习技能**（作业批改、错题解析、周报、考前训练、复测）→ 结果校验、归档、受控 Git 同步与台账更新，状态如实返回前端。
 
 > 网页版与小程序共用同一套接口、同一份学习记录，区别只在登录方式：网页版用配置密码，小程序用微信 code。
 
@@ -10,7 +10,7 @@
 ## 1. 架构
 
 ```
-小程序 ──HTTPS──► FastAPI（会话鉴权 / 附件 / 任务队列 / 结果校验 / 受控归档）
+小程序 ──HTTPS──► FastAPI（会话鉴权 / 附件 / 任务队列 / 结果校验 / 受控归档 / 台账 / 受控 Git）
                         │                        │
                         │ SQLite + 文件            │ 内部 HTTP（仅本机）
                         ▼                        ▼
@@ -21,9 +21,9 @@
 
 | 组件 | 负责 | 不负责 |
 |---|---|---|
-| 小程序 / 网页版 | 提交材料、显示真实状态、下载成果 | 不持有 Hermes 地址/密钥 |
-| 本服务 | 身份与归属、配额幂等、队列、结果校验、归档落盘 | 不伪造进度，不代发邮件/代提交 Git |
-| Hermes | 加载技能、多轮推理、产出结构化结果 | 不直接写学习记录 |
+| 小程序 / 网页版 | 提交材料、显示真实状态、复习台账与复测登记、下载成果 | 不持有 Hermes 地址/密钥 |
+| 本服务 | 身份与归属、配额幂等、队列、结果校验、归档落盘、台账去重、受控提交推送 | 不伪造进度，不代发邮件，不把模型自述当作已提交 |
+| Hermes | 加载技能、多轮推理、产出结构化结果 | 不直接写学习记录、不执行 git |
 
 ## 2. 本地跑起来（不联网）
 
@@ -102,9 +102,19 @@ curl -s http://127.0.0.1:8642/v1/skills -H "Authorization: Bearer $HERMES_API_KE
 | `hermes.agent_model` | Hermes 的 Agent 别名（默认 `hermes-agent`），**不是**底层模型 ID |
 | `hermes.verify_skill` | 是否用 `/v1/skills` 校验技能已安装 |
 | `auth.allowed_openids` | 允许使用的微信 openid 白名单；为空=不限制（仅开发） |
-| `workspace.dir` | 授权学习工作区（学习记录与归档） |
-| `delivery.{pdf,email,git}_enabled` | 外部交付开关，默认全关；未启用时结果中标注未配置 |
+| `workspace.dir` | 授权学习工作区（学习记录与归档；原题目录仅本地） |
+| `family.{default_grade_level,subjects,term_start_date}` | 家庭学习配置默认值；小程序「学习设置」保存后覆盖（学期起始日期用于期中/期末默认区间） |
+| `git.{enabled,remote,timeout_seconds,author_*}` | 受控学习记录同步；`enabled` 未配置时回落到 `delivery.git_enabled`，默认关闭 |
+| `delivery.{pdf,email}_enabled` | 外部交付开关，本轮默认关闭；未启用时结果中标注未配置 |
 | `limits.*` | 图片数量/大小、轮次、单任务时长、执行器开关 |
+
+### 学习记录同步（受控 Git）
+
+开启 `git.enabled` 后，任务归档成功即执行提交推送：**只 `git add -- <本次归档文件>`**，
+禁止全量暂存与 `git add -f`；提交前校验分支、上游远端与暂存区（存在他人改动则停止）；
+推送不带 force，不做 merge/rebase，不改 Git 配置。
+遇内容冲突或分支分歧（非快进）时在工作区根生成 `冲突记录-YYYY-MM-DD-HHmmss.md` 并停止上传，
+`delivery.git` 如实返回 `committed / failed / skipped / not_configured`（含 `pushed`、`commit`、`conflict_record`）。
 
 ## 5. 接口一览
 
@@ -122,9 +132,13 @@ curl -s http://127.0.0.1:8642/v1/skills -H "Authorization: Bearer $HERMES_API_KE
 | GET | `/api/tasks` | 历史（分页） |
 | GET | `/api/tasks/{id}/artifacts/{aid}` | 下载通过校验的成果文件 |
 | GET | `/api/quota` | 剩余可用次数 |
-| GET | `/api/runtime` | 脱敏运行状态（引擎/技能就绪/交付开关/限额） |
+| GET | `/api/runtime` | 脱敏运行状态（引擎/技能就绪/交付开关/Git/工作区骨架/家庭默认值/限额） |
+| GET/PUT | `/api/settings` | 家庭设置：学期起始日期、默认年级、学科清单（未保存时回落配置默认值） |
+| GET | `/api/ledger` | 复习台账：按学科与订正状态筛选，返回条目与状态计数 |
+| GET | `/api/ledger/{id}` | 台账条目详情与复测事件历史 |
+| POST | `/api/ledger/{id}/events` | 登记一次真实复测/订正：追加事件、更新状态并写入关联归档文件 |
 | GET | `/api/providers` | 仅反映 legacy 直连配置，**不代表 Hermes 就绪** |
-| POST/GET | `/api/mistakes` | 错题本（人工收藏索引） |
+| POST/GET | `/api/mistakes` | 错题本（人工收藏索引，与自动台账分开） |
 | GET | `/healthz` | 存活探针（不代表技能可用） |
 
 除 `/api/login`、`/api/web/meta`、`/api/web/login`、`/healthz` 与网页版静态资源外，全部需要 `Authorization: Bearer <token>`。
@@ -189,7 +203,9 @@ uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000
 2. 改 `miniprogram/utils/config.js` 的 `BASE_URL`（**只填本服务地址，不要填 Hermes**）
 3. 调试时勾选「不校验合法域名」；上线前完成备案与域名配置（`request` + `uploadFile`）
 
-页面：学习（任务类型/图片/文字/范围）、结果（状态、五态、核查、补充材料、成果）、历史、错题本、我的（运行状态）。
+页面：学习（任务类型、训练类型、资料区间、考试范围、图片与文字）、复习（错题台账、按学科与订正状态筛选、登记复测结果）、结果（状态、五态、订正与复测、二次核查、补充材料、成果、Git 同步状态）、历史、我的（学习设置入口、运行与同步状态）、学习设置（学期起始日期/年级/学科清单）；错题本页保留人工收藏的阅读入口。
+
+> 网页版前端（`web/`）本轮未同步改造，仍为旧版界面；接口保持向后兼容（新增字段只会被忽略）。
 
 ## 8. 部署（Linux，容器 host 网络）
 
@@ -238,14 +254,16 @@ StudyAssistant/
 │   ├── schemas.py       结果协议 v2、请求模型、旧结果兼容
 │   ├── auth.py          会话令牌、白名单、归属校验
 │   ├── hermes.py        Hermes 适配：就绪检查、执行、错误分类
-│   ├── tasks.py         幂等创建、数据库认领执行、轮次与视图
-│   ├── workspace.py     工作区、附件、受控归档、成果登记
-│   ├── migrations.py    版本化增量迁移（旧库先备份）
-│   ├── db.py            SQLite 数据层
+│   ├── tasks.py         幂等创建、数据库认领执行、轮次、视图与台账写入
+│   ├── scope.py         资料区间计算（月考当月、期中期末学期、周报本周）
+│   ├── git_sync.py      受控 Git 提交推送与冲突记录（只提交授权文件）
+│   ├── workspace.py     工作区骨架、附件、受控归档、复测追加、成果登记
+│   ├── migrations.py    版本化增量迁移（旧库先备份；V3：家庭设置/台账/事件/Git 日志）
+│   ├── db.py            SQLite 数据层（含台账去重与事件）
 │   ├── providers.py     legacy：OpenAI 兼容协议封装
 │   └── grading.py       legacy：单轮批改与 JSON 校验
 ├── hermes/skills/leo-study-assistant/   技能副本（SKILL.md + references/）
-├── miniprogram/                          微信小程序（5 页）
+├── miniprogram/                          微信小程序（7 页）
 ├── web/                                  网页版（index.html + app.js + styles.css）
 ├── tests/                                离线测试
 ├── test_smoke.py                         端到端烟雾测试（模拟 Hermes）
@@ -257,5 +275,8 @@ StudyAssistant/
 
 - 与真实 Hermes 的联调（版本、工具权限、模型工具调用能力）
 - 二次核查模型映射（技能指定的 IDE 模型名不是 API 型号）
-- PDF 生成、云端邮件、学习记录 Git 同步
+- PDF 生成与云端邮件（本轮不做，`delivery.pdf/email` 如实标注未配置）
+- 网页版前端的复习台账与学习设置界面（接口已就绪，小程序已接入）
 - 多家庭隔离（当前定位为家庭自用）
+
+> 学习记录 Git 同步已在服务端实现（受控提交推送 + 冲突记录），默认关闭，需在配置中显式开启。
