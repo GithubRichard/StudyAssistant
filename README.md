@@ -108,6 +108,9 @@ curl -s http://127.0.0.1:8642/v1/skills -H "Authorization: Bearer $HERMES_API_KE
 | `delivery.{pdf,email}_enabled` | 外部交付开关，本轮默认关闭；未启用时结果中标注未配置 |
 | `limits.*` | 图片数量/大小、轮次、单任务时长、执行器开关 |
 
+> 配置里的环境变量只支持 `${VAR}` / `${VAR:-默认值}` 花括号写法。**不支持裸 `$VAR`**——它会把
+> `password_hash` 里的 `$<salt_hex>` 当作变量名替换掉（盐以 a-f 开头时命中），导致网页版密码永远提示不正确。
+
 ### 学习记录同步（受控 Git）
 
 开启 `git.enabled` 后，任务归档成功即执行提交推送：**只 `git add -- <本次归档文件>`**，
@@ -243,6 +246,7 @@ curl -s localhost:8000/api/runtime   # 需要令牌，也可直接看日志中�
 | 网页版提示「服务端尚未配置网页账号（web.users）」 | config.yaml 的 `web.users` 为空；用 `scripts/make_web_user.py` 生成账号片段粘进去，再重启服务 |
 | 网页版登录提示「用户名或密码不正确」 | ① 用户名须与 `web.users` 里的 `username` 完全一致（**不是**中文 `display_name`，大小写敏感、别带空格）；② 密码首尾空格会被忽略，中英文输入法/全角字符会导致不一致；③ 浏览器可能自动填充了旧密码，清空后重输。提示不区分"用户名不存在"与"密码错误"是故意的（防账号枚举） |
 | 改了 `web.users` 但登录状态没变化 | `config.yaml` 是**单文件挂载**，`docker compose restart` 不会重新挂载 → 用 `docker compose up -d --force-recreate grader` 重建容器 |
+| 网页版密码核对无误，服务端仍返回 401 | 旧版配置解析会把哈希里的 `$<salt_hex>` 当环境变量吃掉（盐以 a-f 开头时命中）→ 更新代码后 `docker compose up -d --build --force-recreate grader`，`config.yaml` 无需改动 |
 | 网页版打不开 `/` | 是否设了 `APP_HOST=0.0.0.0`、云防火墙是否放行；容器内是否包含 `web/` 目录 |
 | 网页版密码输错多次后无法登录（429） | 防爆破临时锁定，等 5 分钟或重启服务 |
 | `/api/runtime` 显示 `skill_missing` | 技能没装到 Hermes profile，或 Hermes 未重启/未开新会话 |

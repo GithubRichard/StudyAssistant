@@ -1,6 +1,8 @@
 # Leo 学习任务服务配置模板
 # 用法：cp config.example.yaml config.yaml，再按需修改
 # 密钥不写在这里，写在 .env 中，用 ${VAR} 引用
+# 环境变量只支持 ${VAR} / ${VAR:-默认值} 花括号写法；裸 $VAR 不再支持，
+# 否则会把 password_hash 里的 $<salt_hex> 当成变量名吃掉，导致网页版密码永远校验失败。
 
 server:
   # 只监听本机，由 HTTPS 反向代理对外（Linux 上用宿主网络模式时保持 127.0.0.1）

@@ -17,17 +17,19 @@ from typing import Dict, List, Optional
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-# 支持 ${VAR} 和 ${VAR:-默认值} 两种写法
-_ENV_RE = re.compile(r"\$\{([^}:]+)(?::-([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+# 只支持 ${VAR} 和 ${VAR:-默认值} 两种写法。
+# 不要恢复"裸 $VAR"写法：`$([A-Za-z_][A-Za-z0-9_]*)` 会把 pbkdf2 哈希里的
+# `$<salt_hex>` 当成环境变量名（盐以 a-f 开头时）替换成空串，导致密码永远校验失败。
+_ENV_RE = re.compile(r"\$\{([^}:]+)(?::-([^}]*))?\}")
 
 ENGINE_MODES = ("hermes", "legacy")
 
 
 def _sub_env(text: str) -> str:
     def _rep(m: re.Match) -> str:
-        name = m.group(1) or m.group(3)
-        default = m.group(2) if m.group(1) is not None else ""
-        return os.environ.get(name, default or "")
+        name = m.group(1)
+        default = m.group(2) or ""
+        return os.environ.get(name, default)
 
     return _ENV_RE.sub(_rep, text)
 
