@@ -245,6 +245,30 @@ class ResultContractTest(unittest.TestCase):
         with self.assertRaises(HermesResultInvalid):
             validate_result(broken)
 
+    def test_null_text_fields_are_treated_as_missing(self):
+        """模型写 null（如 remediation.updated_date=null）不应废掉整卷结果。"""
+        data = dict(LEARNING_RESULT)
+        questions = [dict(q) for q in data["questions"]]
+        questions[1] = dict(questions[1], remediation={
+            "state": "not_applicable", "updated_date": None,
+            "linked_training": None, "note": None})
+        questions[0] = dict(questions[0], steps=["2x=8", None])
+        data["questions"] = questions
+        result = validate_result(data)
+        self.assertEqual(result["questions"][1]["remediation"]["updated_date"], "")
+        self.assertEqual(result["questions"][1]["remediation"]["note"], "")
+        self.assertEqual(result["questions"][0]["steps"], ["2x=8"])
+
+    def test_null_does_not_excuse_missing_required_field(self):
+        """null 只表示「未提供」：必填字段仍然要如实报缺失。"""
+        broken = dict(LEARNING_RESULT)
+        questions = [dict(q) for q in broken["questions"]]
+        questions[0] = dict(questions[0], status=None)
+        broken["questions"] = questions
+        broken["overview"] = {}
+        with self.assertRaises(HermesResultInvalid):
+            validate_result(broken)
+
 
 class MessageTest(unittest.TestCase):
     def _settings(self):

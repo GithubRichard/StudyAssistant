@@ -3,6 +3,9 @@
 业务后端会解析最终回答中的 ```json 代码块并严格校验。字段名与取值白名单必须一致；
 多余字段被忽略，缺失或违规会让整次任务判定为失败（不会写入学习记录）。
 
+**文本字段一律用字符串**：没有内容就写空字符串 `""` 或直接省略该键，**不要写 JSON `null`**。
+（后端会把 `null` 当作「未提供」处理，但不要依赖这一点——必填字段写 `null` 照样判失败。）
+
 ## 顶层结构
 
 ```json
@@ -101,7 +104,7 @@
 
 - `corrected_pending_retest` / `retest_passed` / `retest_failed` 必须给出 `updated_date`（实际发生日期）。
 - **生成练习不等于完成练习，完成订正不等于已经掌握**；没有新结果时保持原状态，不得因为「做过练习」写成通过。
-- 非错题的 `remediation.state` 必须是 `not_applicable`。
+- 非错题的 `remediation.state` 必须是 `not_applicable`，`updated_date` 写空字符串 `""`。
 
 ## 复测事件（`retests[]`）
 

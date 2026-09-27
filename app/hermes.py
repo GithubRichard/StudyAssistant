@@ -22,7 +22,7 @@ import httpx
 from pydantic import ValidationError
 
 from .config import HermesConfig, Settings
-from .schemas import StudyResult
+from .schemas import StudyResult, drop_nulls
 from . import scope
 
 log = logging.getLogger(__name__)
@@ -140,9 +140,13 @@ def extract_result_json(text: str) -> Dict[str, Any]:
 
 
 def validate_result(raw: Dict[str, Any]) -> Dict[str, Any]:
-    """严格校验结果协议；校验失败不允许写入学习记录。"""
+    """严格校验结果协议；校验失败不允许写入学习记录。
+
+    先把 JSON null 视作「未提供」（见 schemas.drop_nulls）：模型常用 null 表示
+    「本栏无内容」，严格模式下 None 过不了 str 校验，会因一个字段废掉整卷结果。
+    """
     try:
-        return StudyResult.model_validate(raw).model_dump()
+        return StudyResult.model_validate(drop_nulls(raw)).model_dump()
     except ValidationError as e:
         first = e.errors()[0] if e.errors() else {}
         loc = ".".join(str(p) for p in first.get("loc", ()))
@@ -204,7 +208,8 @@ def build_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, Any],
         "questions[] 每项：id, no, source, page, stem, student_answer, status, correct_answer, "
         "steps[], error_rule, knowledge_point, evidence, "
         "review{state,note,basis}, final_decision, final_decision_basis, "
-        "remediation{state,updated_date,linked_training,note}\n"
+        "remediation{state, updated_date（无日期就写空字符串 \"\"，不要写 null）, "
+        "linked_training, note}\n"
         "status 取值：correct / wrong / unanswered / uncertain / unprocessed\n"
         "review.state 取值：agreed / disagreed / unverified / unprocessed / not_applicable\n"
         "final_decision 取值：kept_wrong / corrected_to_correct / kept_correct / kept_uncertain / "
@@ -213,11 +218,14 @@ def build_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, Any],
         "（已订正待复测）/ retest_passed（复测通过）/ retest_failed（复测未通过）/ "
         "not_applicable（非错题）。标为 wrong 的题必须给出具体状态；"
         "凡 corrected_pending_retest / retest_passed / retest_failed 都必须给出 updated_date"
-        "（实际发生日期）；没有新结果时保持原状态，不得因为「做过练习」就写通过。\n"
+        "（实际发生日期）；非错题这一栏写空字符串 \"\"（不要写 null，也不要省略 state 之外的内容）。"
+        "没有新结果时保持原状态，不得因为「做过练习」就写通过。\n"
         "retests[] 每次真实作答记一条：question_uid（可留空，服务端按来源+页码+题号回填）、"
         "occurred_date（必填，实际发生日期）、result（retest_passed / retest_failed / corrected）、"
         "student_answer、note；不重复登记同一事件。\n"
-        "硬性规则：学科未指定时必须依据随附材料判断学科，并在结果 JSON 的 subject 回填具体学科名"
+        "硬性规则：所有文本字段一律用字符串——没有内容就写空字符串 \"\" 或直接省略该键，"
+        "**不要写 JSON null**（null 会导致整次结果校验失败）；"
+        "学科未指定时必须依据随附材料判断学科，并在结果 JSON 的 subject 回填具体学科名"
         "（不得留空、不得写「未指定」）；"
         "判定 wrong 必须给 correct_answer 或 steps，且 error_rule 必须具体"
         "（不能写「粗心」）；unanswered / uncertain 不得标为 kept_wrong；"

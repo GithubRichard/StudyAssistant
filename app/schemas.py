@@ -81,6 +81,21 @@ _TASK_TYPE_LABELS = {
 }
 
 
+def drop_nulls(value: Any) -> Any:
+    """把结果 JSON 里的 null 视为「未提供」：删掉该键，让字段默认值生效。
+
+    严格模式下 None 过不了 str 校验，且第一处错误就会中断整卷校验
+    （真实事故：16 题全对、仅因 remediation.updated_date=null 导致整次任务失败）。
+    模型常用 null 表示「本栏无内容」，删键与「省略该字段」完全等价：
+    有默认值的字段回落默认值，必填字段仍如实报缺失，不会静默放行。
+    """
+    if isinstance(value, dict):
+        return {k: drop_nulls(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [drop_nulls(v) for v in value if v is not None]
+    return value
+
+
 class StrictModel(BaseModel):
     """统一开启严格字段校验（多余字段忽略，缺失必填报错）。"""
 
@@ -593,6 +608,8 @@ def normalize_result(raw: Any) -> Optional[Dict[str, Any]]:
             return None
     if not isinstance(raw, dict) or not raw:
         return None
+    # 历史结果里也可能存着 null（旧版本未拦截），同样按「未提供」读取
+    raw = drop_nulls(raw)
 
     version = raw.get("schema_version")
     looks_versioned = version in (SCHEMA_VERSION, LEGACY_SCHEMA_VERSION) or (
