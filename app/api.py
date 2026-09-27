@@ -15,11 +15,11 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import (APIRouter, Depends, File, Form, Header, HTTPException, Query,
-                     Request, UploadFile)
+                     Request, Response, UploadFile)
 from fastapi.responses import FileResponse
 
 from . import auth, db, tasks, wechat, workspace
-from .config import Settings, provider_chain
+from .config import Settings, provider_chain, web_asset_version
 from .hermes import HermesClient
 from .schemas import (FamilySettingsUpdate, FollowupCreate, LedgerEventCreate,
                       ManualLedgerCreate, StudyTaskCreate)
@@ -135,15 +135,22 @@ def _web_record_failure(ip: str) -> None:
 
 
 @router.get("/web/meta")
-async def web_meta():
-    """网页登录页所需的公开信息（不含任何密钥与账号名单）。"""
+async def web_meta(response: Response):
+    """网页登录页所需的公开信息（不含任何密钥与账号名单）。
+
+    `asset_version` 是当前前端资源的版本号：前端的版本探针用它发现
+    "服务端已换新前端、本标签页还在跑旧脚本"（单页应用不整页刷新时
+    不会重新下载 app.js）。因此这个响应本身必须禁止缓存。
+    """
     s = get_settings()
+    response.headers["Cache-Control"] = "no-store"
     return {
         "title": s.web.title,
         "enabled": s.web.enabled,
         "user_required": True,
         "password_required": True,
         "configured": s.web.configured,
+        "asset_version": web_asset_version(s),
     }
 
 

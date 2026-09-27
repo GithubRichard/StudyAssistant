@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import aiosqlite
 import httpx
@@ -14,6 +16,7 @@ from fastapi import FastAPI
 from app import api, auth, db
 from app.auth import hash_password, web_openid
 from app.config import Settings
+from app.main import create_app
 
 
 def make_settings(tmp: str, **overrides) -> Settings:
@@ -306,6 +309,75 @@ class WebV1Test(unittest.IsolatedAsyncioTestCase):
         openids = await db.list_user_openids(self.settings.db_path)
         self.assertIn(me, openids)
         self.assertIn(other, openids)
+
+
+class WebStaticCacheTest(unittest.IsolatedAsyncioTestCase):
+    """网页前端"部署后立即生效"：静态资源回源校验 + 版本探针。
+
+    `web/` 三个文件既没有版本号也没有指纹，一旦浏览器复用旧 app.js，
+    单页应用又只改 hash 不整页刷新，用户就会一直看到改动前的界面。
+    这里锁住两条防线：/web 静态资源必须每次回源校验（no-cache + ETag），
+    /api/web/meta 必须带上当前前端版本号且自身不可缓存。
+    """
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.web_dir = Path(self.tmp.name) / "web"
+        self.web_dir.mkdir()
+        self.write_assets("console.log('v1');")
+        # settings.web_dir 读的是环境变量 WEB_DIR，用它把静态目录指到临时目录，
+        # 避免测试依赖（或污染）仓库里真实的 web/
+        self._env = mock.patch.dict(os.environ, {"WEB_DIR": str(self.web_dir)})
+        self._env.start()
+        self.settings = make_settings(self.tmp.name)
+        self.app = create_app(self.settings)
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=self.app), base_url="http://test")
+
+    async def asyncTearDown(self):
+        await self.client.aclose()
+        self._env.stop()
+        self.tmp.cleanup()
+
+    def write_assets(self, js: str) -> None:
+        (self.web_dir / "app.js").write_text(js, encoding="utf-8")
+        (self.web_dir / "styles.css").write_text("body { margin: 0; }\n", encoding="utf-8")
+        (self.web_dir / "index.html").write_text(
+            "<!doctype html><script src=\"app.js\"></script>", encoding="utf-8")
+
+    async def test_static_assets_are_not_silently_cached(self):
+        res = await self.client.get("/web/app.js")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.headers["cache-control"], "no-cache, must-revalidate")
+        # 保留 ETag / Last-Modified，内容没变时仍走 304，不重复传正文
+        self.assertTrue(res.headers.get("etag"))
+
+        res = await self.client.get("/web/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.headers["cache-control"], "no-cache, must-revalidate")
+
+    async def test_revalidate_returns_304_when_unchanged(self):
+        first = await self.client.get("/web/app.js")
+        res = await self.client.get(
+            "/web/app.js", headers={"If-None-Match": first.headers["etag"]})
+        self.assertEqual(res.status_code, 304)
+
+    async def test_meta_carries_version_and_is_not_cached(self):
+        res = await self.client.get("/api/web/meta")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.headers["cache-control"], "no-store")
+        version = res.json()["asset_version"]
+        self.assertTrue(version)
+        # 版本号必须随前端内容变化，否则探针永远发现不了新前端
+        self.write_assets("console.log('v2 with longer source');")
+        res2 = await self.client.get("/api/web/meta")
+        self.assertNotEqual(res2.json()["asset_version"], version)
+
+    async def test_meta_version_is_empty_when_assets_missing(self):
+        (self.web_dir / "app.js").unlink()
+        res = await self.client.get("/api/web/meta")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["asset_version"], "")
 
 
 if __name__ == "__main__":

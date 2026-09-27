@@ -152,6 +152,7 @@ const S = {
   meta: null,
   user: JSON.parse(localStorage.getItem("sa_user") || "null"),
   pollTimer: 0,
+  assetVersion: "",   // 页面加载时的前端版本基线，用于探测"服务端已换新前端"
 
   async api(path, opts = {}) {
     const headers = {};
@@ -185,6 +186,46 @@ const S = {
     localStorage.removeItem("sa_user");
   },
 };
+
+/* ---------------- 前端版本探测 ---------------- */
+/**
+ * 单页应用里点底部 tab 只改 hash，不会重新下载 app.js：标签页只要不整页刷新，
+ * 浏览器就一直跑加载时那份脚本 —— 部署了新前端也进不来，用户会觉得"改了没用"。
+ * 这里在页面加载时记住服务端当时的前端版本作基线，之后每分钟、以及每次切回前台
+ * 时再比一次，发现不一致就在底部提示。
+ *
+ * 只提示、不自动 location.reload()：用户可能正在填写补充说明或已选好图片，
+ * 自动刷新会把输入冲掉（见「waiting_input 轮询重建页面」那次教训）。
+ */
+let versionProbeBusy = false;
+
+function showUpdateBar() {
+  const bar = $("#updateBar");
+  if (!bar || !bar.hidden) return;
+  bar.hidden = false;
+}
+
+async function probeVersion() {
+  if (versionProbeBusy || !S.assetVersion) return;
+  const bar = $("#updateBar");
+  if (bar && !bar.hidden) return;   // 已经提示过了，不必再请求
+  versionProbeBusy = true;
+  try {
+    const meta = await S.api("/web/meta");
+    if (meta && meta.asset_version && meta.asset_version !== S.assetVersion) {
+      showUpdateBar();
+    }
+  } catch (_) {
+    /* 离线、服务未起、登录态变化都直接忽略：这只是提示，不能影响主流程 */
+  } finally {
+    versionProbeBusy = false;
+  }
+}
+
+/* 基线只在第一次拿到时固定；后续探测到的新版本不覆盖，否则永远比不出差异 */
+function rememberAssetVersion(meta) {
+  if (!S.assetVersion && meta && meta.asset_version) S.assetVersion = meta.asset_version;
+}
 
 /* ---------------- 路由 ---------------- */
 function parseHash() {
@@ -229,6 +270,7 @@ async function render() {
     if (r.name !== "login" && !S.token) { go("login"); return; }
     if (r.name === "login" && S.token) { go("home"); return; }
     if (!S.meta) S.meta = await S.api("/web/meta").catch(() => null);
+    rememberAssetVersion(S.meta);
 
     const pages = {
       login: pageLogin, home: pageHome, learn: pageLearn, task: pageTask,
@@ -273,6 +315,7 @@ function shell(active, title, content) {
 async function pageLogin(app) {
   const meta = await S.api("/web/meta").catch(() => null);
   S.meta = meta;
+  rememberAssetVersion(meta);
   const title = (meta && meta.title) || "学习助手";
   document.title = title;
   const usable = meta && meta.enabled && meta.configured;
@@ -1027,6 +1070,13 @@ async function pageMine(app, r, alive) {
 /* ---------------- 启动 ---------------- */
 window.addEventListener("hashchange", render);
 document.addEventListener("DOMContentLoaded", () => {
+  const reloadBtn = $("#updateReload");
+  if (reloadBtn) reloadBtn.onclick = () => location.reload();
+  // 常驻标签页：定时 + 切回前台时各查一次，发现服务端换了新前端就提示刷新
+  setInterval(probeVersion, 60 * 1000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) probeVersion();
+  });
   if (!location.hash) location.hash = "#/home";
   render();
 });

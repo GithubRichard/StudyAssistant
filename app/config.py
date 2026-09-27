@@ -9,6 +9,7 @@ Hermes 模式下缺少 Hermes 地址或密钥不会导致启动失败，但运�
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -297,6 +298,49 @@ def load_settings(path: str | None = None) -> Settings:
     if not settings.is_hermes and not settings.system_prompt:
         raise ValueError("legacy 模式下 system_prompt 为空：请检查 system_prompt_file 指向的文件")
     return settings
+
+
+def resolve_web_dir(settings: Settings) -> Path:
+    """网页版静态资源目录：相对路径按仓库根目录（app/ 的上一级）解析。"""
+    web_dir = Path(settings.web_dir)
+    if not web_dir.is_absolute():
+        web_dir = Path(__file__).resolve().parent.parent / web_dir
+    return web_dir
+
+
+# 文件摘要进程内缓存：路径 -> (mtime_ns, size, 摘要)，避免每次版本探测都读整份文件
+_WEB_ASSET_DIGESTS: Dict[str, tuple] = {}
+
+
+def _file_digest(path: Path) -> str:
+    """文件内容短摘要；文件不存在或读取失败时返回空串（不抛异常）。"""
+    try:
+        stat = path.stat()
+    except OSError:
+        return ""
+    key = str(path)
+    cached = _WEB_ASSET_DIGESTS.get(key)
+    if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
+        return cached[2]
+    try:
+        digest = hashlib.sha1(path.read_bytes()).hexdigest()[:8]
+    except OSError:
+        return ""
+    _WEB_ASSET_DIGESTS[key] = (stat.st_mtime_ns, stat.st_size, digest)
+    return digest
+
+
+def web_asset_version(settings: Settings) -> str:
+    """网页前端资源版本：对 web/app.js 与 web/styles.css 的内容算短哈希。
+
+    前端用它探测"服务端已经换了新前端、而我这个标签页还在跑旧脚本"。
+    任一文件缺失时返回空串，前端据此自动禁用探测（不误报）。
+    """
+    web_dir = resolve_web_dir(settings)
+    parts = [_file_digest(web_dir / name) for name in ("app.js", "styles.css")]
+    if not all(parts):
+        return ""
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:8]
 
 
 def provider_chain(settings: Settings) -> list:

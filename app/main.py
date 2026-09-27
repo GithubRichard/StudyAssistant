@@ -14,19 +14,35 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import api, db, workspace
-from .config import Settings, load_settings
+from .config import Settings, load_settings, resolve_web_dir
 from .hermes import HermesClient
 from .tasks import TaskRunner
 
 log = logging.getLogger(__name__)
+
+
+class NoCacheStaticFiles(StaticFiles):
+    """网页版静态资源：强制每次回源校验，避免部署后浏览器仍跑旧脚本。
+
+    只补 `Cache-Control`，Starlette 原有的 `ETag` / `Last-Modified` 全部保留：
+    内容没变时浏览器仍走 304（只传响应头，不传正文），变了立刻拿到新文件。
+    单页应用里点底部 tab 只改 hash、不会重新请求脚本，只靠缓存头不够，
+    运行期的新版本探测由 `/api/web/meta` 的 `asset_version` 兜底。
+    """
+
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        # 404/405 等错误响应不改缓存头，避免把错误页也标记成可校验
+        if response.status_code < 400:
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -91,9 +107,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     # 网页版：与接口同源，浏览器直接访问 http://<IP>:<port>/ 即可
-    web_dir = Path(settings.web_dir)
-    if not web_dir.is_absolute():
-        web_dir = Path(__file__).resolve().parent.parent / web_dir
+    web_dir = resolve_web_dir(settings)
 
     @app.get("/")
     async def index_web():
@@ -102,7 +116,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return RedirectResponse(url="/web/")
 
     if web_dir.is_dir():
-        app.mount("/web", StaticFiles(directory=str(web_dir), html=True), name="web")
+        app.mount("/web", NoCacheStaticFiles(directory=str(web_dir), html=True), name="web")
         log.info("网页版入口: /web/ （目录 %s）", web_dir)
     else:
         log.warning("未找到网页版静态资源目录 %s，网页版暂不可用", web_dir)

@@ -258,6 +258,13 @@ button.mini { padding: 7px 12px; font-size: 13px; }
 .tab { flex: 1; text-align: center; padding: 8px 0 6px; font-size: 12px; color: #999; text-decoration: none; }
 .tab-icon { display: block; font-size: 20px; }
 .tab.on { color: #1677ff; font-weight: 600; }
+/* 前端有新版本时的提示条：压在底部导航之上，只提示不自动刷新（避免冲掉正在填写的输入） */
+.update-bar { position: fixed; left: 0; right: 0; bottom: calc(58px + env(safe-area-inset-bottom));
+  z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 14px; background: #fff7e6; border-top: 1px solid #ffe1a1;
+  color: #8a5a00; font-size: 13px; }
+.update-bar button { flex: none; border: 1px solid #e0b566; background: #fff; color: #8a5a00;
+  border-radius: 999px; padding: 5px 12px; font-size: 13px; cursor: pointer; }
 
 .card { background: #fff; border-radius: 14px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.05); }
 .card-title { font-size: 15px; font-weight: 700; margin-bottom: 10px; }
