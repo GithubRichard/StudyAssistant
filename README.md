@@ -102,7 +102,7 @@ curl -s http://127.0.0.1:8642/v1/skills -H "Authorization: Bearer $HERMES_API_KE
 | `hermes.agent_model` | Hermes 的 Agent 别名（默认 `hermes-agent`），**不是**底层模型 ID |
 | `hermes.verify_skill` | 是否用 `/v1/skills` 校验技能已安装 |
 | `auth.allowed_openids` | 允许使用的微信 openid 白名单；为空=不限制（仅开发） |
-| `workspace.dir` | 授权学习工作区（学习记录与归档；原题目录仅本地） |
+| `workspace.dir` | 授权学习工作区；归档按账号隔离（`<dir>/<账号>/<学科>/…`，见下节；原题目录仅本地） |
 | `family.{default_grade_level,subjects,term_start_date}` | 家庭学习配置默认值；小程序「学习设置」保存后覆盖（学期起始日期用于期中/期末默认区间） |
 | `git.{enabled,remote,timeout_seconds,author_*}` | 受控学习记录同步；`enabled` 未配置时回落到 `delivery.git_enabled`，默认关闭 |
 | `delivery.{pdf,email}_enabled` | 外部交付开关，本轮默认关闭；未启用时结果中标注未配置 |
@@ -110,6 +110,30 @@ curl -s http://127.0.0.1:8642/v1/skills -H "Authorization: Bearer $HERMES_API_KE
 
 > 配置里的环境变量只支持 `${VAR}` / `${VAR:-默认值}` 花括号写法。**不支持裸 `$VAR`**——它会把
 > `password_hash` 里的 `$<salt_hex>` 当作变量名替换掉（盐以 a-f 开头时命中），导致网页版密码永远提示不正确。
+
+### 工作区与账号隔离
+
+- **归档按账号分目录**：`<workspace.dir>/<账号>/<学科>/{错题解析,周报分析,强化训练}/YYYY-MM-DD*.md`。
+  账号目录名由身份派生：网页账号 `web:leo` → `leo`，微信身份 → `wx-<openid>`，无法派生时回落 `family`。
+- 技能产出的 `archive.suggested_path` 仍只写 **3 段**（`学科/子目录/文件名.md`），账号层由服务端按任务身份前置拼接；
+  路径越界（`..`、绝对路径、写进别人账号目录）一律拒绝并如实报错。
+- 所有账号**共用同一个 Git 仓库**；`README.md`、`.gitignore`、`冲突记录-*.md` 仍在工作区根，属全局文件。
+- 骨架（`<账号>/<学科>/…` 与原题目录）在该账号首次登录时创建，服务启动时也会为所有已知账号补齐。
+- 旧版（根级学科目录）迁移 —— 脚本依赖 pydantic/Pillow，**在容器里跑**（镜像已含 `scripts/`）：
+
+```bash
+cd /opt/study-assistant && git pull
+docker compose up -d --build && docker compose stop grader
+# 先预演，只打印计划
+docker compose run --rm --no-deps --entrypoint python3 grader \
+    scripts/migrate_workspace_accounts.py --account leo
+# 确认后实际执行：搬目录 + 升级 .gitignore + 改写库内路径
+docker compose run --rm --no-deps --entrypoint python3 grader \
+    scripts/migrate_workspace_accounts.py --account leo --apply
+docker compose up -d --build --force-recreate grader
+```
+
+脚本幂等、改库前自动备份（`app.db.bak-<时间戳>`）、**不自动 git 提交**，结束后会打印建议命令。
 
 ### 学习记录同步（受控 Git）
 
@@ -236,7 +260,24 @@ curl -s localhost:8000/api/runtime   # 需要令牌，也可直接看日志中�
   ③ 用**小程序**必须配置 `WECHAT_SECRET`——否则任何人伪造 `code` 就能登录并消耗额度
   ④ http 下令牌是明文传输，长期使用请换 https + 域名
 - **`.env` 改动后必须 `docker compose up -d --force-recreate`**，仅 `restart` 不会更新环境变量
-- 改技能需两步：更新 `hermes/skills/` 里的文件 + 重新安装到 Hermes profile（或挂载同一目录）
+- 改技能需两步：更新 `hermes/skills/` 里的文件 + 重新安装到 Hermes profile（或挂载同一目录）；`scripts/update-and-logs.sh` 会把这一步一起做掉
+
+### 日常更新：一条命令
+
+```bash
+cd /opt/study-assistant && scripts/update-and-logs.sh
+```
+
+它按顺序做四件事，并把每一步的真实结果打印出来：
+
+1. `git pull --ff-only` 拉取最新代码（无新提交时跳过重建，直接进日志）；
+2. 把 `hermes/skills/leo-study-assistant/` 同步到 `~/.hermes/skills/leo-study-assistant/`（找不到 Hermes profile 技能目录时如实跳过并给出命令，不假装已同步）；
+3. `docker compose up -d --build --force-recreate grader` 重建容器（重建才会重新挂载 `config.yaml`、重新注入 `.env`）；
+4. 轮询 `http://127.0.0.1:$APP_PORT/healthz` 确认起来后，直接 `docker compose logs -f --tail=100 grader`（`Ctrl+C` 只退出看日志，容器继续运行）。
+
+开关：`--dry-run`（只打印将执行的命令，零副作用）、`--no-skill`、`--no-follow`、`--force-rebuild`（没有新提交也重建）、`--allow-dirty`（工作区有未提交改动时放行）、`--tail N`、`--skill-dir DIR`、`--help`。
+
+它**不**做这些事：不改 `config.yaml` 与 `.env`（二者不进版本库，`git pull` 不会更新服务器上那两份，账号配置要手工改）、不做数据库迁移（见上文 `scripts/migrate_workspace_accounts.py`）、不碰 git 历史（没有 `reset`/`checkout`）；工作区有已跟踪文件的未提交改动时默认中止，避免 pull 冲突或覆盖。
 
 ## 9. 常见问题
 
@@ -253,7 +294,8 @@ curl -s localhost:8000/api/runtime   # 需要令牌，也可直接看日志中�
 | 任务一直 `pending` | 执行器是否启用（`limits.worker_enabled`）、容器是否在运行 |
 | 任务 `interrupted` | 执行超时或服务重启；**不会自动重试**，避免重复归档，可补充材料后重发 |
 | 结果 `failed` 且提示协议校验失败 | 模型输出不含合法结果 JSON 或违反五态/错因规则，查看 `error` |
-| 归档没写入 | 检查 `archive.suggested_path` 是否在允许目录、是否越界 |
+| 归档没写入 | 检查 `archive.suggested_path` 是否为 3 段合法路径（`学科/子目录/文件名.md`）、是否越界；账号层由服务端拼接，不要自己加 |
+| 加了第二个账号，两个孩子的记录混在一起 | 归档已按账号分目录；若仍是旧布局，先 `git pull` + `docker compose up -d --build --force-recreate grader`，再用 `scripts/migrate_workspace_accounts.py` 迁移历史文件 |
 | 改了 `.env` 没生效 | 必须 `--force-recreate` 重建容器 |
 
 ## 10. 目录结构
@@ -269,7 +311,7 @@ StudyAssistant/
 │   ├── tasks.py         幂等创建、数据库认领执行、轮次、视图与台账写入
 │   ├── scope.py         资料区间计算（月考当月、期中期末学期、周报本周）
 │   ├── git_sync.py      受控 Git 提交推送与冲突记录（只提交授权文件）
-│   ├── workspace.py     工作区骨架、附件、受控归档、复测追加、成果登记
+│   ├── workspace.py     工作区骨架（按账号）、附件、受控归档、复测追加、成果登记
 │   ├── migrations.py    版本化增量迁移（旧库先备份；V3：家庭设置/台账/事件/Git 日志）
 │   ├── db.py            SQLite 数据层（含台账去重与事件）
 │   ├── providers.py     legacy：OpenAI 兼容协议封装
@@ -277,11 +319,29 @@ StudyAssistant/
 ├── hermes/skills/leo-study-assistant/   技能副本（SKILL.md + references/）
 ├── miniprogram/                          微信小程序（7 页）
 ├── web/                                  网页版（index.html + app.js + styles.css）
+├── scripts/                              运维脚本（生成网页账号、迁移工作区到账号目录）
 ├── tests/                                离线测试
 ├── test_smoke.py                         端到端烟雾测试（模拟 Hermes）
 ├── config.example.yaml / .env.example
 └── Dockerfile / docker-compose.yml
 ```
+
+服务器上的学习记录（`docker-compose.yml` 里的 `./workspace`）结构：
+
+```
+workspace/
+├── README.md                          # 学习规范（全局）
+├── .gitignore                         # 原题目录忽略规则（含账号层，全局）
+├── 冲突记录-*.md                       # 仅 Git 冲突时生成（全局）
+└── <账号>/                             # leo / kid2 / wx-<openid>；一个账号一棵树
+    └── <学科>/
+        ├── 错题解析/2026-09-27.md
+        ├── 周报分析/2026-09-21.md
+        ├── 强化训练/2026-09-27-一元一次方程.md
+        └── 原题/<年份>/                 # 仅本地，不进 Git（.gitkeep 占位）
+```
+
+私有数据仍在 `data/`：`app.db`、`uploads/<随机id>.jpg`、`runs/<task_id>/run<N>/`，**不进工作区、不进 Git**。
 
 ## 11. 尚未实现（如需启用请另行授权）
 
@@ -289,6 +349,6 @@ StudyAssistant/
 - 二次核查模型映射（技能指定的 IDE 模型名不是 API 型号）
 - PDF 生成与云端邮件（本轮不做，`delivery.pdf/email` 如实标注未配置）
 - 网页版前端的复习台账与学习设置界面（接口已就绪，小程序已接入）
-- 多家庭隔离（当前定位为家庭自用）
+- 家长聚合账号（一个家长看多个孩子）：归档已按账号隔离，但仍是一个账号 = 一个孩子，没有「家长视角」
 
 > 学习记录 Git 同步已在服务端实现（受控提交推送 + 冲突记录），默认关闭，需在配置中显式开启。
