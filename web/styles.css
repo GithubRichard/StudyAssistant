@@ -347,10 +347,8 @@ button.mini { padding: 7px 12px; font-size: 13px; }
 .q-correct { color: #237804; font-weight: 600; }
 .q-actions { margin-top: 10px; display: flex; gap: 8px; }
 
-.correct-fold summary { cursor: pointer; font-weight: 600; font-size: 14px; padding: 4px 0; }
-.correct-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
-.correct-item { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 8px; background: #fafafa; border-radius: 8px; }
-.correct-stem { flex: 1; color: #555; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.missing-list { margin: 8px 0 4px; padding-left: 20px; color: #ad6800; font-size: 13px; line-height: 1.7; }
+.missing-list li { margin: 2px 0; }
 
 .practice-progress { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #666; }
 .progress-bar { flex: 1; height: 8px; background: #eef0f4; border-radius: 4px; overflow: hidden; }

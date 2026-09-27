@@ -436,46 +436,30 @@ async function pageTask(app, r, alive) {
 
   const renderTaskState = (task) => {
     const needInput = task.status === "waiting_input";
-    app.innerHTML = shell("home", "处理中", `
+    // 结果已产出（含等待补充材料）：先展示结果，补充材料作为附加项放最下方
+    if (needInput && task.result && !task.result_unknown) {
+      renderResultView(app, task, {
+        title: "批改结果",
+        followup: true,
+        footer: false,
+        onSubmitted: () => poll(),
+      });
+      return;
+    }
+    app.innerHTML = shell("home", needInput ? "需要补充材料" : "处理中", `
     <div class="page">
       <div class="card center">
         <div class="spinner"></div>
         <div class="card-title">${needInput ? "需要补充材料" : "正在处理…"}</div>
         <p class="muted">${esc(task.subject || "")} · ${esc(TASK_TYPE_LABEL[task.task_type] || task.task_type || "")}</p>
         ${task.error ? `<p class="error-text">${esc(task.error)}</p>` : ""}
-        ${needInput ? `
-        <form id="followupForm" class="left">
-          <label class="field"><span>补充说明</span><textarea name="text" rows="3" placeholder="补充缺失的信息"></textarea></label>
-          <label class="field"><span>补充图片（支持 iPhone 的 HEIC）</span><input name="images" type="file" accept="image/*,.heic,.heif" multiple></label>
-          <button class="btn primary block" type="submit">提交补充材料</button>
-        </form>` : `<p class="muted">完成后会自动跳转</p>`}
+        ${needInput
+          ? `<p class="muted small">结果还没有产出，补充材料后会重新处理</p>`
+          : `<p class="muted">完成后会自动跳转</p>`}
       </div>
+      ${needInput ? followupCardHtml(task, false) : ""}
     </div>`);
-    const form = $("#followupForm");
-    if (form) form.onsubmit = async (ev) => {
-      ev.preventDefault();
-      const btn = $("button[type=submit]", form);
-      btn.disabled = true;
-      try {
-        const assetIds = [];
-        const files = Array.from(form.images.files || []);
-        for (const f of files) {
-          const fd = new FormData();
-          fd.append("file", f);
-          const up = await S.api("/assets", { method: "POST", body: fd });
-          assetIds.push(up.asset_id);
-        }
-        await S.api(`/tasks/${encodeURIComponent(id)}/followups`, {
-          method: "POST",
-          body: { text: form.text.value.trim(), asset_ids: assetIds },
-        });
-        toast("已提交补充材料");
-        poll();
-      } catch (e) {
-        toast(e.message || "提交失败");
-        btn.disabled = false;
-      }
-    };
+    if (needInput) bindFollowupForm(app, id, () => poll());
   };
 
   await poll();
@@ -492,21 +476,12 @@ function sortQuestionsForResult(questions) {
   return [...questions].sort((a, b) => (rank[a.status] ?? 5) - (rank[b.status] ?? 5));
 }
 
-async function pageResult(app, r, alive) {
-  const id = r.param;
-  document.title = "批改结果";
-  app.innerHTML = shell("home", "批改结果", `<div class="page"><div class="loading">加载中…</div></div>`);
-  const task = await S.api(`/tasks/${encodeURIComponent(id)}`);
-  if (!alive()) return;
-  const result = task.result || {};
-  const questions = sortQuestionsForResult(result.questions || []);
-  const ledgerByUid = {};
-  (task.ledger || []).forEach((e) => { if (e.question_uid) ledgerByUid[e.question_uid] = e; });
-
-  const overview = result.overview || {};
+/* 结果主体：顶部只有统计，下面只列错题与存疑题；答对的题只在统计里体现数量 */
+function resultBodyHtml(task, questions, ledgerByUid) {
+  const overview = (task.result || {}).overview || {};
   const wrongCount = questions.filter((q) => q.status === "wrong").length;
   const uncertainCount = questions.filter((q) => q.status === "uncertain").length;
-  const correctQs = questions.filter((q) => q.status === "correct");
+  const correctCount = questions.filter((q) => q.status === "correct").length;
   const focusQs = questions.filter((q) => q.status !== "correct");
 
   const qCard = (q) => {
@@ -532,31 +507,87 @@ async function pageResult(app, r, alive) {
     </div>`;
   };
 
-  app.innerHTML = shell("home", "批改结果", `
-  <div class="page">
+  const emptyText = questions.length ? "🎉 全部答对，没有错题" : "这次没有需要跟进的错题";
+
+  return `
     <div class="card">
       <div class="card-title">${esc(task.subject || "")} · 批改结果</div>
       <div class="result-stats">
         <span class="stat bad">做错 ${wrongCount}</span>
         <span class="stat warn">存疑 ${uncertainCount}</span>
-        <span class="stat good">答对 ${correctQs.length}</span>
+        <span class="stat good">答对 ${correctCount}</span>
       </div>
       ${overview.summary ? `<p>${esc(overview.summary)}</p>` : ""}
       <div class="muted small">错题与存疑题已记入复习台账，可跨天跟进订正与复测</div>
     </div>
     ${focusQs.length ? `<div class="section-title">错题与存疑题（${focusQs.length}）</div>
-      ${focusQs.map(qCard).join("")}` : `<div class="card center"><p>🎉 全部答对，没有错题</p></div>`}
-    ${correctQs.length ? `
-    <details class="card correct-fold">
-      <summary>答对的题（${correctQs.length}）</summary>
-      <div class="correct-list">${correctQs.map((q) => `
-        <div class="correct-item"><span class="q-no">${esc(q.no || "")}</span>
-        <span class="correct-stem">${esc((q.stem || "").slice(0, 60))}</span>
-        <span class="q-status st-correct">答对</span></div>`).join("")}</div>
-    </details>` : ""}
-    <a class="btn ghost block" href="#/history">返回任务历史</a>
-  </div>`);
+      ${focusQs.map(qCard).join("")}` : `<div class="card center"><p>${emptyText}</p></div>`}`;
+}
 
+/* 补充材料卡片：结果之后的附加项，只在任务等待补充材料时出现 */
+function followupCardHtml(task, hasResult) {
+  const missing = ((task.result || {}).missing_info || [])
+    .map((m) => (m || "").trim()).filter(Boolean);
+  return `
+    <div class="card" id="followupCard">
+      <div class="card-title">补充材料</div>
+      <p class="muted small">${hasResult
+        ? "结果已经出来了，但还缺下面这些信息；补充后会自动重新处理。"
+        : "这次还没有产出可用结果，缺下面这些信息；补充后会重新处理。"}</p>
+      ${missing.length ? `<ul class="missing-list">${missing.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>` : ""}
+      <form id="followupForm">
+        <label class="field"><span>补充说明</span><textarea name="text" rows="3" placeholder="补充缺失的信息"></textarea></label>
+        <label class="field"><span>补充图片（可多选，支持 iPhone 的 HEIC）</span>
+          <input name="images" type="file" accept="image/*,.heic,.heif" multiple></label>
+        <div id="followupPreview" class="img-preview"></div>
+        <div id="followupMsg" class="muted"></div>
+        <button class="btn primary block" type="submit">提交补充材料</button>
+      </form>
+    </div>`;
+}
+
+function bindFollowupForm(app, taskId, onSubmitted) {
+  const form = $("#followupForm", app);
+  if (!form) return;
+  const msg = $("#followupMsg", app);
+  const input = form.images;
+  const preview = $("#followupPreview", app);
+  if (input && preview) {
+    input.onchange = () => renderThumbs(preview, Array.from(input.files || []));
+  }
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const btn = $("button[type=submit]", form);
+    const text = form.text.value.trim();
+    const files = Array.from((input && input.files) || []);
+    if (!text && !files.length) { toast("请填写补充说明或上传图片"); return; }
+    btn.disabled = true;
+    try {
+      const assetIds = [];
+      for (let i = 0; i < files.length; i++) {
+        if (msg) msg.textContent = `上传图片 ${i + 1}/${files.length}…`;
+        const fd = new FormData();
+        fd.append("file", files[i]);
+        const up = await S.api("/assets", { method: "POST", body: fd });
+        assetIds.push(up.asset_id);
+      }
+      if (msg) msg.textContent = "提交中…";
+      await S.api(`/tasks/${encodeURIComponent(taskId)}/followups`, {
+        method: "POST",
+        body: { text, asset_ids: assetIds },
+      });
+      toast("已提交补充材料");
+      if (msg) msg.textContent = "";
+      if (typeof onSubmitted === "function") onSubmitted();
+    } catch (e) {
+      toast(e.message || "提交失败");
+      if (msg) msg.textContent = "";
+      btn.disabled = false;
+    }
+  };
+}
+
+function bindDisputeActions(app) {
   $$("[data-dispute]", app).forEach((btn) => {
     btn.onclick = async () => {
       const entryId = btn.getAttribute("data-dispute");
@@ -577,6 +608,46 @@ async function pageResult(app, r, alive) {
       }
     };
   });
+}
+
+/**
+ * 渲染一份批改结果：统计 + 错题/存疑题（答对的题不逐条展示）。
+ * opts.followup=true 时在结果之后追加补充材料卡片（任务在等补充材料）。
+ */
+function renderResultView(app, task, opts = {}) {
+  const questions = sortQuestionsForResult(((task.result || {}).questions) || []);
+  const ledgerByUid = {};
+  (task.ledger || []).forEach((e) => { if (e.question_uid) ledgerByUid[e.question_uid] = e; });
+
+  app.innerHTML = shell("home", opts.title || "批改结果", `
+  <div class="page">
+    ${resultBodyHtml(task, questions, ledgerByUid)}
+    ${opts.followup ? followupCardHtml(task, true) : ""}
+    ${opts.footer === false ? "" : `<a class="btn ghost block" href="#/history">返回任务历史</a>`}
+  </div>`);
+
+  bindDisputeActions(app);
+  if (opts.followup) bindFollowupForm(app, task.id, opts.onSubmitted);
+}
+
+async function pageResult(app, r, alive) {
+  const id = r.param;
+  document.title = "批改结果";
+  app.innerHTML = shell("home", "批改结果", `<div class="page"><div class="loading">加载中…</div></div>`);
+  const task = await S.api(`/tasks/${encodeURIComponent(id)}`);
+  if (!alive()) return;
+  if (!task.result) {
+    // 结果缺失或格式无法识别：如实说明，不假装「全部答对」
+    app.innerHTML = shell("home", "批改结果", `<div class="page"><div class="card">
+      <div class="card-title">没有可展示的结果</div>
+      <p class="muted">${task.result_unknown
+        ? "结果格式无法识别，已如实标注，未写入学习记录。"
+        : "这次任务还没有产出结果。"}</p>
+      ${task.error ? `<p class="error-text">${esc(task.error)}</p>` : ""}
+      <a class="btn ghost block" href="#/history">返回任务历史</a></div></div>`);
+    return;
+  }
+  renderResultView(app, task, { title: "批改结果" });
 }
 
 /* ---------------- 做题页（一题一屏） ---------------- */
