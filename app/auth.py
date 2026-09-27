@@ -39,11 +39,31 @@ def new_token() -> str:
 WEB_OPENID_PREFIX = "web:"
 
 
-def verify_password(given: str, expected: str) -> bool:
-    """网页版密码校验：恒定时间比较，避免按字符逐位试探。"""
-    if not expected:
+def hash_password(password: str, iterations: int = 260_000) -> str:
+    """网页账号密码哈希（pbkdf2_sha256，标准库实现，不引入新依赖）。
+
+    格式：pbkdf2_sha256$<iterations>$<salt_hex>$<hash_hex>，可直接写入 config.yaml。
+    """
+    if not password:
+        raise ValueError("密码不能为空")
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return f"pbkdf2_sha256${iterations}${salt.hex()}${dk.hex()}"
+
+
+def verify_password_hash(given: str, stored: str) -> bool:
+    """校验密码；stored 非法或为空一律返回 False，不抛异常。"""
+    try:
+        algo, iter_s, salt_hex, hash_hex = (stored or "").split("$")
+        if algo != "pbkdf2_sha256":
+            return False
+        iterations = int(iter_s)
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(hash_hex)
+    except (ValueError, TypeError):
         return False
-    return secrets.compare_digest((given or "").encode("utf-8"), expected.encode("utf-8"))
+    dk = hashlib.pbkdf2_hmac("sha256", (given or "").encode("utf-8"), salt, iterations)
+    return secrets.compare_digest(dk, expected)
 
 
 def web_openid(user: str) -> str:

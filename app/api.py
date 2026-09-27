@@ -22,7 +22,7 @@ from . import auth, db, tasks, wechat, workspace
 from .config import Settings, provider_chain
 from .hermes import HermesClient
 from .schemas import (FamilySettingsUpdate, FollowupCreate, LedgerEventCreate,
-                      StudyTaskCreate)
+                      ManualLedgerCreate, StudyTaskCreate)
 from .tasks import TaskError
 
 log = logging.getLogger(__name__)
@@ -134,39 +134,46 @@ def _web_record_failure(ip: str) -> None:
 
 @router.get("/web/meta")
 async def web_meta():
-    """网页登录页所需的公开信息（不含任何密钥）。"""
+    """网页登录页所需的公开信息（不含任何密钥与账号名单）。"""
     s = get_settings()
     return {
         "title": s.web.title,
         "enabled": s.web.enabled,
+        "user_required": True,
         "password_required": True,
         "configured": s.web.configured,
     }
 
 
 @router.post("/web/login")
-async def web_login(request: Request, password: str = Form(""), user: str = Form("")):
-    """网页版登录：配置密码换取会话令牌（与小程序共用同一会话体系）。"""
+async def web_login(request: Request, username: str = Form(""), password: str = Form("")):
+    """网页版登录：预设账号（用户名+密码）换取会话令牌。
+
+    用户名必须在 web.users 预设名单中；数据按 web:<username> 隔离，
+    与小程序共用同一会话体系。
+    """
     s = get_settings()
     if not s.web.enabled:
         raise HTTPException(403, "网页版已被管理员关闭")
-    if not s.web.password:
+    if not s.web.configured:
         raise HTTPException(
-            403, "服务端未配置网页访问密码（.env 中的 WEB_PASSWORD），网页版不可用")
+            403, "服务端尚未配置网页账号（config.yaml 中的 web.users），网页版不可用")
 
     ip = _client_ip(request)
     locked = _web_locked(ip)
     if locked:
         raise HTTPException(429, f"尝试次数过多，请 {locked} 秒后重试")
 
-    if not auth.verify_password(password, s.web.password):
+    account = s.web.find_user(username)
+    if not account or not auth.verify_password_hash(password, account.password_hash):
         _web_record_failure(ip)
-        raise HTTPException(401, "访问密码不正确")
+        # 不区分"用户名不存在"与"密码错误"，避免枚举账号
+        raise HTTPException(401, "用户名或密码不正确")
 
     _web_failures.pop(ip, None)
-    openid = auth.web_openid(user or s.web.user)
+    openid = auth.web_openid(account.username)
     try:
-        # 密码已是准入凭证，网页身份不再受微信 openid 白名单约束
+        # 网页身份不再受微信 openid 白名单约束
         session = await auth.issue_session(
             s.db_path, openid, None,
             ttl_seconds=s.auth.session_ttl_days * 24 * 3600)
@@ -178,6 +185,8 @@ async def web_login(request: Request, password: str = Form(""), user: str = Form
     return {
         "token": session["token"],
         "openid": openid,
+        "username": account.username,
+        "display_name": account.display_name,
         "expires_at": session["expires_at"],
         "dev_identity": False,
     }
@@ -394,16 +403,14 @@ async def read_family_settings(ctx: dict = Session):
     """家庭设置视图：未保存过时回落配置文件默认值，并如实标注来源。"""
     s = get_settings()
     stored = await db.get_family_settings(s.db_path, ctx["openid"])
-    if stored and (stored.get("subjects") or stored.get("grade_level") or stored.get("term_start_date")):
+    if stored and (stored.get("subjects") or stored.get("term_start_date")):
         return {
-            "grade_level": stored.get("grade_level", ""),
             "subjects": list(stored.get("subjects") or []),
             "term_start_date": stored.get("term_start_date", ""),
             "source": "saved",
             "updated_at": stored.get("updated_at"),
         }
     return {
-        "grade_level": s.family.default_grade_level,
         "subjects": list(s.family.subjects),
         "term_start_date": s.family.term_start_date,
         "source": "config_default",
@@ -417,16 +424,57 @@ async def update_family_settings(payload: FamilySettingsUpdate, ctx: dict = Sess
     s = get_settings()
     saved = await db.save_family_settings(
         s.db_path, ctx["openid"],
-        grade_level=payload.grade_level,
         subjects=payload.subjects or list(s.family.subjects),
         term_start_date=payload.term_start_date,
     )
     return {
-        "grade_level": saved["grade_level"],
         "subjects": saved["subjects"],
         "term_start_date": saved["term_start_date"],
         "source": "saved",
         "updated_at": saved["updated_at"],
+    }
+
+
+@router.get("/web/overview")
+async def web_overview(ctx: dict = Session):
+    """今日学习台聚合：待办计数、本周正确率（全学科）、高频错因 TOP3。
+
+    口径说明：正确率按近 7 天已完成的批改任务逐题汇总；错因按近 30 天台账统计；
+    首期不做分学科拆分。
+    """
+    s = get_settings()
+    openid = ctx["openid"]
+    now = time.time()
+    day = 86400.0
+
+    counts = await db.ledger_counts(s.db_path, openid)
+    cur = await db.grading_stats(s.db_path, openid, now - 7 * day, now)
+    prev = await db.grading_stats(s.db_path, openid, now - 14 * day, now - 7 * day)
+    causes = await db.top_error_causes(s.db_path, openid, now - 30 * day, 3)
+
+    def _rate(st: dict):
+        if st["checked"] <= 0:
+            return None
+        return st["correct"] / st["checked"]
+
+    cur_rate, prev_rate = _rate(cur), _rate(prev)
+    accuracy = None
+    if cur_rate is not None:
+        accuracy = {
+            "rate": round(cur_rate, 4),
+            "checked": cur["checked"],
+            "delta": round(cur_rate - prev_rate, 4) if prev_rate is not None else None,
+        }
+
+    return {
+        "todos": {
+            "pending_correction": int(counts.get("pending_correction", 0)),
+            "pending_retest": int(counts.get("corrected_pending_retest", 0)),
+            "retest_failed": int(counts.get("retest_failed", 0)),
+        },
+        "week_accuracy": accuracy,
+        "top_causes": causes,
+        "retention_days": s.retention_days,
     }
 
 
@@ -509,6 +557,33 @@ async def get_ledger(subject: str = Query(""), states: str = Query(""),
         "subjects": await db.ledger_subjects(s.db_path, ctx["openid"]),
         "states": list(LEDGER_STATES),
     }
+
+
+@router.post("/ledger/manual", status_code=201)
+async def create_manual_ledger(payload: ManualLedgerCreate, ctx: dict = Session):
+    """做题页人工登记：自己判错的题直接记入复习台账（待订正）。
+
+    按 question_uid 去重：同一题重复登记不会产生重复条目。
+    """
+    s = get_settings()
+    uid = payload.question_uid or f"manual:{payload.source_task_id or 'na'}:{abs(hash(payload.stem)) % 10**8}"
+    entry = {
+        "task_id": payload.source_task_id,
+        "question_no": payload.question_no,
+        "knowledge_point": payload.knowledge_point,
+        "note": payload.note or "做题页人工登记",
+        "subject": payload.subject,
+        "source": "manual",
+        "question_uid": uid,
+        "stem": payload.stem,
+        "student_answer": payload.student_answer,
+        "correct_answer": payload.correct_answer,
+        "error_rule": "",
+        "status": "wrong",
+        "remediation_state": "pending_correction",
+    }
+    saved = await db.upsert_ledger_question(s.db_path, ctx["openid"], entry)
+    return {"entry_id": saved["id"], "created": saved["created"]}
 
 
 @router.get("/ledger/{entry_id}")

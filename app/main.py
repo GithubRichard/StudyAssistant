@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -51,12 +52,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runner = TaskRunner(settings, client)
         await runner.start()
         app.state.runner = runner
+        # 网页版 v1：每日自动清理超期错题（保留两年），仅清理 mistakes 与关联事件，
+        # 任务、附件、Git 归档不受影响。
+        purge_task = asyncio.create_task(_retention_purge_loop(settings))
         try:
             yield
         finally:
+            purge_task.cancel()
             await runner.stop()
             await client.aclose()
             api.hermes_client = None
+
+
 
     app = FastAPI(title="Leo 学习任务服务", version="0.2.0", lifespan=lifespan)
     app.include_router(api.router)
@@ -93,3 +100,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         log.warning("未找到网页版静态资源目录 %s，网页版暂不可用", web_dir)
 
     return app
+
+
+async def _retention_purge_loop(settings: "Settings") -> None:
+    """每日一次：按账号清理超期错题台账。失败只记录日志，不影响服务。"""
+    while True:
+        try:
+            await asyncio.sleep(24 * 3600)
+            openids = await db.list_user_openids(settings.db_path)
+            for openid in openids:
+                removed = await db.purge_expired(
+                    settings.db_path, openid, settings.retention_days)
+                if removed["mistakes"]:
+                    log.info("自动清理超期错题: %s 删除 %d 条，关联事件 %d 条",
+                             openid, removed["mistakes"], removed["question_events"])
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("自动清理超期错题失败")

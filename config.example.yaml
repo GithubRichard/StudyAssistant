@@ -90,16 +90,22 @@ wechat:
 
 # ================= 网页版（IP 直连，免小程序备案）=================
 # 浏览器访问 http://<服务器IP>:<端口>/ 即可使用；与小程序共用同一套接口与学习记录。
-# 必须配置 WEB_PASSWORD 才可用（密码写进 .env，不要写在这里）。
+# 网页版 v1：账号白名单登录。一个账号 = 一个孩子，学习记录按账号隔离。
+# 用 scripts/make_web_user.py 生成账号片段（密码只存 pbkdf2 哈希，不存明文），粘贴到下面。
 web:
   enabled: true
-  password: "${WEB_PASSWORD}"
-  user: "family"              # 网页账号名，最终身份为 web:<user>
-  title: "Leo 学习助手"
+  title: "学习助手"
+  users:
+    # - username: "kid1"
+    #   display_name: "老大"
+    #   password_hash: "pbkdf2_sha256$260000$<salt_hex>$<hash_hex>"
   allowed_origins: []         # 前后端分离部署时填来源域名；同源部署留空更安全
 
 # ================= 图片处理 =================
 data_dir: "data"
+# 错题台账按账号保留天数（默认 2 年）；超期错题及关联订正/复测事件由每日定时任务自动清理。
+# 任务、附件、GitHub 归档不受影响。
+retention_days: 730
 max_image_mb: 5
 max_image_px: 1600
 

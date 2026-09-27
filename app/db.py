@@ -660,22 +660,24 @@ def _load_subjects(raw: str) -> List[str]:
     return [str(s) for s in parsed] if isinstance(parsed, list) else []
 
 
-async def save_family_settings(db_path: str, openid: str, *, grade_level: str,
+async def save_family_settings(db_path: str, openid: str, *,
                                subjects: List[str], term_start_date: str) -> dict:
-    """保存家庭设置（学科清单以 JSON 文本存储，便于扩展新学科）。"""
+    """保存家庭设置（学科清单以 JSON 文本存储，便于扩展新学科）。
+
+    grade_level 不再由产品层写入，但旧列为兼容仍保留；写入时保持原值。
+    """
     now = time.time()
     payload = json.dumps(list(subjects), ensure_ascii=False)
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
-            """INSERT INTO family_settings(openid, grade_level, subjects, term_start_date, updated_at)
-               VALUES(?,?,?,?,?)
-               ON CONFLICT(openid) DO UPDATE SET grade_level=excluded.grade_level,
-                 subjects=excluded.subjects, term_start_date=excluded.term_start_date,
-                 updated_at=excluded.updated_at""",
-            (openid, grade_level, payload, term_start_date, now),
+            """INSERT INTO family_settings(openid, subjects, term_start_date, updated_at)
+               VALUES(?,?,?,?)
+               ON CONFLICT(openid) DO UPDATE SET subjects=excluded.subjects,
+                 term_start_date=excluded.term_start_date, updated_at=excluded.updated_at""",
+            (openid, payload, term_start_date, now),
         )
         await db.commit()
-    return {"openid": openid, "grade_level": grade_level, "subjects": list(subjects),
+    return {"openid": openid, "subjects": list(subjects),
             "term_start_date": term_start_date, "updated_at": now}
 
 
@@ -805,6 +807,100 @@ async def ledger_counts(db_path: str, openid: str) -> Dict[str, int]:
             (openid,),
         ) as cur:
             return {str(row[0] or "unknown"): int(row[1]) for row in await cur.fetchall()}
+
+
+async def grading_stats(db_path: str, openid: str, start_ts: float, end_ts: float) -> dict:
+    """指定时间窗内已完成批改任务的逐题统计。
+
+    口径：每任务取最后一轮已完成 run 的 result_json；correct=答对；
+    checked=correct+wrong+unanswered（uncertain/unprocessed 未给出确定结论，不计入）。
+    解析失败的 run 直接跳过，不影响整体。
+    """
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT r.result_json FROM task_runs r
+               JOIN tasks t ON t.id = r.task_id
+               WHERE t.openid=? AND t.task_type='grading' AND r.status='finished'
+                 AND r.finished_at>=? AND r.finished_at<?
+                 AND r.run_no=(SELECT MAX(run_no) FROM task_runs WHERE task_id=r.task_id)""",
+            (openid, start_ts, end_ts),
+        ) as cur:
+            rows = await cur.fetchall()
+    correct = checked = 0
+    for (raw,) in rows:
+        try:
+            payload = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            continue
+        for q in payload.get("questions") or []:
+            status = (q or {}).get("status", "")
+            if status == "correct":
+                correct += 1
+                checked += 1
+            elif status in ("wrong", "unanswered"):
+                checked += 1
+    return {"correct": correct, "checked": checked}
+
+
+async def top_error_causes(db_path: str, openid: str, since_ts: float,
+                           limit: int = 3) -> List[dict]:
+    """近 N 天台账高频错因（按 error_rule 归一化统计）。"""
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT error_rule, COUNT(*) FROM mistakes
+               WHERE openid=? AND error_rule<>'' AND created_at>=?
+               GROUP BY error_rule ORDER BY COUNT(*) DESC LIMIT ?""",
+            (openid, since_ts, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [{"cause": str(cause), "count": int(n)} for cause, n in rows]
+
+
+async def list_user_openids(db_path: str) -> List[str]:
+    """所有出现过业务数据的账号身份（用于定时清理等全账号任务）。"""
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT openid FROM tasks UNION
+               SELECT openid FROM mistakes UNION
+               SELECT openid FROM family_settings"""
+        ) as cur:
+            return [str(row[0]) for row in await cur.fetchall() if row[0]]
+
+
+async def purge_expired(db_path: str, openid: str, retention_days: int) -> dict:
+    """按账号清理超期错题台账。
+
+    范围（已与用户确认）：只清理「错题台账（mistakes）」及其关联的
+    「订正/复测事件（question_events）」。任务、附件、Git 归档一律不动。
+    判定口径：last_event_at（无值回落 created_at）早于保留期截止线。
+    """
+    cutoff = time.time() - max(int(retention_days or 0), 0) * 86400.0
+    removed = {"mistakes": 0, "question_events": 0}
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT id, question_uid FROM mistakes
+               WHERE openid=? AND COALESCE(NULLIF(last_event_at, 0), created_at) < ?""",
+            (openid, cutoff),
+        ) as cur:
+            stale = [(int(r[0]), str(r[1] or "")) for r in await cur.fetchall()]
+        if not stale:
+            return removed
+        uids = sorted({uid for _, uid in stale if uid})
+        if uids:
+            placeholders = ",".join("?" for _ in uids)
+            async with db.execute(
+                f"DELETE FROM question_events WHERE openid=? AND question_uid IN ({placeholders})",
+                (openid, *uids),
+            ) as cur:
+                removed["question_events"] = cur.rowcount or 0
+        ids = [i for i, _ in stale]
+        placeholders = ",".join("?" for _ in ids)
+        async with db.execute(
+            f"DELETE FROM mistakes WHERE id IN ({placeholders})", (*ids,)
+        ) as cur:
+            removed["mistakes"] = cur.rowcount or 0
+        await db.commit()
+    return removed
 
 
 async def ledger_subjects(db_path: str, openid: str) -> List[str]:

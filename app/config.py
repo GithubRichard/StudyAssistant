@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # 支持 ${VAR} 和 ${VAR:-默认值} 两种写法
 _ENV_RE = re.compile(r"\$\{([^}:]+)(?::-([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)")
@@ -101,28 +101,59 @@ class AuthConfig(BaseModel):
     session_ttl_days: int = 30
 
 
+class WebUserConfig(BaseModel):
+    """网页版预设账号：一个账号 = 一个孩子，学习记录按账号隔离。
+
+    username 只允许字母数字与 -_（最终身份为 web:<username>）；
+    password_hash 用 scripts/make_web_user.py 生成（pbkdf2_sha256）。
+    """
+
+    username: str
+    display_name: str = ""
+    password_hash: str = ""
+
+    @model_validator(mode="after")
+    def _check(self) -> "WebUserConfig":
+        name = (self.username or "").strip()
+        if not name or len(name) > 32 or any(
+            not (ch.isalnum() or ch in "-_") for ch in name
+        ):
+            raise ValueError("username 只允许 1~32 位字母数字与 -_")
+        self.username = name
+        if not self.display_name:
+            self.display_name = name
+        if not self.password_hash:
+            raise ValueError(f"账号 {name} 缺少 password_hash")
+        return self
+
+
 class WebConfig(BaseModel):
-    """网页版入口：不依赖微信，用配置密码登录，适合「只能用 IP 直连、小程序无法备案」的场景。
+    """网页版入口：不依赖微信，用预设账号登录，适合「只能用 IP 直连、小程序无法备案」的场景。
 
     安全约定：
-    - 必须配置了 `password` 才可用；未配置时网页登录接口一律拒绝。
-    - 网页账号使用 `web:<user>` 形式的独立身份，与微信 openid 互不影响。
-    - 明文密码只从环境变量 `WEB_PASSWORD` 注入，不写入仓库。
+    - `users` 为空时网页登录一律拒绝；用户名必须在预设名单中。
+    - 网页账号使用 `web:<username>` 形式的独立身份，与微信 openid 互不影响。
+    - config.yaml 不进版本库；密码只存哈希，不存明文。
 
     注意：`config.yaml` 不进版本库，服务器上那份不会随 `git pull` 更新，
-    因此 `password` 允许在未显式配置时回落到环境变量 `WEB_PASSWORD`，
-    避免「明明填了 .env 却仍提示未配置密码」。
+    改完配置后需重启服务生效。
     """
 
     enabled: bool = True
-    password: str = Field(default_factory=lambda: os.environ.get("WEB_PASSWORD", ""))
-    user: str = "family"                     # 网页账号名，最终身份为 web:<user>
-    title: str = "Leo 学习助手"
+    title: str = "学习助手"
+    users: List[WebUserConfig] = Field(default_factory=list)
     allowed_origins: List[str] = Field(default_factory=list)  # 跨域部署时填写；同源部署留空
 
     @property
     def configured(self) -> bool:
-        return self.enabled and bool(self.password)
+        return self.enabled and bool(self.users)
+
+    def find_user(self, username: str) -> Optional["WebUserConfig"]:
+        name = (username or "").strip()
+        for u in self.users:
+            if u.username == name:
+                return u
+        return None
 
 
 class LimitsConfig(BaseModel):
@@ -208,6 +239,7 @@ class Settings(BaseModel):
     wechat: WechatConfig = Field(default_factory=WechatConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     data_dir: str = "data"
+    retention_days: int = 730  # 错题/任务按账号保留天数，超期由每日定时任务清理
     max_image_mb: int = 5
     max_image_px: int = 1600
     grade_concurrency: int = 4

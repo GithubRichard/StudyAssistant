@@ -45,6 +45,8 @@ REMEDIATION_LABELS = {
     "not_applicable": "不适用",
 }
 RETEST_RESULTS = ("retest_passed", "retest_failed", "corrected")
+# 台账事件口径：复测/订正/异议标记。网页版“我觉得判错了”写入 disputed（只标记异议，不改变台账状态）。
+LEDGER_EVENT_RESULTS = ("corrected", "retest_passed", "retest_failed", "disputed")
 
 # 归档子目录与任务类型的对应关系（防止周报写进错题解析这类错位）
 ARCHIVE_SUBDIRS_BY_TASK = {
@@ -703,8 +705,31 @@ class FollowupCreate(StrictModel):
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+class ManualLedgerCreate(StrictModel):
+    """做题页人工登记：自己判错的题直接记入复习台账。"""
+
+    subject: str = ""
+    question_no: str = ""
+    stem: str = ""
+    student_answer: str = ""
+    correct_answer: str = ""
+    knowledge_point: str = ""
+    note: str = ""
+    question_uid: str = ""
+    source_task_id: str = ""
+
+    @model_validator(mode="after")
+    def _check(self) -> "ManualLedgerCreate":
+        if not self.stem.strip():
+            raise ValueError("题干不能为空")
+        for key in ("subject", "question_no", "stem", "student_answer",
+                    "correct_answer", "knowledge_point", "note", "question_uid"):
+            setattr(self, key, (getattr(self, key) or "").strip())
+        return self
+
+
 class LedgerEventCreate(StrictModel):
-    """人工登记一次订正/复测结果（真实作答后才登记）。"""
+    """人工登记一次订正/复测结果（真实作答后才登记）。disputed 仅标记“我觉得判错了”，不改变台账状态。"""
 
     result: str
     occurred_date: str = ""
@@ -713,8 +738,8 @@ class LedgerEventCreate(StrictModel):
 
     @model_validator(mode="after")
     def _check(self) -> "LedgerEventCreate":
-        if self.result not in RETEST_RESULTS:
-            raise ValueError(f"result 非法: {self.result}（可选 {' / '.join(RETEST_RESULTS)}）")
+        if self.result not in LEDGER_EVENT_RESULTS:
+            raise ValueError(f"result 非法: {self.result}（可选 {' / '.join(LEDGER_EVENT_RESULTS)}）")
         self.occurred_date = (self.occurred_date or "").strip()
         if self.occurred_date and not _DATE_RE.match(self.occurred_date):
             raise ValueError("occurred_date 必须形如 YYYY-MM-DD")
@@ -724,9 +749,8 @@ class LedgerEventCreate(StrictModel):
 
 
 class FamilySettingsUpdate(StrictModel):
-    """家庭设置：学期起始日期、默认年级与学科清单（用于区间计算与任务识别）。"""
+    """家庭设置：学期起始日期与学科清单（用于区间计算与任务识别）。"""
 
-    grade_level: str = ""
     subjects: List[str] = Field(default_factory=list)
     term_start_date: str = ""
 
@@ -735,7 +759,6 @@ class FamilySettingsUpdate(StrictModel):
         if self.term_start_date and not _DATE_RE.match(self.term_start_date.strip()):
             raise ValueError("term_start_date 必须形如 YYYY-MM-DD")
         self.term_start_date = self.term_start_date.strip()
-        self.grade_level = self.grade_level.strip()
         cleaned: List[str] = []
         for raw in self.subjects:
             name = raw.strip()
@@ -746,6 +769,7 @@ class FamilySettingsUpdate(StrictModel):
             if name not in cleaned:
                 cleaned.append(name)
         self.subjects = cleaned
+        return self
         return self
 
 
