@@ -122,8 +122,8 @@ curl -s http://127.0.0.1:8642/v1/skills -H "Authorization: Bearer $HERMES_API_KE
 |---|---|---|
 | POST | `/api/login` | `code` → 会话令牌（已配微信时失败即拒绝，不再降级开发身份） |
 | POST | `/api/logout` | 失效当前会话 |
-| GET | `/api/web/meta` | 网页版公开信息（标题、开关、是否已配密码），不含任何密钥 |
-| POST | `/api/web/login` | 网页版登录：`password`（+可选 `user`）→ 会话令牌 |
+| GET | `/api/web/meta` | 网页版公开信息（标题、开关、是否已配账号），不含任何密钥与账号名单 |
+| POST | `/api/web/login` | 网页版登录：`username` + `password`（须在 `web.users` 名单内）→ 会话令牌 |
 | POST | `/api/assets` | 上传单张图片 → `asset_id` |
 | POST | `/api/study/tasks` | 创建学习任务，可带 `Idempotency-Key` |
 | POST | `/api/tasks/{id}/followups` | 追加补充材料，创建新执行轮次 |
@@ -149,13 +149,15 @@ curl -s http://127.0.0.1:8642/v1/skills -H "Authorization: Bearer $HERMES_API_KE
 
 浏览器直接打开 `http://<服务器IP>:<端口>/` 即可使用，功能与小程序一致：学习（任务类型/图片/文字/范围）、结果（状态轮询、五态、核查、补充材料、成果下载）、历史、错题本、我的。
 
-准备两步：
+登录方式：**预设账号白名单**（用户名 + 密码）。一个账号 = 一个孩子，数据身份为 `web:<username>`，与微信 openid 隔离；密码只存 `pbkdf2_sha256` 哈希，不写明文。`web.users` 为空时登录页只显示提示、登不进去。
 
-1. 配置访问密码（**必填**，未配置时网页登录接口一律拒绝）：
+准备三步：
+
+1. 生成账号片段（每个孩子一个账号，可重复执行添加多个）：
 
 ```bash
-# .env
-WEB_PASSWORD=<一段足够长的随机密码>
+python3 scripts/make_web_user.py --username leo --display-name Leo
+# 按提示输入两次密码（不回显），把输出的片段粘到 config.yaml 的 web.users: 下面
 ```
 
 2. 让服务监听外网地址：
@@ -163,10 +165,13 @@ WEB_PASSWORD=<一段足够长的随机密码>
 ```bash
 # .env
 APP_HOST=0.0.0.0
+docker compose up -d --force-recreate   # 改完 .env 必须重建容器
 ```
 
+3. 改完 `config.yaml` 后重启服务：
+
 ```bash
-docker compose up -d --force-recreate   # 改完 .env 必须重建容器
+docker compose restart grader   # config.yaml 是挂载进去的，restart 即可；改 .env 才需 --force-recreate
 ```
 
 然后访问 `http://<服务器IP>:8000/`（会自动跳到 `/web/`）。
@@ -174,19 +179,17 @@ docker compose up -d --force-recreate   # 改完 .env 必须重建容器
 | 配置项（config.yaml `web`） | 说明 |
 |---|---|
 | `enabled` | 总开关，默认 `true`；设 `false` 时网页登录接口直接拒绝 |
-| `password` | 访问密码，从环境变量 `WEB_PASSWORD` 注入，不写入仓库 |
-| `user` | 网页账号名，最终身份为 `web:<user>`，与微信 openid 隔离 |
 | `title` | 页面标题 |
+| `users` | 账号名单，每项含 `username` / `display_name` / `password_hash`（用 `scripts/make_web_user.py` 生成，只存哈希） |
 | `allowed_origins` | 前后端分离部署时的跨域白名单；同源部署留空（默认） |
 
-> `config.yaml` 不在版本库里，`git pull` **不会**更新服务器上那一份。为避免「明明填了 `.env` 仍提示未配置密码」，
-> `web.password` 在 config.yaml 未写 `web:` 段时会自动回落到环境变量，所以**只填 `.env` 的 `WEB_PASSWORD` 也能生效**；
-> 其余新增项（如 `title`、`allowed_origins`）若要自定义，仍需手工补到服务器的 config.yaml。
+> `config.yaml` **不进版本库**，`git pull` **不会**更新服务器上那一份。所以新增/修改账号都要手工编辑服务器上的 `config.yaml`，改完重启服务生效。
+> `username` 只允许 1~32 位字母数字与 `-_`，最终身份为 `web:<username>`；密码不写明文，只存哈希。
 
-本地用 Python 直接运行（不经 Docker 时 `.env` **不会**自动加载，需手动导出变量）：
+本地用 Python 直接运行：
 
 ```bash
-export WEB_PASSWORD=<密码>
+python3 scripts/make_web_user.py --username leo --display-name Leo   # 生成片段贴进 config.yaml
 uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000
 # 浏览器访问 http://127.0.0.1:8000/
 ```
@@ -212,7 +215,7 @@ uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000
 ```bash
 git clone <本仓库> /opt/study-assistant && cd /opt/study-assistant
 cp config.example.yaml config.yaml
-cp .env.example .env        # 填 HERMES_API_KEY；用网页版还需填 WEB_PASSWORD
+cp .env.example .env        # 填 HERMES_API_KEY；网页账号在 config.yaml 的 web.users 里配（见第 6 节）
 mkdir -p data workspace
 docker compose up -d --build
 docker compose logs -f
@@ -223,7 +226,7 @@ curl -s localhost:8000/api/runtime   # 需要令牌，也可直接看日志中�
 - 默认只监听 `127.0.0.1:8000`，公网由 Caddy/Nginx 反向代理 + 自动 HTTPS
 - **要用 `http://服务器IP:8000` 直连**：在 `.env` 里设 `APP_HOST=0.0.0.0`，同时
   ① 云防火墙只放行你的出口 IP（不要用 0.0.0.0/0）
-  ② 用**网页版**必须配置 `WEB_PASSWORD`（未配置时网页登录一律拒绝）
+  ② 用**网页版**必须在 config.yaml 的 `web.users` 里配好账号（未配置时网页登录一律拒绝）
   ③ 用**小程序**必须配置 `WECHAT_SECRET`——否则任何人伪造 `code` 就能登录并消耗额度
   ④ http 下令牌是明文传输，长期使用请换 https + 域名
 - **`.env` 改动后必须 `docker compose up -d --force-recreate`**，仅 `restart` 不会更新环境变量
@@ -234,7 +237,8 @@ curl -s localhost:8000/api/runtime   # 需要令牌，也可直接看日志中�
 | 现象 | 排查 |
 |---|---|
 | 登录 401 | 已配微信时 code 无效即拒绝；确认 `WECHAT_SECRET` 正确 |
-| 网页版提示「未配置网页访问密码」 | `.env` 里的 `WEB_PASSWORD` 为空；填好后必须 `--force-recreate` |
+| 网页版提示「服务端尚未配置网页账号（web.users）」 | config.yaml 的 `web.users` 为空；用 `scripts/make_web_user.py` 生成账号片段粘进去，再重启服务 |
+| 网页版登录提示「用户名或密码不正确」 | 用户名须与 `web.users` 中的 `username` 完全一致；不区分用户名/密码错误是故意的（防账号枚举） |
 | 网页版打不开 `/` | 是否设了 `APP_HOST=0.0.0.0`、云防火墙是否放行；容器内是否包含 `web/` 目录 |
 | 网页版密码输错多次后无法登录（429） | 防爆破临时锁定，等 5 分钟或重启服务 |
 | `/api/runtime` 显示 `skill_missing` | 技能没装到 Hermes profile，或 Hermes 未重启/未开新会话 |
