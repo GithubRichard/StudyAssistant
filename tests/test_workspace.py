@@ -68,6 +68,34 @@ class AssetTest(unittest.TestCase):
             with self.assertRaises(WorkspaceError):
                 store_asset(settings, "u1", b"x" * (2 * 1024 * 1024), "big.jpg")
 
+    def test_store_reports_heic_hint_without_decoder(self):
+        from app import workspace
+        header = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic"
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            original = workspace.HEIF_SUPPORTED
+            workspace.HEIF_SUPPORTED = False
+            try:
+                with self.assertRaises(WorkspaceError) as ctx:
+                    store_asset(settings, "u1", header, "IMG_0001.HEIC")
+            finally:
+                workspace.HEIF_SUPPORTED = original
+            self.assertIn("HEIC", str(ctx.exception))
+
+    def test_store_accepts_heic_when_decoder_available(self):
+        try:
+            import pillow_heif
+        except ImportError:
+            self.skipTest("未安装 pillow-heif，跳过 HEIC 解码验证")
+        pillow_heif.register_heif_opener()
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 80), (10, 120, 200)).save(buf, "HEIF")
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            asset = store_asset(settings, "u1", buf.getvalue(), "IMG_0001.HEIC")
+            self.assertEqual(asset["mime"], "image/jpeg")
+            self.assertTrue(Path(asset["path"]).exists())
+
     def test_store_converts_to_jpeg_and_resizes(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = make_settings(tmp, max_image_px=100)

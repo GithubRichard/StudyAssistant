@@ -21,6 +21,8 @@ const TRAINING_KINDS = [
 ];
 const GRADES = ['七年级', '八年级', '九年级', '高一', '高二', '高三'];
 const UNSPECIFIED = '未指定';
+// 学科留空交给模型按材料判断：试卷本身就能推断学科，不必让用户先选
+const AUTO_SUBJECT = '自动识别（按试卷判断）';
 const MAX_IMAGES = 9;
 
 const RUNTIME_TEXT = {
@@ -51,7 +53,7 @@ Page({
     needsExamScope: false,
     trainingKinds: TRAINING_KINDS,
     kindIndex: 0,
-    subjects: [UNSPECIFIED],
+    subjects: [AUTO_SUBJECT],
     subjectIndex: 0,
     grades: [UNSPECIFIED].concat(GRADES),
     gradeIndex: 0,
@@ -93,7 +95,7 @@ Page({
     try {
       const st = await api.getSettings();
       const subjectList = (st.subjects && st.subjects.length) ? st.subjects : [];
-      const subjects = [UNSPECIFIED].concat(subjectList);
+      const subjects = [AUTO_SUBJECT].concat(subjectList);
       const current = this.data.subjects[this.data.subjectIndex];
       const keep = subjects.indexOf(current);
       this.setData({
@@ -105,7 +107,7 @@ Page({
       this.refreshScopeHint();
     } catch (e) {
       // 设置读不到不影响提交；如实提示来源
-      this.setData({ subjects: [UNSPECIFIED, '语文', '数学', '英语'], settingsSource: 'unavailable' });
+      this.setData({ subjects: [AUTO_SUBJECT, '语文', '数学', '英语'], settingsSource: 'unavailable' });
       this.refreshScopeHint();
     }
   },
@@ -241,7 +243,7 @@ Page({
       if (!this.pendingKey) this.pendingKey = this.newIdempotencyKey();
       const created = await api.createStudyTask({
         task_type: type.key,
-        subject: subject === UNSPECIFIED ? '' : subject,
+        subject: subject === AUTO_SUBJECT ? '' : subject,
         grade_level: grade === UNSPECIFIED ? '' : grade,
         training_kind: type.needsKind ? TRAINING_KINDS[this.data.kindIndex].key : '',
         exam_scope: type.needsExamScope ? (this.data.examScope || '').trim() : '',

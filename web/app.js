@@ -20,6 +20,30 @@ const fmtD = (ts) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 
+const HEIC_RE = /\.(heic|heif)$/i;
+/* HEIC 预览：Chrome 等浏览器无法直接渲染，退回文字占位；真正的解码在服务端完成。 */
+function renderThumbs(box, files) {
+  box.innerHTML = "";
+  files.slice(0, 20).forEach((f) => {
+    if (HEIC_RE.test(f.name || "") || /heic|heif/i.test(f.type || "")) {
+      const ph = document.createElement("div");
+      ph.className = "img-preview-fallback";
+      ph.textContent = "HEIC\n提交后自动转换";
+      box.appendChild(ph);
+      return;
+    }
+    const img = document.createElement("img");
+    img.src = URL.createObjectURL(f);
+    img.onerror = () => {
+      const ph = document.createElement("div");
+      ph.className = "img-preview-fallback";
+      ph.textContent = "预览不可用\n提交后自动转换";
+      img.replaceWith(ph);
+    };
+    box.appendChild(img);
+  });
+}
+
 let toastTimer = 0;
 function toast(msg) {
   const t = $("#toast");
@@ -278,6 +302,8 @@ const LEARN_TABS = [
   ["training", "生成训练", "按知识点或考试范围生成练习题"],
 ];
 const DEFAULT_SUBJECTS = ["数学", "语文", "英语", "物理", "化学", "生物", "历史", "地理", "政治"];
+// 学科留空交给模型按材料判断：试卷/题目本身就能推断出学科，不必让用户先选
+const AUTO_SUBJECT = "自动识别（按试卷判断）";
 
 async function pageLearn(app, r, alive) {
   document.title = "提交";
@@ -288,6 +314,10 @@ async function pageLearn(app, r, alive) {
   const subjects = (settings && settings.subjects && settings.subjects.length)
     ? settings.subjects : DEFAULT_SUBJECTS;
   const tabInfo = LEARN_TABS.find(([k]) => k === tab);
+  // 材料类任务（拍作业/问问题）默认不指定学科，由模型看试卷推断；训练默认沿用第一个学科
+  const subjectOptions = [{ value: "", label: AUTO_SUBJECT },
+    ...subjects.map((s) => ({ value: s, label: s }))];
+  const defaultSubjectIndex = tab === "training" ? 1 : 0;
 
   app.innerHTML = shell("home", "提交", `
   <div class="page">
@@ -297,8 +327,9 @@ async function pageLearn(app, r, alive) {
       <div class="card-title">${tabInfo[1]}</div>
       <p class="muted">${tabInfo[2]}</p>
       <form id="taskForm">
-        <label class="field"><span>学科</span>
-          <select name="subject">${subjects.map((s) => `<option>${esc(s)}</option>`).join("")}</select></label>
+        <label class="field"><span>学科${tab === "training" ? "" : "（默认按试卷自动识别）"}</span>
+          <select name="subject">${subjectOptions.map((o, i) =>
+            `<option value="${esc(o.value)}"${i === defaultSubjectIndex ? " selected" : ""}>${esc(o.label)}</option>`).join("")}</select></label>
         ${tab === "training" ? `
         <label class="field"><span>训练类型</span>
           <select name="training_kind">
@@ -315,8 +346,8 @@ async function pageLearn(app, r, alive) {
         </div>` : ""}
         <label class="field"><span>文字说明${tab === "grading" ? "（可选）" : ""}</span>
           <textarea name="text" rows="3" placeholder="${tab === "qa" ? "把问题写清楚，比如哪一步卡住了" : tab === "training" ? "想练哪些知识点？越具体越好" : "补充说明（可选）"}"></textarea></label>
-        <label class="field"><span>图片（可多选）</span>
-          <input name="images" type="file" accept="image/*" multiple></label>
+        <label class="field"><span>图片（可多选，支持 iPhone 的 HEIC）</span>
+          <input name="images" type="file" accept="image/*,.heic,.heif" multiple></label>
         <div id="imgPreview" class="img-preview"></div>
         <div id="submitMsg" class="muted"></div>
         <button class="btn primary block" type="submit" id="submitBtn">${tab === "training" ? "生成训练题" : "提交"}</button>
@@ -326,13 +357,7 @@ async function pageLearn(app, r, alive) {
 
   const fileInput = $("input[name=images]");
   fileInput.onchange = () => {
-    const box = $("#imgPreview");
-    box.innerHTML = "";
-    Array.from(fileInput.files || []).slice(0, 20).forEach((f) => {
-      const img = document.createElement("img");
-      img.src = URL.createObjectURL(f);
-      box.appendChild(img);
-    });
+    renderThumbs($("#imgPreview"), Array.from(fileInput.files || []));
   };
 
   $("#taskForm").onsubmit = async (ev) => {
@@ -421,7 +446,7 @@ async function pageTask(app, r, alive) {
         ${needInput ? `
         <form id="followupForm" class="left">
           <label class="field"><span>补充说明</span><textarea name="text" rows="3" placeholder="补充缺失的信息"></textarea></label>
-          <label class="field"><span>补充图片</span><input name="images" type="file" accept="image/*" multiple></label>
+          <label class="field"><span>补充图片（支持 iPhone 的 HEIC）</span><input name="images" type="file" accept="image/*,.heic,.heif" multiple></label>
           <button class="btn primary block" type="submit">提交补充材料</button>
         </form>` : `<p class="muted">完成后会自动跳转</p>`}
       </div>

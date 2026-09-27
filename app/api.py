@@ -295,6 +295,9 @@ async def list_tasks(limit: int = Query(20, ge=1, le=100), offset: int = Query(0
                 data = json.loads(t["result_json"])
                 item["summary"] = (data.get("overview") or {}).get("summary", "") or ""
                 item["missing_info_count"] = len(data.get("missing_info") or [])
+                # 学科未指定时展示模型按材料判断出的学科
+                if not item["subject"]:
+                    item["subject"] = data.get("subject", "") or ""
             except (ValueError, TypeError):
                 item["summary"] = ""
         out.append(item)

@@ -21,9 +21,25 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, UnidentifiedImageError
 
+# iPhone 默认拍 HEIC：注册解码器后才能被 Pillow 识别。
+# 未安装 pillow-heif 时降级为原行为，并在失败提示里如实说明。
+try:  # pragma: no cover - 取决于运行环境是否装了 pillow-heif
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+    HEIF_SUPPORTED = True
+except ImportError:  # pragma: no cover
+    HEIF_SUPPORTED = False
+
 from .config import Settings
 
 log = logging.getLogger(__name__)
+
+def _looks_like_heif(raw: bytes) -> bool:
+    """按 ISO-BMFF 文件头判断是不是 HEIC/HEIF（Pillow 报错时无法给更多信息）。"""
+    return len(raw) > 12 and raw[4:8] == b"ftyp" and any(
+        marker in raw[4:32] for marker in (b"heic", b"heix", b"hevc", b"hevx",
+                                           b"mif1", b"msf1", b"heim", b"heis"))
 
 ALLOWED_SUBDIRS = ("错题解析", "周报分析", "强化训练")
 ORIGINAL_SUBDIR = "原题"                     # 原题资料仅本地保存，不入 Git、不进归档正文
@@ -163,9 +179,17 @@ def store_asset(settings: Settings, openid: str, raw: bytes, filename: str = "")
         img = Image.open(io.BytesIO(raw))
         img.load()
     except (UnidentifiedImageError, OSError) as e:
-        raise WorkspaceError("不是有效的图片文件") from e
+        if _looks_like_heif(raw):
+            if not HEIF_SUPPORTED:
+                hint = "服务端缺少 HEIC 解码组件（pillow-heif），请联系管理员安装后重试"
+            else:
+                hint = "这张 HEIC 照片无法解码，请用手机相册先导出为 JPG 后重试"
+            raise WorkspaceError(f"暂不支持这个 Apple 照片格式（HEIC/HEIF）：{hint}") from e
+        raise WorkspaceError(
+            "不是有效的图片文件；请上传 JPG/PNG/HEIC 等常见照片格式") from e
 
-    if img.mode in ("RGBA", "P", "LA"):
+    # HEIC 可能解出 RGBX / I;16 等模式，统一转成 JPEG 能写的 RGB/L
+    if img.mode not in ("RGB", "L"):
         img = img.convert("RGB")
     width, height = img.size
     scale = min(1.0, settings.max_image_px / max(width, height))

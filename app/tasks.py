@@ -335,6 +335,10 @@ class TaskRunner:
         task_id = task["id"]
         result = payload["result"]
 
+        # 学科：优先用模型按材料判断出的学科；模型没给时回落到任务上的学科
+        if not (result.get("subject") or "").strip() and (task.get("subject") or "").strip():
+            result["subject"] = task["subject"]
+
         # 服务端回填稳定去重键，并把区间缺口与考试范围说明如实并入 missing_info
         scope_info = scope.describe_scope(task, await _term_start_date(s, task["openid"]))
         result = fill_question_uids(result, time.strftime("%Y-%m-%d"))
@@ -432,7 +436,8 @@ async def build_task_view(settings: Settings, task: Dict[str, Any]) -> Dict[str,
         "id": task["id"],
         "status": task["status"],
         "task_type": task.get("task_type", "grading"),
-        "subject": task.get("subject", ""),
+        # 学科未指定时用模型按材料判断出的学科展示，避免页面出现空学科
+        "subject": task.get("subject") or (result or {}).get("subject", "") or "",
         "grade_level": task.get("grade_level", ""),
         "exam_scope": task.get("exam_scope", ""),
         "training_kind": task.get("training_kind", ""),
