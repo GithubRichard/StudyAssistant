@@ -14,7 +14,15 @@ python3 scripts/make_web_user.py --username kid1 --display-name 老大
 # 按提示输入两次密码，把输出的片段粘贴到 config.yaml 的 web.users: 下面
 
 # 3. 启动（内测建议先用前台模式看日志）
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+#    注意：app.main 只导出工厂函数，必须加 --factory
+uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000
+```
+
+若已用 Docker 跑着服务，**不要再手动启动**（会端口冲突）；直接访问容器提供的网页版即可：
+
+```bash
+docker compose ps
+docker compose logs -f          # 看启动日志
 ```
 
 访问：`http://服务器IP:8000/`

@@ -1,4 +1,7 @@
-"""启动入口：uvicorn app.main:app
+"""启动入口：uvicorn app.main:create_app --factory
+
+`app.main` 只导出工厂函数 `create_app()`，没有模块级 `app`，
+因此必须加 `--factory`（容器与 README 均使用该方式）。
 
 启动时依次完成：
 1. SQLite 迁移（有旧数据先备份）
