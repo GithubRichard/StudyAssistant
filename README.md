@@ -168,11 +168,14 @@ APP_HOST=0.0.0.0
 docker compose up -d --force-recreate   # 改完 .env 必须重建容器
 ```
 
-3. 改完 `config.yaml` 后重启服务：
+3. 改完 `config.yaml` 后**重建容器**（不要只 `restart`）：
 
 ```bash
-docker compose restart grader   # config.yaml 是挂载进去的，restart 即可；改 .env 才需 --force-recreate
+docker compose up -d --force-recreate grader
 ```
+
+> `config.yaml` 是以**单文件**方式挂载进容器的；主机上用 vim / `sed -i` 保存会替换文件（inode 变了），容器里仍指向旧文件，
+> `docker compose restart` 不会重新挂载，改动看起来「没生效」。重建容器才会重新绑定。改 `.env` 同样必须重建。
 
 然后访问 `http://<服务器IP>:8000/`（会自动跳到 `/web/`）。
 
@@ -238,7 +241,8 @@ curl -s localhost:8000/api/runtime   # 需要令牌，也可直接看日志中�
 |---|---|
 | 登录 401 | 已配微信时 code 无效即拒绝；确认 `WECHAT_SECRET` 正确 |
 | 网页版提示「服务端尚未配置网页账号（web.users）」 | config.yaml 的 `web.users` 为空；用 `scripts/make_web_user.py` 生成账号片段粘进去，再重启服务 |
-| 网页版登录提示「用户名或密码不正确」 | 用户名须与 `web.users` 中的 `username` 完全一致；不区分用户名/密码错误是故意的（防账号枚举） |
+| 网页版登录提示「用户名或密码不正确」 | ① 用户名须与 `web.users` 里的 `username` 完全一致（**不是**中文 `display_name`，大小写敏感、别带空格）；② 密码首尾空格会被忽略，中英文输入法/全角字符会导致不一致；③ 浏览器可能自动填充了旧密码，清空后重输。提示不区分"用户名不存在"与"密码错误"是故意的（防账号枚举） |
+| 改了 `web.users` 但登录状态没变化 | `config.yaml` 是**单文件挂载**，`docker compose restart` 不会重新挂载 → 用 `docker compose up -d --force-recreate grader` 重建容器 |
 | 网页版打不开 `/` | 是否设了 `APP_HOST=0.0.0.0`、云防火墙是否放行；容器内是否包含 `web/` 目录 |
 | 网页版密码输错多次后无法登录（429） | 防爆破临时锁定，等 5 分钟或重启服务 |
 | `/api/runtime` 显示 `skill_missing` | 技能没装到 Hermes profile，或 Hermes 未重启/未开新会话 |

@@ -142,6 +142,11 @@ class WebV1Test(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.status_code, 401)
         self.assertIn("用户名或密码不正确", res.json()["detail"])
 
+    async def test_login_ignores_surrounding_spaces(self):
+        """生成脚本对密码做了 strip，校验侧必须一致，否则会永久登录失败。"""
+        res = await self.login("kid1", "  pw-one  ")
+        self.assertEqual(res.status_code, 200, res.text)
+
     async def test_login_unknown_user_same_message(self):
         res = await self.login("ghost", "whatever")
         self.assertEqual(res.status_code, 401)

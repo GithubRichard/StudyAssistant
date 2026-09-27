@@ -52,7 +52,11 @@ def hash_password(password: str, iterations: int = 260_000) -> str:
 
 
 def verify_password_hash(given: str, stored: str) -> bool:
-    """校验密码；stored 非法或为空一律返回 False，不抛异常。"""
+    """校验密码；stored 非法或为空一律返回 False，不抛异常。
+
+    与 scripts/make_web_user.py 保持一致：忽略首尾空白（该脚本生成时就做了 strip）。
+    否则「设置密码时无空格、登录时误带空格」会永远登录失败，且提示只有"密码不正确"。
+    """
     try:
         algo, iter_s, salt_hex, hash_hex = (stored or "").split("$")
         if algo != "pbkdf2_sha256":
@@ -62,7 +66,7 @@ def verify_password_hash(given: str, stored: str) -> bool:
         expected = bytes.fromhex(hash_hex)
     except (ValueError, TypeError):
         return False
-    dk = hashlib.pbkdf2_hmac("sha256", (given or "").encode("utf-8"), salt, iterations)
+    dk = hashlib.pbkdf2_hmac("sha256", (given or "").strip().encode("utf-8"), salt, iterations)
     return secrets.compare_digest(dk, expected)
 
 
