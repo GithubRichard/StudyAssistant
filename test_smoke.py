@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT))
 from PIL import Image  # noqa: E402
 
 from app.config import Settings  # noqa: E402
+from app.workspace import account_dir_name  # noqa: E402
 from tests.mock_hermes import MockHermes  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="study_smoke_"))
@@ -129,8 +130,9 @@ try:
         assert view["runs"][0]["status"] == "waiting_input"
         print("✓ 技能执行完成：五态统计 + 二次核查状态 + 待补充项齐全")
 
-        # 3. 归档与成果
-        archive = TMP / "workspace" / "数学" / "错题解析" / "2026-09-26.md"
+        # 3. 归档与成果：归档落在该账号自己的子目录下
+        account = account_dir_name(login["openid"])
+        archive = TMP / "workspace" / account / "数学" / "错题解析" / "2026-09-26.md"
         assert archive.exists(), "归档文件未写入工作区"
         assert "移项未变号" in archive.read_text(encoding="utf-8")
         assert any(a["kind"] == "archive" for a in view["artifacts"])
@@ -143,7 +145,7 @@ try:
             "未启用的交付能力必须标注未配置"
         assert result["delivery"]["git"]["status"] == "not_configured"
         assert result["delivery"]["archive"]["status"] == "generated"
-        assert result["delivery"]["archive"]["path"].startswith("数学/错题解析/")
+        assert result["delivery"]["archive"]["path"].startswith(f"{account}/数学/错题解析/")
         assert result["overview"]["error_rate_basis"], "必须说明错误率口径"
         print("✓ 未启用的 PDF/邮件/同步能力如实标注为未配置，归档状态来自真实写入")
 

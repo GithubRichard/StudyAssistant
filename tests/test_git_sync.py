@@ -59,7 +59,7 @@ class GitSyncTest(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.tmp.cleanup()
 
-    def _archive(self, relative: str = "数学/错题解析/2026-09-26.md") -> dict:
+    def _archive(self, relative: str = "leo/数学/错题解析/2026-09-26.md") -> dict:
         target = self.repo / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("## 来源：9月3周作业\n\n- 第 1 题：移项未变号\n", encoding="utf-8")
@@ -81,10 +81,13 @@ class GitSyncTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(out["committed"])
 
     async def test_commits_and_pushes_only_archive(self):
-        # 原题资料放在原题目录，必须保持不被提交
-        original = self.repo / "数学" / "原题" / "2026" / "9月3周" / "page1.jpg"
+        # 原题资料放在账号层的原题目录，必须保持不被提交
+        original = self.repo / "leo" / "数学" / "原题" / "2026" / "9月3周" / "page1.jpg"
         original.parent.mkdir(parents=True, exist_ok=True)
         original.write_bytes(b"fake-image")
+        code, ignored, _ = await run_git(
+            self.repo, "check-ignore", "-v", "leo/数学/原题/2026/9月3周/page1.jpg")
+        self.assertEqual(code, 0, "账号层原题目录必须被 .gitignore 忽略")
 
         out = await git_sync.sync_workspace(
             self.settings, task=self._task(), run={"run_no": 1},
@@ -93,10 +96,10 @@ class GitSyncTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["status"], "committed", out)
         self.assertTrue(out["committed"])
         self.assertTrue(out["pushed"])
-        self.assertEqual(out["paths"], ["数学/错题解析/2026-09-26.md"])
+        self.assertEqual(out["paths"], ["leo/数学/错题解析/2026-09-26.md"])
 
         code, tracked, _ = await run_git(self.repo, "ls-files")
-        self.assertIn("数学/错题解析/2026-09-26.md", tracked)
+        self.assertIn("leo/数学/错题解析/2026-09-26.md", tracked)
         self.assertNotIn("page1.jpg", tracked)
 
         code, remote_log, _ = await run_git(self.remote, "log", "--oneline", "main")

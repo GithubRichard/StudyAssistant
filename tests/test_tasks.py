@@ -215,7 +215,9 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task["status"], "waiting_input")
         self.assertEqual(task["provider"], "hermes")
 
-        archive = Path(self.settings.workspace_dir) / "数学" / "错题解析" / "2026-09-26.md"
+        # 归档落在该账号自己的目录下（openid "u1" → 账号目录 wx-u1）
+        archive = (Path(self.settings.workspace_dir) / "wx-u1" / "数学" / "错题解析"
+                   / "2026-09-26.md")
         self.assertTrue(archive.exists())
         self.assertIn("移项未变号", archive.read_text(encoding="utf-8"))
 

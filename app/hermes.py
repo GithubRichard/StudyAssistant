@@ -23,7 +23,7 @@ from pydantic import ValidationError
 
 from .config import HermesConfig, Settings
 from .schemas import StudyResult, drop_nulls
-from . import scope
+from . import scope, workspace
 
 log = logging.getLogger(__name__)
 
@@ -160,16 +160,22 @@ def build_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, Any],
     只传必要学习材料；不传密钥、不传服务器绝对路径以外的私密信息、不传其他任务的数据。
     """
     h = cfg.hermes
+    # 工作区按账号隔离：本次任务的授权工作区是该孩子自己的子目录（归档也落在那里）；
+    # 学习规范仍在工作区根，单独给出路径，避免把其他账号的目录暴露成工作目录。
+    ws_root = workspace.workspace_root(cfg)
+    ws_home = workspace.account_home(cfg, task.get("openid", ""))
     header = (
         f"请使用技能 `{h.skill_name}` 完成本次学习任务。\n"
         f"- 任务号：{task['id']}（执行轮次 {run['run_no']}，类型 {run['kind']}）\n"
         f"- 任务类型：{task.get('task_type', 'grading')}\n"
         f"- 学科：{task.get('subject', '') or '未指定（请根据随附材料自行判断学科）'}\n"
         f"- 年级：{task.get('grade_level', '') or '未指定'}\n"
-        f"- 授权学习工作区：{cfg.workspace_dir}\n"
+        f"- 授权学习工作区：{ws_home}\n"
         f"- 本次任务输出目录：{run['output_dir']}\n"
         f"- 提交日期：{time.strftime('%Y-%m-%d')}\n"
     )
+    if (ws_root / "README.md").exists():
+        header += f"- 工作区规范：{ws_root / 'README.md'}\n"
     if task.get("training_kind"):
         label = scope.TRAINING_KIND_LABELS.get(task["training_kind"], task["training_kind"])
         header += f"- 训练类型：{label}\n"

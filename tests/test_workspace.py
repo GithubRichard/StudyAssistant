@@ -11,10 +11,13 @@ from pathlib import Path
 from PIL import Image
 
 from app.config import Settings
-from app.workspace import (CONFLICT_NAME_RE, WorkspaceError, apply_archive,
-                           archive_artifact, collect_artifacts, ensure_workspace,
-                           is_inside_allowed, run_output_dir, safe_archive_path,
-                           store_asset, write_conflict_record)
+from app.workspace import (CONFLICT_NAME_RE, LEGACY_GITIGNORE_CONTENT, WorkspaceError,
+                           apply_archive, archive_artifact, collect_artifacts,
+                           ensure_workspace, is_inside_allowed, run_output_dir,
+                           safe_archive_path, store_asset, write_conflict_record)
+
+ACCOUNT = "leo"
+OPENID = "web:leo"
 
 
 def make_settings(tmp: str, **overrides) -> Settings:
@@ -23,6 +26,8 @@ def make_settings(tmp: str, **overrides) -> Settings:
         "hermes": {"base_url": "http://127.0.0.1:8642", "api_key": "k"},
         "data_dir": str(Path(tmp) / "data"),
         "workspace": {"dir": str(Path(tmp) / "workspace"), "init_readme": True},
+        "web": {"users": [{"username": ACCOUNT, "display_name": "Leo",
+                           "password_hash": "placeholder"}]},
     }
     data.update(overrides)
     return Settings.model_validate(data)
@@ -40,9 +45,19 @@ class InitTest(unittest.TestCase):
             settings = make_settings(tmp)
             result = ensure_workspace(settings)
             root = Path(result["root"])
-            self.assertTrue((root / "数学" / "错题解析").is_dir())
+            self.assertTrue((root / ACCOUNT / "数学" / "错题解析").is_dir())
             self.assertTrue((root / "README.md").exists())
             self.assertTrue(result["readme_created"])
+            self.assertIn(ACCOUNT, result["accounts"])
+
+    def test_skeleton_covers_db_openids_too(self):
+        """除了配置里的网页账号，数据库中出现过的微信身份也要有骨架目录。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            result = ensure_workspace(settings, openids=["oABC123"])
+            root = Path(result["root"])
+            self.assertIn("wx-oABC123", result["accounts"])
+            self.assertTrue((root / "wx-oABC123" / "数学" / "错题解析").is_dir())
 
     def test_never_overwrites_existing_readme(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -110,9 +125,14 @@ class ArchiveTest(unittest.TestCase):
     def test_safe_path_accepts_valid(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = make_settings(tmp)
-            target = safe_archive_path(settings, "数学/错题解析/2026-09-26.md")
+            target = safe_archive_path(settings, "数学/错题解析/2026-09-26.md",
+                                       account=ACCOUNT)
             self.assertIsNotNone(target)
             self.assertEqual(target.name, "2026-09-26.md")
+            self.assertEqual(target.parent.parent.parent.name, ACCOUNT)
+            # 台账里已存的 4 段相对路径同样能解析到同一个目标
+            stored = safe_archive_path(settings, f"{ACCOUNT}/数学/错题解析/2026-09-26.md")
+            self.assertEqual(stored, target)
 
     def test_rejects_traversal_and_unknown_dirs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -123,22 +143,30 @@ class ArchiveTest(unittest.TestCase):
                         "数学/错题解析/notadate.md",
                         "数学/错题解析/2026-09-26.txt",
                         "数学/2026-09-26.md"]:
+                self.assertIsNone(safe_archive_path(settings, bad, account=ACCOUNT), bad)
+            # 4 段模式（台账路径）：段数不对、账号名非法或越界都拒绝
+            for bad in ["../数学/错题解析/2026-09-26.md",
+                        "数学/错题解析/2026-09-26.md",
+                        f"{ACCOUNT}/其他目录/2026-09-26.md",
+                        f"{ACCOUNT}/数学/错题解析/notadate.md",
+                        f"../{ACCOUNT}/数学/错题解析/2026-09-26.md"]:
                 self.assertIsNone(safe_archive_path(settings, bad), bad)
 
     def test_append_is_idempotent_and_preserves_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = make_settings(tmp)
             root = Path(settings.workspace_dir)
-            (root / "数学" / "错题解析").mkdir(parents=True)
-            target = root / "数学" / "错题解析" / "2026-09-26.md"
+            (root / ACCOUNT / "数学" / "错题解析").mkdir(parents=True)
+            target = root / ACCOUNT / "数学" / "错题解析" / "2026-09-26.md"
             target.write_text("# 已有记录\n旧内容\n", encoding="utf-8")
 
-            task = {"id": "t1"}
+            task = {"id": "t1", "openid": OPENID}
             run = {"run_no": 1}
             result = {"archive": {"suggested_path": "数学/错题解析/2026-09-26.md",
                                  "content_markdown": "新追加内容"}}
             first = asyncio.run(apply_archive(settings, task, run, result))
             self.assertEqual(first["status"], "generated")
+            self.assertEqual(Path(first["path"]).resolve(), target.resolve())
             text = target.read_text(encoding="utf-8")
             self.assertIn("旧内容", text)
             self.assertIn("新追加内容", text)
@@ -147,12 +175,29 @@ class ArchiveTest(unittest.TestCase):
             self.assertEqual(second["status"], "skipped")
             self.assertEqual(target.read_text(encoding="utf-8").count("新追加内容"), 1)
 
+    def test_same_day_same_subject_of_two_accounts_stay_apart(self):
+        """同一天同一学科的归档，不同账号必须落到各自目录、互不追加。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            result = {"archive": {"suggested_path": "数学/错题解析/2026-09-26.md",
+                                 "content_markdown": "内容"}}
+            first = asyncio.run(apply_archive(
+                settings, {"id": "t1", "openid": "web:leo"}, {"run_no": 1}, result))
+            second = asyncio.run(apply_archive(
+                settings, {"id": "t2", "openid": "web:kid2"}, {"run_no": 1}, result))
+            self.assertEqual(first["status"], "generated")
+            self.assertEqual(second["status"], "generated")
+            self.assertNotEqual(first["path"], second["path"])
+            self.assertIn(ACCOUNT, Path(first["path"]).parts)
+            self.assertIn("kid2", Path(second["path"]).parts)
+
     def test_invalid_path_reports_failure_instead_of_guessing(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = make_settings(tmp)
             result = {"archive": {"suggested_path": "../../evil.md",
                                  "content_markdown": "x"}}
-            out = asyncio.run(apply_archive(settings, {"id": "t"}, {"run_no": 1}, result))
+            out = asyncio.run(apply_archive(settings, {"id": "t", "openid": OPENID},
+                                            {"run_no": 1}, result))
             self.assertEqual(out["status"], "failed")
             self.assertFalse((Path(tmp).parent / "evil.md").exists())
 
@@ -180,7 +225,8 @@ class ArtifactTest(unittest.TestCase):
     def test_real_archive_file_is_registered(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = make_settings(tmp)
-            target = Path(settings.workspace_dir) / "数学" / "错题解析" / "2026-09-26.md"
+            target = (Path(settings.workspace_dir) / ACCOUNT / "数学" / "错题解析"
+                      / "2026-09-26.md")
             target.parent.mkdir(parents=True)
             target.write_text("内容", encoding="utf-8")
             row = archive_artifact(settings, "t1", {"status": "generated", "path": str(target)})
@@ -196,17 +242,40 @@ class OriginalSkeletonTest(unittest.TestCase):
             settings = make_settings(tmp)
             result = ensure_workspace(settings)
             root = Path(result["root"])
-            self.assertTrue((root / "数学" / "原题").is_dir())
-            self.assertTrue((root / "数学" / "原题" / str(date.today().year)).is_dir())
-            self.assertTrue((root / "数学" / "原题" / ".gitkeep").exists())
+            self.assertTrue((root / ACCOUNT / "数学" / "原题").is_dir())
+            self.assertTrue((root / ACCOUNT / "数学" / "原题" / str(date.today().year)).is_dir())
+            self.assertTrue((root / ACCOUNT / "数学" / "原题" / ".gitkeep").exists())
             gitignore = root / ".gitignore"
             self.assertTrue(gitignore.exists())
-            self.assertIn("原题", gitignore.read_text(encoding="utf-8"))
+            content = gitignore.read_text(encoding="utf-8")
+            self.assertIn("原题", content)
+            self.assertIn("/*/*/原题/**", content)   # 账号层规则
             self.assertTrue(result["gitignore_created"])
 
             # 已存在的 .gitignore 不被覆盖
             again = ensure_workspace(settings)
             self.assertFalse(again["gitignore_created"])
+
+    def test_legacy_gitignore_is_upgraded_only_when_untouched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            root = Path(settings.workspace_dir)
+            root.mkdir(parents=True)
+            (root / ".gitignore").write_text(LEGACY_GITIGNORE_CONTENT, encoding="utf-8")
+            result = ensure_workspace(settings)
+            self.assertTrue(result["gitignore_upgraded"])
+            self.assertIn("/*/*/原题/**",
+                          (root / ".gitignore").read_text(encoding="utf-8"))
+
+    def test_custom_gitignore_is_never_rewritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = make_settings(tmp)
+            root = Path(settings.workspace_dir)
+            root.mkdir(parents=True)
+            (root / ".gitignore").write_text("我的规则\n", encoding="utf-8")
+            result = ensure_workspace(settings)
+            self.assertFalse(result["gitignore_upgraded"])
+            self.assertEqual((root / ".gitignore").read_text(encoding="utf-8"), "我的规则\n")
 
     def test_uploaded_asset_stays_out_of_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -236,8 +305,8 @@ class OriginalSkeletonTest(unittest.TestCase):
                             "content_markdown": "## 来源：模拟作业\n\n- 第 1 题：移项未变号"},
                 "questions": [{"uid": "q-abc"}, {"uid": "q-def"}, {}],
             }
-            out = asyncio.run(apply_archive(settings, {"id": "t1"}, {"run_no": 1},
-                                            result_payload))
+            out = asyncio.run(apply_archive(settings, {"id": "t1", "openid": OPENID},
+                                            {"run_no": 1}, result_payload))
             self.assertEqual(out["status"], "generated")
             self.assertEqual(out["questions"], ["q-abc", "q-def"])
             text = Path(out["path"]).read_text(encoding="utf-8")

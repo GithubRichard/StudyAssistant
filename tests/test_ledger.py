@@ -89,13 +89,15 @@ class RetestNoteTest(unittest.IsolatedAsyncioTestCase):
         self.settings = make_settings(self.tmp.name)
         self.root = Path(self.settings.workspace_dir)
         workspace.ensure_workspace(self.settings)
-        self.archive = self.root / "数学" / "错题解析" / "2026-09-26.md"
+        # 归档含账号层：<工作区>/<账号>/<学科>/<子目录>/<日期>.md
+        self.archive = self.root / "leo" / "数学" / "错题解析" / "2026-09-26.md"
+        self.archive.parent.mkdir(parents=True, exist_ok=True)
         self.archive.write_text("# 已有记录\n旧内容\n", encoding="utf-8")
 
     async def asyncTearDown(self):
         self.tmp.cleanup()
 
-    def _entry(self, archive_path: str = "数学/错题解析/2026-09-26.md") -> dict:
+    def _entry(self, archive_path: str = "leo/数学/错题解析/2026-09-26.md") -> dict:
         return {"id": 7, "source": "9月3周数学作业", "page": "P12", "question_no": "3",
                 "archive_path": archive_path}
 
@@ -120,7 +122,7 @@ class RetestNoteTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_archive_file_is_reported(self):
         out = await workspace.append_retest_note(
-            self.settings, self._entry("数学/错题解析/2026-01-01.md"),
+            self.settings, self._entry("leo/数学/错题解析/2026-01-01.md"),
             {"result": "retest_failed"})
         self.assertEqual(out["status"], "skipped")
         self.assertIn("不存在", out["note"])

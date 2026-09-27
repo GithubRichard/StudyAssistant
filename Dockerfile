@@ -13,6 +13,7 @@ RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 COPY app ./app
 COPY hermes ./hermes
 COPY web ./web
+COPY scripts ./scripts
 COPY config.example.yaml ./config.example.yaml
 COPY prompt_system.txt ./prompt_system.txt
 

@@ -1,7 +1,8 @@
 """授权学习工作区：初始化、附件处理、受控归档与成果登记。
 
 安全边界：
-- 所有写入路径都必须是「工作区 + 学科 + 允许的子目录 + 合法文件名」，拒绝 `..`、绝对路径与符号链接逃逸。
+- 所有写入路径都必须是「工作区 + 账号 + 学科 + 允许的子目录 + 合法文件名」，拒绝 `..`、绝对路径与符号链接逃逸；
+  账号目录由 `account_dir_name(openid)` 唯一派生，跨账号写入一律拒绝。
 - 归档采用「读—合并—原子替换」，同日同学科追加而不覆盖，重复执行同一轮次不会重复写。
 - 成果文件只有在授权目录内真实存在、类型与大小通过检查后才登记下载。
 """
@@ -17,7 +18,7 @@ import time
 import uuid
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from PIL import Image, UnidentifiedImageError
 
@@ -31,6 +32,7 @@ try:  # pragma: no cover - 取决于运行环境是否装了 pillow-heif
 except ImportError:  # pragma: no cover
     HEIF_SUPPORTED = False
 
+from .auth import WEB_OPENID_PREFIX
 from .config import Settings
 
 log = logging.getLogger(__name__)
@@ -46,10 +48,30 @@ ORIGINAL_SUBDIR = "原题"                     # 原题资料仅本地保存，�
 DEFAULT_SUBJECTS = ("语文", "数学", "英语")
 ARCHIVE_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(-[^/\\]{1,60})?\.md$")
 SUBJECT_RE = re.compile(r"^[^/\\\s.]{1,20}$")
+ACCOUNT_DIR_RE = re.compile(r"^[^/\\\s.]{1,40}$")   # 账号目录名：不许含分隔符、空白与点号
 CONFLICT_NAME_RE = re.compile(r"^冲突记录-\d{4}-\d{2}-\d{2}-\d{6}(-\d+)?\.md$")
 
-# 与学习仓库一致的忽略规则：原题目录内容不上传，仅放行目录骨架与 .gitkeep
+# 身份无法派生出合法目录名时的兜底账号目录（如开发身份的匿名 openid）
+DEFAULT_ACCOUNT_DIR = "family"
+ACCOUNT_DIR_MAX = 40
+# 微信身份加前缀，避免与网页账号（web:<username> → <username>）撞名
+WECHAT_ACCOUNT_PREFIX = "wx-"
+
+# 与学习仓库一致的忽略规则：原题目录内容不上传，仅放行目录骨架与 .gitkeep。
+# 新版含账号层（`账号/学科/原题/...`），同时保留旧版规则以兼容尚未迁移的工作区。
 GITIGNORE_CONTENT = """# 各学科「原题」目录下的原始试卷、照片与草稿：仅保存在本地，不上传远端。
+# 只保留目录骨架（.gitkeep），使 clone 后仍能看到 账号/学科/原题/年份 的结构。
+/*/原题/**
+!/*/原题/**/
+!/*/原题/**/.gitkeep
+/*/*/原题/**
+!/*/*/原题/**/
+!/*/*/原题/**/.gitkeep
+"""
+
+# 服务端历史版本生成的 .gitignore：仅当现有文件与之逐字一致（说明是服务端写的、
+# 未被人工改过）时才自动升级到 GITIGNORE_CONTENT，否则只告警、不擅自覆盖。
+LEGACY_GITIGNORE_CONTENT = """# 各学科「原题」目录下的原始试卷、照片与草稿：仅保存在本地，不上传远端。
 # 只保留目录骨架（.gitkeep），使 clone 后仍能看到 原题/年份/周次 的结构。
 /*/原题/**
 !/*/原题/**/
@@ -96,6 +118,54 @@ def workspace_subjects(settings: Settings) -> List[str]:
     return names
 
 
+def account_dir_name(openid: str) -> str:
+    """身份（openid）→ 工作区里的账号目录名。
+
+    归档路径、骨架创建、Hermes 提示词、迁移脚本都必须从这里取，保证唯一映射：
+    - 网页账号 `web:<username>` → `<username>`（`auth.web_openid` 已保证字符集安全）
+    - 其他身份（微信 openid）→ `wx-<openid>`
+
+    再统一净化：路径分隔符 / 空白 / 点号替换为 `-`、去掉首尾 `-`、截断 40 字符；
+    结果仍不合法时回落 `DEFAULT_ACCOUNT_DIR`，绝不产生 `..`、空名或嵌套路径。
+    """
+    raw = (openid or "").strip()
+    if raw.startswith(WEB_OPENID_PREFIX):
+        base = raw[len(WEB_OPENID_PREFIX):]
+    elif raw:
+        base = WECHAT_ACCOUNT_PREFIX + raw
+    else:
+        base = ""
+    cleaned = re.sub(r"[/\\\s.]+", "-", base).strip("-")[:ACCOUNT_DIR_MAX]
+    if not cleaned or not ACCOUNT_DIR_RE.match(cleaned):
+        return DEFAULT_ACCOUNT_DIR
+    return cleaned
+
+
+def account_dir(settings: Settings, openid: str) -> Path:
+    """账号在工作区内的目录（绝对路径，不一定存在）。"""
+    return workspace_root(settings) / account_dir_name(openid)
+
+
+def account_home(settings: Settings, openid: str) -> str:
+    """账号作用域的工作区路径：发给 Hermes 当作「授权学习工作区」。"""
+    return str(account_dir(settings, openid))
+
+
+def workspace_accounts(settings: Settings,
+                       openids: Optional[Iterable[str]] = None) -> List[str]:
+    """需要建骨架的账号目录名：配置里的网页账号 + 数据库中出现过的身份，去重且保序。"""
+    names: List[str] = []
+    for user in settings.web.users:
+        name = account_dir_name(f"{WEB_OPENID_PREFIX}{user.username}")
+        if name not in names:
+            names.append(name)
+    for openid in openids or []:
+        name = account_dir_name(str(openid))
+        if name not in names:
+            names.append(name)
+    return names
+
+
 def _touch_gitkeep(directory: Path, created: List[str], root: Path) -> None:
     """空目录用 .gitkeep 占位，使 clone 后仍能看到目录骨架；已有文件不干预。"""
     try:
@@ -110,32 +180,35 @@ def _touch_gitkeep(directory: Path, created: List[str], root: Path) -> None:
     created.append(str(keep.relative_to(root)))
 
 
-def ensure_workspace(settings: Settings) -> Dict[str, Any]:
+def ensure_workspace(settings: Settings,
+                     openids: Optional[Iterable[str]] = None) -> Dict[str, Any]:
     """创建工作区骨架；已存在的 README 与记录一律不动。
 
-    - 学科目录：`学科/{错题解析,周报分析,强化训练}` + `学科/原题/<年份>/`
-    - 根级 `.gitignore`：原题内容不上传（已存在时不覆盖）
+    - 账号目录：`<账号>/<学科>/{错题解析,周报分析,强化训练}` + `<账号>/<学科>/原题/<年份>/`
+    - 根级 `.gitignore`：原题内容不上传；已存在时不覆盖，仅当内容与服务端旧版逐字一致时才升级
     - 冲突记录由同步阶段按需生成到根目录（白名单见 `safe_conflict_path`）
     """
     root = workspace_root(settings)
     subjects = workspace_subjects(settings)
+    accounts = workspace_accounts(settings, openids)
     created: List[str] = []
     root.mkdir(parents=True, exist_ok=True)
-    for subject in subjects:
-        for sub in ALLOWED_SUBDIRS:
-            target = root / subject / sub
-            if not target.exists():
-                target.mkdir(parents=True, exist_ok=True)
-                created.append(str(target.relative_to(root)))
-            _touch_gitkeep(target, created, root)
+    for account in accounts:
+        for subject in subjects:
+            for sub in ALLOWED_SUBDIRS:
+                target = root / account / subject / sub
+                if not target.exists():
+                    target.mkdir(parents=True, exist_ok=True)
+                    created.append(str(target.relative_to(root)))
+                _touch_gitkeep(target, created, root)
 
-        original_dir = root / subject / ORIGINAL_SUBDIR
-        year_dir = original_dir / str(date.today().year)
-        if not year_dir.exists():
-            year_dir.mkdir(parents=True, exist_ok=True)
-            created.append(str(year_dir.relative_to(root)))
-        _touch_gitkeep(original_dir, created, root)
-        _touch_gitkeep(year_dir, created, root)
+            original_dir = root / account / subject / ORIGINAL_SUBDIR
+            year_dir = original_dir / str(date.today().year)
+            if not year_dir.exists():
+                year_dir.mkdir(parents=True, exist_ok=True)
+                created.append(str(year_dir.relative_to(root)))
+            _touch_gitkeep(original_dir, created, root)
+            _touch_gitkeep(year_dir, created, root)
 
     readme = root / "README.md"
     readme_created = False
@@ -149,14 +222,25 @@ def ensure_workspace(settings: Settings) -> Dict[str, Any]:
 
     gitignore = root / ".gitignore"
     gitignore_created = False
+    gitignore_upgraded = False
     if not gitignore.exists():
         gitignore.write_text(GITIGNORE_CONTENT, encoding="utf-8")
         gitignore_created = True
-    elif ORIGINAL_SUBDIR not in gitignore.read_text(encoding="utf-8", errors="ignore"):
-        log.warning("工作区 .gitignore 未包含原题忽略规则，请人工确认: %s", gitignore)
+    else:
+        current = gitignore.read_text(encoding="utf-8", errors="ignore")
+        if current == LEGACY_GITIGNORE_CONTENT:
+            # 逐字等于服务端旧版内容 → 确认是自动生成的、未被人工改过，可安全升级
+            gitignore.write_text(GITIGNORE_CONTENT, encoding="utf-8")
+            gitignore_upgraded = True
+            log.info("工作区 .gitignore 已升级为含账号层的忽略规则: %s", gitignore)
+        elif ORIGINAL_SUBDIR not in current or "/*/*/原题/**" not in current:
+            log.warning("工作区 .gitignore 未包含账号层原题忽略规则，请人工确认"
+                        "（或运行 scripts/migrate_workspace_accounts.py --update-gitignore）: %s",
+                        gitignore)
 
     return {"root": str(root), "created": created, "readme_created": readme_created,
-            "gitignore_created": gitignore_created, "subjects": subjects}
+            "gitignore_created": gitignore_created, "gitignore_upgraded": gitignore_upgraded,
+            "subjects": subjects, "accounts": accounts}
 
 
 def run_output_dir(settings: Settings, task_id: str, run_no: int) -> Path:
@@ -232,29 +316,55 @@ def load_asset_data_url(asset: Dict[str, Any]) -> str:
 # ---------- 归档 ----------
 
 
-def safe_archive_path(settings: Settings, relative: str) -> Optional[Path]:
-    """校验归档建议路径；不合法返回 None（由调用方如实报告，而不是猜测目标位置）。"""
+def safe_archive_path(settings: Settings, relative: str,
+                      account: Optional[str] = None) -> Optional[Path]:
+    """校验归档路径；不合法返回 None（由调用方如实报告，而不是猜测目标位置）。
+
+    两种写法：
+    - `account` 非空：`relative` 是技能给出的 3 段路径（学科/子目录/文件名），
+      解析到 `<工作区>/<账号>/学科/子目录/文件名`；
+    - `account` 为空：`relative` 是台账里已存的 4 段路径，首段是账号目录名，
+      仍按同一套规则校验，防止越界写进别的账号目录。
+    """
     if not relative:
+        return None
+    # 出现 `..` 段一律拒绝：不做「帮忙修正」，避免看起来越界的路径被静默接受
+    if ".." in Path(relative.strip()).parts:
         return None
     rel = relative.strip().lstrip("./")
     parts = Path(rel).parts
-    if len(parts) != 3:
+    if account:
+        account_name = account
+        if len(parts) != 3:
+            return None
+        subject, subdir, name = parts
+    else:
+        if len(parts) != 4:
+            return None
+        account_name, subject, subdir, name = parts
+    if not ACCOUNT_DIR_RE.match(account_name):
         return None
-    subject, subdir, name = parts
     if not SUBJECT_RE.match(subject) or subdir not in ALLOWED_SUBDIRS:
         return None
     if not ARCHIVE_NAME_RE.match(name):
         return None
     root = workspace_root(settings)
-    target = (root / subject / subdir / name).resolve()
-    if root not in target.parents:
+    account_root = (root / account_name).resolve()
+    if root not in account_root.parents:
+        return None
+    target = (account_root / subject / subdir / name).resolve()
+    if account_root not in target.parents:
         return None
     return target
 
 
 async def apply_archive(settings: Settings, task: Dict[str, Any], run: Dict[str, Any],
                         result: Dict[str, Any]) -> Dict[str, Any]:
-    """把结果中的归档建议写入工作区；追加不覆盖，重复轮次不重复写。"""
+    """把结果中的归档建议写入工作区；追加不覆盖，重复轮次不重复写。
+
+    实际落盘位置为 `<工作区>/<账号>/<技能给出的 3 段路径>`：账号层由服务端按
+    `task["openid"]` 派生并前置拼接，技能只需要产出 `学科/子目录/文件名`。
+    """
     archive = result.get("archive") or {}
     markdown = (archive.get("content_markdown") or "").strip()
     question_uids = [str(q.get("uid") or "").strip()
@@ -264,7 +374,8 @@ async def apply_archive(settings: Settings, task: Dict[str, Any], run: Dict[str,
         return {"status": "skipped", "path": "", "note": "结果未提供归档内容",
                 "questions": question_uids}
 
-    target = safe_archive_path(settings, archive.get("suggested_path", ""))
+    account = account_dir_name(task.get("openid", ""))
+    target = safe_archive_path(settings, archive.get("suggested_path", ""), account=account)
     if target is None:
         return {
             "status": "failed",
@@ -308,7 +419,8 @@ async def append_retest_note(settings: Settings, entry: Dict[str, Any], event: D
                              when: Optional[datetime] = None) -> Dict[str, Any]:
     """把一次复测/订正结果追加到既有归档文件；追加不覆盖，重复登记不重复写。
 
-    只写台账条目已关联、且仍在允许目录内的归档文件；找不到时如实说明，不新建记录。
+    台账里存的是含账号层的 4 段相对路径（`账号/学科/子目录/文件名`），此处按同一套
+    规则校验；只写已关联、且仍在允许目录内的归档文件，找不到时如实说明，不新建记录。
     """
     rel = (entry.get("archive_path") or "").strip()
     target = safe_archive_path(settings, rel) if rel else None

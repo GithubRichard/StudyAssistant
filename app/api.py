@@ -86,6 +86,8 @@ async def login(code: str = Form(...)):
         raise HTTPException(e.status_code, e.message) from e
 
     await db.get_or_create_user(s.db_path, openid, s.quota.new_user_bonus)
+    # 首次登录就把该账号的工作区骨架建好（幂等；已存在的目录与文件不动）
+    workspace.ensure_workspace(s, openids=[openid])
     return {
         "token": session["token"],
         "openid": openid,
@@ -181,6 +183,8 @@ async def web_login(request: Request, username: str = Form(""), password: str = 
         raise HTTPException(e.status_code, e.message) from e
 
     await db.get_or_create_user(s.db_path, openid, s.quota.new_user_bonus)
+    # 首次登录就把该账号的工作区骨架建好（幂等；已存在的目录与文件不动）
+    workspace.ensure_workspace(s, openids=[openid])
     log.info("网页版登录成功: %s (来源 %s)", openid, ip)
     return {
         "token": session["token"],
@@ -340,6 +344,7 @@ async def runtime(ctx: dict = Session):
     client = get_hermes()
     hermes_state = (await client.readiness()).as_dict() if client is not None else None
     root = workspace.workspace_root(s)
+    account_root = workspace.account_dir(s, ctx["openid"])
     subjects = workspace.workspace_subjects(s)
     return {
         "engine": {
@@ -368,10 +373,12 @@ async def runtime(ctx: dict = Session):
             "dir": s.workspace.dir,
             "readonly": s.workspace.readonly,
             "subjects": subjects,
+            "account": workspace.account_dir_name(ctx["openid"]),
             "readme_exists": (root / "README.md").exists(),
             "gitignore_exists": (root / ".gitignore").exists(),
             "original_dir_exists": any(
-                (root / name / workspace.ORIGINAL_SUBDIR).is_dir() for name in subjects),
+                (account_root / name / workspace.ORIGINAL_SUBDIR).is_dir()
+                for name in subjects),
         },
         "limits": {
             "max_assets_per_task": s.limits.max_assets_per_task,

@@ -857,10 +857,11 @@ async def top_error_causes(db_path: str, openid: str, since_ts: float,
 
 
 async def list_user_openids(db_path: str) -> List[str]:
-    """所有出现过业务数据的账号身份（用于定时清理等全账号任务）。"""
+    """所有登录过或产生过数据的账号身份（用于全账号任务：定时清理、工作区骨架）。"""
     async with aiosqlite.connect(db_path) as db:
         async with db.execute(
-            """SELECT openid FROM tasks UNION
+            """SELECT openid FROM users UNION
+               SELECT openid FROM tasks UNION
                SELECT openid FROM mistakes UNION
                SELECT openid FROM family_settings"""
         ) as cur:

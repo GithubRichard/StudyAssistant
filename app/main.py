@@ -39,10 +39,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if migration.get("backup"):
             log.warning("数据库已备份到 %s", migration["backup"])
 
-        ws = workspace.ensure_workspace(settings)
-        log.info("学习工作区: %s（学科 %s；新建 %d 项；README 新建=%s；.gitignore 新建=%s）",
-                 ws["root"], "、".join(ws.get("subjects") or []), len(ws["created"]),
-                 ws["readme_created"], ws.get("gitignore_created"))
+        # 账号目录骨架：既覆盖配置里的网页账号，也补齐数据库中出现过的微信身份
+        ws = workspace.ensure_workspace(
+            settings, openids=await db.list_user_openids(settings.db_path))
+        log.info("学习工作区: %s（账号 %s；学科 %s；新建 %d 项；README 新建=%s；"
+                 ".gitignore 新建=%s；升级=%s）",
+                 ws["root"], "、".join(ws.get("accounts") or []) or "（空）",
+                 "、".join(ws.get("subjects") or []), len(ws["created"]),
+                 ws["readme_created"], ws.get("gitignore_created"),
+                 ws.get("gitignore_upgraded"))
 
         client = HermesClient(settings.hermes)
         api.hermes_client = client
