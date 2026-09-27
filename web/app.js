@@ -21,27 +21,99 @@ const fmtD = (ts) => {
 };
 
 const HEIC_RE = /\.(heic|heif)$/i;
-/* HEIC 预览：Chrome 等浏览器无法直接渲染，退回文字占位；真正的解码在服务端完成。 */
-function renderThumbs(box, files) {
-  box.innerHTML = "";
-  files.slice(0, 20).forEach((f) => {
-    if (HEIC_RE.test(f.name || "") || /heic|heif/i.test(f.type || "")) {
-      const ph = document.createElement("div");
-      ph.className = "img-preview-fallback";
-      ph.textContent = "HEIC\n提交后自动转换";
-      box.appendChild(ph);
-      return;
+// 与 config.yaml 的 limits.max_assets_per_task 默认值一致；服务端仍会按真实配置拒绝超额
+const MAX_PICK_IMAGES = 20;
+
+/**
+ * 图片选择：多次拍照 / 多次选择逐张累加，可单张移除。
+ *
+ * 原生 input.files 只读、且每次选择都会整体替换（手机浏览器点「拍照」一次只产出一张），
+ * 只按 input.files 渲染会导致「永远只有一张」。因此以内部数组为准，input 只当触发入口：
+ * - 追加去重（同名同大小同修改时间视为同一张），重复选择只提示不重复添加；
+ * - 超过上限的多余文件丢弃并提示；
+ * - HEIC 无法在浏览器里预览，退回文字占位（真正的解码在服务端完成）；
+ * - 每次重渲染前回收上一轮的 objectURL，避免连续拍照累积内存。
+ * 返回 { files(), clear(), count() }：files() 是当前全部已选图片，供提交时逐张上传。
+ */
+function createImagePicker(input, listBox, hintBox, opts = {}) {
+  const max = opts.max || MAX_PICK_IMAGES;
+  const picked = [];
+  let urls = [];
+  const keyOf = (f) => `${f.name || ""}|${f.size || 0}|${f.lastModified || 0}`;
+
+  function render() {
+    urls.forEach((u) => URL.revokeObjectURL(u));
+    urls = [];
+    listBox.innerHTML = "";
+    picked.forEach((file, index) => {
+      const item = document.createElement("div");
+      item.className = "img-preview-item";
+      if (HEIC_RE.test(file.name || "") || /heic|heif/i.test(file.type || "")) {
+        const ph = document.createElement("div");
+        ph.className = "img-preview-fallback";
+        ph.textContent = "HEIC\n提交后自动转换";
+        item.appendChild(ph);
+      } else {
+        const url = URL.createObjectURL(file);
+        urls.push(url);
+        const img = document.createElement("img");
+        img.src = url;
+        img.onerror = () => {
+          const ph = document.createElement("div");
+          ph.className = "img-preview-fallback";
+          ph.textContent = "预览不可用\n提交后自动转换";
+          img.replaceWith(ph);
+        };
+        item.appendChild(img);
+      }
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "img-preview-remove";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", `移除第 ${index + 1} 张`);
+      remove.onclick = () => {
+        picked.splice(index, 1);
+        render();
+        if (typeof opts.onChange === "function") opts.onChange(picked.slice());
+      };
+      item.appendChild(remove);
+      listBox.appendChild(item);
+    });
+    if (hintBox) {
+      hintBox.textContent = picked.length
+        ? `已选 ${picked.length} / ${max} 张（可继续拍照添加）` : "";
     }
-    const img = document.createElement("img");
-    img.src = URL.createObjectURL(f);
-    img.onerror = () => {
-      const ph = document.createElement("div");
-      ph.className = "img-preview-fallback";
-      ph.textContent = "预览不可用\n提交后自动转换";
-      img.replaceWith(ph);
+  }
+
+  if (input) {
+    input.onchange = () => {
+      const incoming = Array.from(input.files || []);
+      input.value = "";   // 不重置的话，再选同一张文件不会再触发 change
+      if (!incoming.length) return;
+      const seen = new Set(picked.map(keyOf));
+      let added = 0;
+      let duplicated = 0;
+      let overflow = 0;
+      for (const file of incoming) {
+        const key = keyOf(file);
+        if (seen.has(key)) { duplicated += 1; continue; }
+        if (picked.length >= max) { overflow += 1; continue; }
+        seen.add(key);
+        picked.push(file);
+        added += 1;
+      }
+      if (added) render();
+      if (overflow) toast(`最多 ${max} 张，已忽略 ${overflow} 张`);
+      else if (duplicated) toast("这张已经加过了");
+      if (typeof opts.onChange === "function") opts.onChange(picked.slice());
     };
-    box.appendChild(img);
-  });
+  }
+
+  return {
+    files: () => picked.slice(),
+    count: () => picked.length,
+    clear: () => { picked.length = 0; render(); },
+  };
 }
 
 let toastTimer = 0;
@@ -346,19 +418,18 @@ async function pageLearn(app, r, alive) {
         </div>` : ""}
         <label class="field"><span>文字说明${tab === "grading" ? "（可选）" : ""}</span>
           <textarea name="text" rows="3" placeholder="${tab === "qa" ? "把问题写清楚，比如哪一步卡住了" : tab === "training" ? "想练哪些知识点？越具体越好" : "补充说明（可选）"}"></textarea></label>
-        <label class="field"><span>图片（可多选，支持 iPhone 的 HEIC）</span>
+        <label class="field"><span>图片（可多次拍照逐张添加，最多 20 张；支持 iPhone 的 HEIC）</span>
           <input name="images" type="file" accept="image/*,.heic,.heif" multiple></label>
         <div id="imgPreview" class="img-preview"></div>
+        <div id="imgHint" class="img-hint"></div>
         <div id="submitMsg" class="muted"></div>
         <button class="btn primary block" type="submit" id="submitBtn">${tab === "training" ? "生成训练题" : "提交"}</button>
       </form>
     </div>
   </div>`);
 
-  const fileInput = $("input[name=images]");
-  fileInput.onchange = () => {
-    renderThumbs($("#imgPreview"), Array.from(fileInput.files || []));
-  };
+  // 图片选择：可多次拍照逐张累加（手机端「拍照」一次只产出一张）
+  const picker = createImagePicker($("input[name=images]"), $("#imgPreview"), $("#imgHint"));
 
   $("#taskForm").onsubmit = async (ev) => {
     ev.preventDefault();
@@ -366,7 +437,7 @@ async function pageLearn(app, r, alive) {
     const btn = $("#submitBtn");
     const msg = $("#submitMsg");
     const text = form.text.value.trim();
-    const files = Array.from(form.images.files || []);
+    const files = picker.files();
     if (!text && !files.length) { toast("请填写文字说明或上传图片"); return; }
     btn.disabled = true;
     try {
@@ -393,7 +464,8 @@ async function pageLearn(app, r, alive) {
       }
       const task = await S.api("/study/tasks", { method: "POST", body: payload });
       toast("已提交，正在处理…");
-      go("task", task.id);
+      // 后端返回的是 task_id，取错字段会让跳转丢掉任务号（页面永远停在「正在处理…」）
+      go("task", task.task_id || task.id || "");
     } catch (e) {
       toast(e.message || "提交失败");
       msg.textContent = "";
@@ -420,7 +492,9 @@ async function pageTask(app, r, alive) {
         else go("result", id);
         return;
       }
-      if (task.status === "failed" || task.status === "interrupted") {
+      // waiting_input 同样是终态：等用户补材料时不要继续轮询——每 2 秒重建一次页面
+      // 会把用户正在填写的补充说明与已选图片冲掉。补交后由提交回调重新 poll。
+      if (TERMINAL.includes(task.status)) {
         renderTaskState(task);
         return;
       }
@@ -537,9 +611,10 @@ function followupCardHtml(task, hasResult) {
       ${missing.length ? `<ul class="missing-list">${missing.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>` : ""}
       <form id="followupForm">
         <label class="field"><span>补充说明</span><textarea name="text" rows="3" placeholder="补充缺失的信息"></textarea></label>
-        <label class="field"><span>补充图片（可多选，支持 iPhone 的 HEIC）</span>
+        <label class="field"><span>补充图片（可多次拍照逐张添加，最多 20 张；支持 iPhone 的 HEIC）</span>
           <input name="images" type="file" accept="image/*,.heic,.heif" multiple></label>
         <div id="followupPreview" class="img-preview"></div>
+        <div id="followupHint" class="img-hint"></div>
         <div id="followupMsg" class="muted"></div>
         <button class="btn primary block" type="submit">提交补充材料</button>
       </form>
@@ -552,14 +627,12 @@ function bindFollowupForm(app, taskId, onSubmitted) {
   const msg = $("#followupMsg", app);
   const input = form.images;
   const preview = $("#followupPreview", app);
-  if (input && preview) {
-    input.onchange = () => renderThumbs(preview, Array.from(input.files || []));
-  }
+  const picker = createImagePicker(input, preview, $("#followupHint", app));
   form.onsubmit = async (ev) => {
     ev.preventDefault();
     const btn = $("button[type=submit]", form);
     const text = form.text.value.trim();
-    const files = Array.from((input && input.files) || []);
+    const files = picker.files();
     if (!text && !files.length) { toast("请填写补充说明或上传图片"); return; }
     btn.disabled = true;
     try {
