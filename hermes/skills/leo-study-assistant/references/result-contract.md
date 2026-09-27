@@ -6,6 +6,9 @@
 **文本字段一律用字符串**：没有内容就写空字符串 `""` 或直接省略该键，**不要写 JSON `null`**。
 （后端会把 `null` 当作「未提供」处理，但不要依赖这一点——必填字段写 `null` 照样判失败。）
 
+**计数字段只写阿拉伯数字**：`overview.*`、`review_summary.scope / disagreed / unverified`
+等栏位不要写说明文字（后端会从文字里抠数字或按 0 处理，但真实含义就丢了）。
+
 ## 顶层结构
 
 ```json
@@ -131,7 +134,7 @@
 | 字段 | 取值 |
 | --- | --- |
 | `state` | `not_required` / `completed` / `partial` / `failed` / `not_run` |
-| `scope` / `disagreed` / `unverified` | 送核查、有异议、无法核查的题数 |
+| `scope` / `disagreed` / `unverified` | 整数：送核查 / 有异议 / 无法核查的题数；没有错题时 `scope` 写 `0`，不要写文字说明 |
 | `note` | 原因说明，必须与真实调用情况一致 |
 
 ## 交付状态（`delivery`）

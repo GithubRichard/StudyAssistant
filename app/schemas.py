@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
 from .scope import TRAINING_KINDS
+
+log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 3
 LEGACY_SCHEMA_VERSION = 2      # 上一版协议：仍然只读展示，不回溯改写历史记录
@@ -102,6 +105,38 @@ class StrictModel(BaseModel):
     model_config = {"extra": "ignore"}
 
 
+_INT_RE = re.compile(r"-?\d+")
+
+
+def coerce_int(value: Any) -> Any:
+    """把模型写歪的计数容错成整数。
+
+    模型有时把「scope」这类计数栏写成说明文字（真实事故：review_summary.scope =
+    "已判错题的二次核查（本次 16 题均未判定为错题）"），严格模式下会因一个字段
+    类型不符废掉整卷结果。
+
+    容错口径（刻意保守）：数字、数字字符串、" 3 " 这类纯数字文本直接转；
+    **不做**「从说明文字里抠第一个数字」——上面那句里的 16 是题数总计，抠出来会把
+    scope 从 0 变成 16，反而绕过「核查完成且存在错题时 scope 不能为 0」的保护。
+    因此含说明文字时一律落 0 并记 warning（review_summary 还会把原文写进 note 留痕）：
+    overview 的计数随后由服务端按逐题数据重算，落 0 不会污染口径。
+    """
+    if isinstance(value, bool):          # bool 是 int 子类，单独处理避免 True→1 意外
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if float(value).is_integer() else int(round(value))
+    if isinstance(value, str) and _INT_RE.fullmatch(value.strip()):
+        return int(value.strip())
+    log.warning("结果字段不是整数，已按 0 处理（计数字段不要写说明文字）: %r", value)
+    return 0
+
+
+# 计数类字段的宽松类型：容错模型把计数写成字符串或说明文字
+LooseInt = Annotated[int, BeforeValidator(coerce_int)]
+
+
 class ScopeInfo(StrictModel):
     start_date: str = ""
     end_date: str = ""
@@ -109,15 +144,15 @@ class ScopeInfo(StrictModel):
 
 
 class Overview(StrictModel):
-    checked_questions: int = 0
-    correct: int = 0
-    wrong: int = 0
-    unanswered: int = 0
-    uncertain: int = 0
-    unprocessed: int = 0
+    checked_questions: LooseInt = 0
+    correct: LooseInt = 0
+    wrong: LooseInt = 0
+    unanswered: LooseInt = 0
+    uncertain: LooseInt = 0
+    unprocessed: LooseInt = 0
     summary: str = ""
     # 订正与复测口径：各状态计数（由服务端按逐题数据重算，避免与题目不一致）
-    remediation: Dict[str, int] = Field(default_factory=dict)
+    remediation: Dict[str, LooseInt] = Field(default_factory=dict)
     # 错误率只在分母（已检查题数）可确认时才计算，否则留空并说明
     error_rate: float = 0.0
     error_rate_basis: str = ""
@@ -278,10 +313,28 @@ class DeliveryReport(StrictModel):
 
 class ReviewSummary(StrictModel):
     state: str = "not_run"
-    scope: int = 0
-    disagreed: int = 0
-    unverified: int = 0
+    scope: LooseInt = 0
+    disagreed: LooseInt = 0
+    unverified: LooseInt = 0
     note: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _trace_coerced_counts(cls, data: Any) -> Any:
+        """计数栏被写成说明文字时，把原文留在 note 里，不悄悄丢掉信息。"""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        traces: List[str] = []
+        for key in ("scope", "disagreed", "unverified"):
+            raw = data.get(key)
+            if isinstance(raw, str) and not _INT_RE.fullmatch(raw.strip()):
+                traces.append(f"{key} 原文为「{raw.strip()[:80]}」，已按 {coerce_int(raw)} 处理")
+                data[key] = coerce_int(raw)
+        if traces:
+            note = (data.get("note") or "").strip()
+            data["note"] = "；".join([note] + traces) if note else "；".join(traces)
+        return data
 
     @model_validator(mode="after")
     def _check_state(self) -> "ReviewSummary":

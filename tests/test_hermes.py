@@ -269,6 +269,39 @@ class ResultContractTest(unittest.TestCase):
         with self.assertRaises(HermesResultInvalid):
             validate_result(broken)
 
+    def test_review_summary_text_in_count_field_is_coerced(self):
+        """把说明文字写进 review_summary.scope 时按 0 处理，并在 note 留痕。"""
+        data = dict(LEARNING_RESULT)
+        data["review_summary"] = {
+            "state": "not_run",
+            "scope": "已判错题的二次核查（本次 16 题均未判定为错题）",
+            "disagreed": 0, "unverified": 1,
+            "note": "",
+        }
+        result = validate_result(data)
+        summary = result["review_summary"]
+        self.assertEqual(summary["scope"], 0)
+        self.assertEqual(summary["unverified"], 1)
+        self.assertIn("scope 原文为", summary["note"])
+
+    def test_coerced_scope_cannot_bypass_completed_review_check(self):
+        """scope 归零后不能绕过「核查完成且存在错题时 scope 不能为 0」。"""
+        data = dict(LEARNING_RESULT)
+        data["review_summary"] = {
+            "state": "completed", "scope": "送核查的错题数：1",
+            "disagreed": 0, "unverified": 0, "note": "",
+        }
+        with self.assertRaises(HermesResultInvalid):
+            validate_result(data)
+
+    def test_overview_string_counts_are_coerced(self):
+        """overview 的计数写成数字字符串时能解析，最终口径仍由逐题数据重算。"""
+        data = dict(LEARNING_RESULT)
+        data["overview"] = {"checked_questions": "16", "summary": "全对"}
+        result = validate_result(data)
+        self.assertEqual(result["overview"]["checked_questions"], 16)
+        self.assertEqual(result["overview"]["wrong"], 1)
+
 
 class MessageTest(unittest.TestCase):
     def _settings(self):
