@@ -74,6 +74,50 @@ class FollowupExtraction(BaseModel):
     revisions: List[FollowupRevision] = Field(default_factory=list)
 
 
+def format_extraction_log(data: Dict[str, Any]) -> str:
+    """把提取阶段产出渲染成人类可读的转写日志。
+
+    用途：让使用者核对 AI 是否读对了题目与学生答案（只转写、不判定）。
+    输入是 on_stage("extract", ...) 收到的 dict（ExtractionResult 或
+    FollowupExtraction 的 model_dump）。
+    """
+    lines: List[str] = []
+    questions = data.get("questions") or []
+    if questions:
+        lines.append(f"共提取 {len(questions)} 题（只转写、不判定）：")
+        for q in questions:
+            no = q.get("no", "?")
+            flag = "【字迹存疑】" if q.get("handwriting_uncertain") else ""
+            note = q.get("uncertain_note", "") or ""
+            stem = (q.get("stem", "") or "").replace("\n", " ")
+            if len(stem) > 45:
+                stem = stem[:45] + "…"
+            ans = q.get("student_answer", "") or "（未作答/空白）"
+            line = f"  题{no}{flag}｜题干：{stem}｜学生答案：{ans}"
+            if note:
+                line += f"｜备注：{note}"
+            lines.append(line)
+        return "\n".join(lines)
+    # 补充轮次：只转写受影响题
+    revisions = data.get("revisions") or []
+    new_questions = data.get("new_questions") or []
+    if revisions or new_questions:
+        lines.append(f"补充轮次转写：订正 {len(revisions)} 题，新增 {len(new_questions)} 题：")
+        for r in revisions:
+            ans = r.get("student_answer", "") or "（未作答/空白）"
+            note = r.get("note", "") or ""
+            lines.append(f"  订正 题{r.get('prev_no', '?')}｜学生答案：{ans}"
+                         + (f"｜备注：{note}" if note else ""))
+        for q in new_questions:
+            stem = (q.get("stem", "") or "").replace("\n", " ")
+            if len(stem) > 45:
+                stem = stem[:45] + "…"
+            ans = q.get("student_answer", "") or "（未作答/空白）"
+            lines.append(f"  新增 题{q.get('no', '?')}｜题干：{stem}｜学生答案：{ans}")
+        return "\n".join(lines)
+    return "提取阶段未产出任何题目（空转写）"
+
+
 class SolutionItem(BaseModel):
     no: str
     correct_answer: str = ""

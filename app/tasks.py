@@ -450,6 +450,11 @@ class TaskRunner:
 
         async def on_stage(name: str, data: Any) -> None:
             stages_store[name] = data
+            if name == "extract":
+                # 第一步产出直接打日志：使用者可核对 AI 是否读对了题目与学生答案
+                log.info("【提取阶段转写】task_id=%s run_no=%d\n%s",
+                         task["id"], run["run_no"],
+                         staged.format_extraction_log(data))
             await db.update_run(
                 self.settings.db_path, run["id"], stage=name,
                 stages_json=json.dumps(stages_store, ensure_ascii=False))
@@ -673,6 +678,17 @@ class TaskRunner:
 # --------------------------- 视图 ---------------------------
 
 
+def _parse_stages_json(raw: Any) -> Dict[str, Any]:
+    """解析 task_runs.stages_json；空或非法时返回 {}（不抛错）。"""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 async def build_task_view(settings: Settings, task: Dict[str, Any]) -> Dict[str, Any]:
     """统一任务视图：新旧结果都能读，状态与缺口如实呈现。"""
     runs = await db.list_runs(settings.db_path, task["id"])
@@ -714,6 +730,9 @@ async def build_task_view(settings: Settings, task: Dict[str, Any]) -> Dict[str,
                 "id": r["id"], "run_no": r["run_no"], "kind": r["kind"],
                 "status": r["status"], "error": r.get("error", ""),
                 "started_at": r.get("started_at"), "finished_at": r.get("finished_at"),
+                # 分阶段进度与各阶段产出（含 extract 转写：AI 读到的题目与学生答案）
+                "stage": r.get("stage", ""),
+                "stages": _parse_stages_json(r.get("stages_json")),
             }
             for r in runs
         ],

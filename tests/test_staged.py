@@ -537,7 +537,7 @@ class StagedReviewGateTest(unittest.IsolatedAsyncioTestCase):
 
         from app import db, tasks, staged as staged_mod
         from app.staged import StagedOutcome
-        from tests.test_tasks import run_executor
+        from tests.test_tasks import FakeClient, run_executor
 
         raw = self._raw(status)
 
@@ -596,3 +596,134 @@ class StagedReviewGateTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExtractionLogTest(unittest.TestCase):
+    """format_extraction_log：转写日志人类可读，供核对 AI 是否读对。"""
+
+    def test_first_round_renders_questions_answers_and_uncertain(self):
+        from app.staged import format_extraction_log
+
+        data = {"questions": [
+            {"no": "1", "stem": "2x=8，x=?", "student_answer": "5",
+             "handwriting_uncertain": False, "uncertain_note": ""},
+            {"no": "2", "stem": "填空", "student_answer": "",
+             "handwriting_uncertain": True, "uncertain_note": "笔迹潦草无法辨认"},
+        ]}
+        text = format_extraction_log(data)
+        self.assertIn("共提取 2 题", text)
+        self.assertIn("题1", text)
+        self.assertIn("学生答案：5", text)
+        self.assertIn("【字迹存疑】", text)
+        self.assertIn("笔迹潦草无法辨认", text)
+        self.assertIn("（未作答/空白）", text)
+
+    def test_followup_renders_revisions_and_new_questions(self):
+        from app.staged import format_extraction_log
+
+        data = {"revisions": [{"prev_no": "3", "student_answer": "7",
+                               "note": "改后答案"}],
+                "new_questions": [{"no": "4", "stem": "新题",
+                                   "student_answer": "A"}]}
+        text = format_extraction_log(data)
+        self.assertIn("订正 1 题", text)
+        self.assertIn("新增 1 题", text)
+        self.assertIn("题3", text)
+        self.assertIn("题4", text)
+
+    def test_empty_extraction(self):
+        from app.staged import format_extraction_log
+
+        self.assertIn("空转写", format_extraction_log({"questions": []}))
+
+
+class StagedStagesViewTest(unittest.IsolatedAsyncioTestCase):
+    """任务视图暴露各阶段产出：runs[].stages.extract 可查 AI 转写。"""
+
+    async def asyncSetUp(self):
+        import tempfile
+        from pathlib import Path
+
+        from app import db
+        from tests.test_tasks import make_settings as task_settings
+        from tests.test_tasks import seed_asset, seed_user
+        from tests.test_workspace import png_bytes
+
+        self.tmp = tempfile.TemporaryDirectory()
+        overrides = {
+            "llm": {"default_provider": "fake", "providers": {
+                "fake": {"base_url": "http://fake", "api_key": "k",
+                         "model": "fake-m"}}},
+            "staged_grading": {"enabled": True},
+        }
+        self.settings = task_settings(self.tmp.name, **overrides)
+        await db.init_db(self.settings.db_path)
+        await seed_user(self.settings, "u1")
+        await seed_asset(self.settings, "u1", "a1")
+        path = Path(self.settings.upload_dir) / "a1.jpg"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(png_bytes())
+
+    async def asyncTearDown(self):
+        self.tmp.cleanup()
+
+    async def test_view_exposes_extract_transcription_and_logs_it(self):
+        import copy
+        from unittest.mock import patch
+
+        from app import db, tasks, staged as staged_mod
+        from app.staged import StagedOutcome
+        from tests.test_tasks import FakeClient, run_executor
+
+        raw = {
+            "schema_version": 3, "task_type": "grading", "subject": "数学",
+            "grade_level": "七年级",
+            "overview": {"checked_questions": 1, "summary": "一批改"},
+            "questions": [{
+                "id": "q1", "no": "1", "stem": "2x=8，x=?",
+                "student_answer": "4", "status": "correct",
+                "correct_answer": "4", "steps": ["2x=8", "x=4"],
+                "error_rule": "", "knowledge_point": "一元一次方程",
+                "review": {"state": "not_applicable", "note": "", "basis": ""},
+                "final_decision": "kept_correct",
+                "remediation": {"state": "not_applicable", "updated_date": "",
+                                "linked_training": "", "note": ""},
+            }],
+            "review_summary": {"state": "not_run", "scope": 0, "disagreed": 0,
+                               "unverified": 0, "note": ""},
+            "archive": {"action": "none"},
+        }
+
+        async def fake_grade_staged(images, subject, grade_level, input_text,
+                                    settings, chain=None, prev_result=None,
+                                    followup_no=0, on_stage=None,
+                                    provider_factory=None):
+            # 模拟真实提取产出经 on_stage 落库
+            await on_stage("extract", {"questions": [
+                {"no": "1", "stem": "2x=8，x=?", "student_answer": "5",
+                 "page": "1", "handwriting_uncertain": False,
+                 "uncertain_note": ""}]})
+            for name in ("solve", "compare", "diagnose"):
+                await on_stage(name, {"ok": True})
+            return StagedOutcome(result=validate_result(copy.deepcopy(raw)),
+                                 model="fake/m", input_tokens=1,
+                                 output_tokens=1, cost=0.01, stages={})
+
+        created = await tasks.create_study_task(
+            self.settings, "u1",
+            {"task_type": "grading", "subject": "数学", "text": "",
+             "asset_ids": ["a1"]}, "")
+        with patch.object(staged_mod, "grade_staged", fake_grade_staged):
+            with self.assertLogs("app.tasks", level="INFO") as logs:
+                await run_executor(self.settings, FakeClient())
+        transcript_logs = [m for m in logs.output if "提取阶段转写" in m]
+        self.assertTrue(transcript_logs, "提取阶段应输出转写日志")
+        self.assertIn("学生答案：5", transcript_logs[0])
+
+        task = await db.get_task(self.settings.db_path, created["task_id"])
+        view = await tasks.build_task_view(self.settings, task)
+        run_view = view["runs"][0]
+        self.assertEqual(run_view["stage"], "done")
+        extract = run_view["stages"]["extract"]
+        self.assertEqual(extract["questions"][0]["student_answer"], "5")
+        self.assertEqual(extract["questions"][0]["stem"], "2x=8，x=?")
