@@ -466,3 +466,133 @@ class StagedExecutorIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StagedReviewGateTest(unittest.IsolatedAsyncioTestCase):
+    """分阶段 + hermes 引擎时复查门的"可疑才查"行为。
+
+    - 全对（无错题/存疑题）→ 跳过复查，不调模型，如实标 not_required
+    - 有错题 → 正常走复查（重点核查），调模型
+    """
+
+    async def asyncSetUp(self):
+        import tempfile
+        from pathlib import Path
+
+        from app import db, tasks
+        from tests.test_tasks import (make_settings as task_settings,
+                                      seed_asset, seed_user)
+        from tests.test_workspace import png_bytes
+        from tests.test_review import REVIEW_SETTINGS
+
+        self._db, self._tasks = db, tasks
+        self.tmp = tempfile.TemporaryDirectory()
+        overrides = {
+            "llm": {"default_provider": "fake", "providers": {
+                "fake": {"base_url": "http://fake", "api_key": "k",
+                         "model": "fake-m"}}},
+            "staged_grading": {"enabled": True},
+            **REVIEW_SETTINGS,
+        }
+        self.settings = task_settings(self.tmp.name, **overrides)
+        await db.init_db(self.settings.db_path)
+        await seed_user(self.settings, "u1")
+        await seed_asset(self.settings, "u1", "a1")
+        path = Path(self.settings.upload_dir) / "a1.jpg"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(png_bytes())
+
+    async def asyncTearDown(self):
+        self.tmp.cleanup()
+
+    def _raw(self, status):
+        q = {
+            "id": "q1", "no": "1", "stem": "2x=8，x=?", "student_answer": "4",
+            "status": "correct", "correct_answer": "4", "steps": ["2x=8", "x=4"],
+            "error_rule": "", "knowledge_point": "一元一次方程",
+            "review": {"state": "not_applicable", "note": "", "basis": ""},
+            "final_decision": "kept_correct",
+            "remediation": {"state": "not_applicable", "updated_date": "",
+                            "linked_training": "", "note": ""},
+        }
+        if status == "wrong":
+            q.update({
+                "student_answer": "5", "status": "wrong",
+                "error_rule": "两边同除时算错", "final_decision": "kept_wrong",
+                "remediation": {"state": "pending_correction", "updated_date": "",
+                                "linked_training": "", "note": ""},
+            })
+        return {
+            "schema_version": 3, "task_type": "grading", "subject": "数学",
+            "grade_level": "七年级",
+            "overview": {"checked_questions": 1, "summary": "一批改"},
+            "questions": [q],
+            "review_summary": {"state": "not_run", "scope": 0, "disagreed": 0,
+                               "unverified": 0, "note": ""},
+            "archive": {"action": "none"},
+        }
+
+    async def _run_with_staged(self, status, client):
+        from unittest.mock import patch
+
+        from app import db, tasks, staged as staged_mod
+        from app.staged import StagedOutcome
+        from tests.test_tasks import run_executor
+
+        raw = self._raw(status)
+
+        async def fake_grade_staged(images, subject, grade_level, input_text,
+                                    settings, chain=None, prev_result=None,
+                                    followup_no=0, on_stage=None,
+                                    provider_factory=None):
+            for name in ("extract", "solve", "compare", "diagnose"):
+                await on_stage(name, {"ok": True})
+            return StagedOutcome(result=validate_result(raw), model="fake/m",
+                                 input_tokens=1, output_tokens=1, cost=0.01,
+                                 stages={})
+
+        created = await tasks.create_study_task(
+            self.settings, "u1",
+            {"task_type": "grading", "subject": "数学", "text": "",
+             "asset_ids": ["a1"]}, "")
+        with patch.object(staged_mod, "grade_staged", fake_grade_staged):
+            await run_executor(self.settings, client)
+        task = await db.get_task(self.settings.db_path, created["task_id"])
+        view = await tasks.build_task_view(self.settings, task)
+        return task, view["result"]
+
+    async def test_all_correct_skips_review_with_staged_note(self):
+        from tests.test_review import ReviewFakeClient
+
+        client = ReviewFakeClient()
+        task, result = await self._run_with_staged("correct", client)
+        self.assertEqual(client.review_calls, 0, "无可疑题不应调用复查模型")
+        summary = result["review_summary"]
+        self.assertEqual(summary["state"], "not_required")
+        self.assertIn("分阶段", summary["note"])
+        self.assertEqual(task["status"], "done")
+
+    async def test_wrong_question_triggers_review(self):
+        from tests.test_review import ReviewFakeClient
+
+        review_payload = {
+            "reviews": [{"id": "q1", "state": "agreed", "note": "核查无异议",
+                         "basis": ""}],
+            "model_requested": "glm", "reported_model": "glm-5.3",
+            "reported_provider": "zai",
+            "usage": {"prompt_tokens": 7, "completion_tokens": 3},
+            "raw_excerpt": "",
+        }
+        client = ReviewFakeClient(review_payload=review_payload)
+        task, result = await self._run_with_staged("wrong", client)
+        self.assertEqual(client.review_calls, 1, "有错题应触发复查做重点核查")
+        summary = result["review_summary"]
+        self.assertEqual(summary["state"], "completed")
+        self.assertEqual(summary["scope"], 1)
+        self.assertEqual(result["questions"][0]["review"]["state"], "agreed")
+        # 首轮判定不受影响
+        self.assertEqual(result["questions"][0]["status"], "wrong")
+
+
+if __name__ == "__main__":
+    unittest.main()

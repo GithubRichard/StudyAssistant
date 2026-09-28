@@ -85,6 +85,21 @@ def apply_not_required(result: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+def apply_skipped_after_staged(result: Dict[str, Any]) -> Dict[str, Any]:
+    """分阶段批改已含独立求解与比对判定、且本次无错题/存疑题：跳过二次复查。
+
+    与 apply_not_required 的区别只是如实说明跳过原因：不是"没配复查模型"，
+    也不是"单次调用无需复查"，而是分阶段流水线本身已覆盖了复查想抓的问题。
+    """
+    data = _normalize(result)
+    _set_candidate_review(data, None, "not_applicable", "")
+    data["review_summary"] = {
+        **_empty_summary(), "state": "not_required",
+        "note": "分阶段批改已做独立求解与比对判定，本次无错题与存疑题，跳过二次复查",
+    }
+    return data
+
+
 def apply_not_configured(result: Dict[str, Any]) -> Dict[str, Any]:
     """未配置复查模型：如实标 not_run，目标题未送审。"""
     data = _normalize(result)

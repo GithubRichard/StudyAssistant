@@ -314,7 +314,15 @@ class TaskRunner:
 
         # 服务端二次复查（第二模型）：只写复查字段，失败不吞首轮成果
         if s.is_hermes:
-            result = await self._run_review(task, run, result, deadline, payload)
+            if (payload.get("provider") == "staged"
+                    and s.hermes.review_configured
+                    and not any(review.is_candidate(q)
+                                for q in result.get("questions") or [])):
+                # 分阶段已做独立求解与比对判定，本次又无错题/存疑题：
+                # 复查不会有新的信息增益，跳过以省一次模型调用，如实标注
+                result = review.apply_skipped_after_staged(result)
+            else:
+                result = await self._run_review(task, run, result, deadline, payload)
 
         await self._finish(task, run, payload, result, output_dir, prev_result)
 
