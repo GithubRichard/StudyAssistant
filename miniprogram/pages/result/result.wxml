@@ -68,10 +68,11 @@
       <text class="miss" wx:for="{{result.missing_info}}" wx:key="*this">· {{item}}</text>
     </view>
 
-    <view class="card" wx:if="{{result.review_summary.state !== 'not_required'}}">
-      <text class="sec-title">错题二次核查</text>
-      <text class="muted">状态：{{result.review_summary.state}} · 送核查 {{result.review_summary.scope}} 题 · 有异议 {{result.review_summary.disagreed}} 题 · 无法核查 {{result.review_summary.unverified}} 题</text>
-      <text class="muted" wx:if="{{result.review_summary.note}}">{{result.review_summary.note}}</text>
+    <view class="card" wx:if="{{reviewView}}">
+      <text class="sec-title">二次复查（第二模型）</text>
+      <text class="muted">状态：{{reviewView.stateText}}{{reviewView.counts ? ' · ' + reviewView.counts : ''}}</text>
+      <text class="muted" wx:if="{{reviewView.modelLine}}">复查模型：{{reviewView.modelLine}}（复查只提异议，不改判）</text>
+      <text class="muted" wx:if="{{reviewView.note}}">{{reviewView.note}}</text>
     </view>
 
     <view wx:for="{{result.questions}}" wx:key="id" class="card q">
@@ -86,10 +87,11 @@
       <view class="q-row" wx:if="{{item.knowledge_point}}"><text class="k">知识点：</text><text>{{item.knowledge_point}}</text></view>
       <view class="q-row" wx:if="{{item.error_rule}}"><text class="k">错因规则：</text><text>{{item.error_rule}}</text></view>
       <view class="q-row" wx:if="{{item.review.state !== 'not_applicable'}}">
-        <text class="k">核查：</text>
+        <text class="k">复查：</text>
         <text>{{reviewLabel[item.review.state]}}</text>
       </view>
-      <view class="q-row" wx:if="{{item.review.note}}"><text class="k">核查说明：</text><text>{{item.review.note}}</text></view>
+      <view class="q-row" wx:if="{{item.review.note}}"><text class="k">复查说明：</text><text>{{item.review.note}}</text></view>
+      <view class="q-row" wx:if="{{item.review.basis}}"><text class="k">复查依据：</text><text>{{item.review.basis}}</text></view>
       <view class="q-row" wx:if="{{item.final_decision_basis}}"><text class="k">复核依据：</text><text>{{item.final_decision_basis}}</text></view>
       <view class="q-row" wx:if="{{item.status === 'wrong' || item.status === 'uncertain'}}">
         <text class="k">订正/复测：</text>
@@ -148,6 +150,7 @@
         </view>
         <view wx:if="{{followupImages.length < 9}}" class="thumb add" bindtap="chooseFollowupImages">+</view>
       </view>
+      <text class="muted">补充图片请按页码顺序添加；跨页题补拍时要拍全两页（同一题的两页会合并成一条记录）。</text>
       <button size="mini" type="primary" bindtap="submitFollowup" loading="{{submitting}}" disabled="{{submitting}}">提交补充材料</button>
     </view>
 

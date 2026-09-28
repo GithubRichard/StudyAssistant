@@ -2,13 +2,16 @@
 
 只使用已核实的上游协议：
 - `POST /v1/chat/completions`：服务端执行完整工具循环（不是模型转发），支持 `image_url` 内联图片。
+  请求体 `model` + `provider` + `model_options` 是受支持的模型切换手段（用户本机实测）：
+  - `model_routes` 别名可只传 `model`；
+  - 底层模型 ID 必须同时传 `provider`（否则会被网关静默忽略，回落全局默认模型）。
 - `GET /v1/skills`：技能发现，用于判断技能是否真的已安装。
 - `GET /v1/capabilities`：当前版本能力。
 
 明确不做的事：
 - 不使用未确认的 Runs 图片输入契约，不编造腾讯镜像特有参数。
 - 不对「可能已被接收」的请求自动重试，避免重复执行产生重复归档或重复副作用。
-- 不把 `model` 当作底层模型切换手段，不静默退回旧的多模型直连路径。
+- 不静默退回旧的多模型直连路径；复查模型不可用时不换别的模型冒充。
 """
 from __future__ import annotations
 
@@ -22,7 +25,7 @@ import httpx
 from pydantic import ValidationError
 
 from .config import HermesConfig, Settings
-from .schemas import StudyResult, drop_nulls
+from .schemas import ReviewResponse, StudyResult, drop_nulls
 from . import scope, workspace
 
 log = logging.getLogger(__name__)
@@ -153,6 +156,16 @@ def validate_result(raw: Dict[str, Any]) -> Dict[str, Any]:
         raise HermesResultInvalid(f"结果不符合协议约束: {loc} {first.get('msg', '')}".strip()) from e
 
 
+def validate_review_response(raw: Dict[str, Any]) -> ReviewResponse:
+    """校验复查输出协议；非法（空列表、重复 id、非法状态、异议无依据）整体拒绝。"""
+    try:
+        return ReviewResponse.model_validate(drop_nulls(raw))
+    except ValidationError as e:
+        first = e.errors()[0] if e.errors() else {}
+        loc = ".".join(str(p) for p in first.get("loc", ()))
+        raise HermesResultInvalid(f"复查输出不符合协议约束: {loc} {first.get('msg', '')}".strip()) from e
+
+
 def _compact_prev_result(prev: Dict[str, Any]) -> Dict[str, Any]:
     """补充轮次上下文：只带修订需要的字段，去掉归档长文本以省 token。"""
     return {k: prev.get(k) for k in
@@ -228,6 +241,15 @@ def build_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, Any],
         "review{state,note,basis}, final_decision, final_decision_basis, "
         "remediation{state, updated_date（无日期就写空字符串 \"\"，不要写 null）, "
         "linked_training, note}\n"
+        "review 与 review_summary 由**服务端**在结果校验后按二次复查的真实执行情况填写："
+        "首轮输出一律省略这些键（或写默认值 review.state=not_applicable、"
+        "review_summary.state=not_run 且计数为 0），不得自称已完成二次核查或双重确认；"
+        "final_decision / final_decision_basis 仍由你按首轮判定如实填写。\n"
+        "跨页题（题干、图表或共用条件被分在相邻页上）：必须**合并为一条** questions 记录，"
+        "`page` 统一写起始页（如 P12），跨页区间写在 stem 或 evidence 里（如「第 12-13 页」）；"
+        "不得因为题干跨页就拆成两条题，也不得只取其中一页导致题干残缺；"
+        "若因缺页或图片不清无法确认续页关系，标 status=uncertain 并在 missing_info 写明缺哪一页，"
+        "不得猜测、不得默认为答错。\n"
         "status 取值：correct / wrong / unanswered / uncertain / unprocessed\n"
         "review.state 取值：agreed / disagreed / unverified / unprocessed / not_applicable\n"
         "final_decision 取值：kept_wrong / corrected_to_correct / kept_correct / kept_uncertain / "
@@ -258,7 +280,8 @@ def build_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, Any],
     )
 
     if assets:
-        header += f"\n本次附带 {len(assets)} 张图片（按顺序对应作业页面）。\n"
+        header += (f"\n本次附带 {len(assets)} 张图片（按上传顺序对应作业页面，"
+                   f"相邻图片可能是同一道题的连续页；跨页题按上面的跨页规则合并登记）。\n")
 
     orig_text = (task.get("input_text") or "").strip()
     run_text = (run.get("input_text") or "").strip()
@@ -310,6 +333,81 @@ def build_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, Any],
     ]
 
 
+def build_review_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, Any],
+                          questions: List[Dict[str, Any]],
+                          assets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """构造发往复查模型的只读复查消息。
+
+    只传待复查题的首轮结论与随任务图片；不传工作区路径、不传密钥、不传其他任务数据。
+    复查方只做核查、只提异议：协议里没有也不接受任何改判字段。
+    """
+    lines: List[str] = [
+        "你是独立的复查员。另一个模型已完成首轮批改，请你只对下面列出的"
+        "「已判错题与存疑题」做只读核查。",
+        "",
+        "【复查纪律（必须遵守）】",
+        "1. 只核查、只提异议：不裁决、不改判、不给学生重新定性，不输出「正确/错误」结论。",
+        "2. 不使用任何工具：不执行命令、不读文件、不搜索目录；图片已作为附件随本消息提供。",
+        "3. 对每道送审题逐项检查：是否误读原题或作答、是否遗漏条件、计算或推理是否有误、"
+        "是否把合理答案误判为错、错因是否缺乏证据。",
+        "4. 无异议的题只标 agreed（未发现异议，不等于证明原判定必然正确）；"
+        "有异议的题标 disagreed 并必须给出可核验依据（basis）；"
+        "图片不清、信息不足以核查的题标 unverified，不要猜测。",
+        "5. 存疑题（首轮标 uncertain）的 agreed 仅表示未发现对存疑判断的异议，"
+        "不代表题目已确认正确或疑点消除。",
+        "",
+        f"【本次任务上下文】任务号 {task['id']}（轮次 {run['run_no']}），"
+        f"学科：{task.get('subject') or '未指定'}，年级：{task.get('grade_level') or '未指定'}。",
+        "",
+        "【待复查题目】（首轮结论由另一模型给出，仅供你核查，不是标准答案）",
+    ]
+    for q in questions:
+        parts = [f"- id={q['id']}"]
+        for key, label in (("no", "题号"), ("source", "来源"), ("page", "页码")):
+            if (q.get(key) or "").strip():
+                parts.append(f"{label}={q[key]}")
+        lines.append(" ".join(parts))
+        for key, label in (("stem", "题干"), ("student_answer", "学生原作答"),
+                           ("status", "首轮判定"), ("correct_answer", "参考答案"),
+                           ("error_rule", "错因"), ("knowledge_point", "知识点"),
+                           ("evidence", "判定证据")):
+            if (q.get(key) or "").strip():
+                lines.append(f"  {label}：{q[key]}")
+        steps = q.get("steps") or []
+        if steps:
+            lines.append("  解题步骤：" + " → ".join(str(s) for s in steps))
+        lines.append("")
+
+    lines.append("【输出契约（最终回答包含且仅包含一个 ```json 代码块）】")
+    lines.append("```json")
+    lines.append('{"reviews": [{"id": "题目id", "state": "agreed|disagreed|unverified",')
+    lines.append('  "note": "简短说明", "basis": "disagreed 时必填的可核验依据，其余可为空串"}]}')
+    lines.append("```")
+    lines.append("硬性规则：送审列表中的每一道题都必须返回一项，id 与送审列表完全一致；"
+                 "不得返回未送审的题；disagreed 必须给 basis；"
+                 "所有文本字段用字符串，没有内容写空字符串 \"\"，不要写 null。")
+
+    if assets:
+        lines.append(f"\n随附 {len(assets)} 张图片（该任务的作业原图，按提交顺序排列，"
+                     "部分题可能跨页或不在图片中）。")
+    else:
+        lines.append("\n本次未随附图片：只能依据上面的文字转录核查逻辑与计算，"
+                     "无法核对原图，请在相应题的 note 中说明范围仅限转录内容。")
+
+    content: List[Dict[str, Any]] = [{"type": "text", "text": "\n".join(lines)}]
+    for asset in assets:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": asset["data_url"]},
+        })
+    return [
+        {"role": "system",
+         "content": "你是只读复查员：只核查、只提异议，不裁决、不改判、不使用工具，"
+                    "按约定 JSON 契约输出。"},
+        {"role": "user", "content": content},
+    ]
+
+
 class HermesClient:
     """Hermes Agent HTTP 客户端（单实例复用连接池，不自动重试）。"""
 
@@ -345,7 +443,8 @@ class HermesClient:
     # ---------- 底层请求 ----------
 
     async def _request(self, method: str, path: str, *, json_body: Optional[dict] = None,
-                       timeout: Optional[float] = None) -> httpx.Response:
+                       timeout: Optional[float] = None,
+                       headers: Optional[Dict[str, str]] = None) -> httpx.Response:
         if not self.cfg.configured:
             raise HermesNotConfigured("未配置 Hermes 地址或密钥（HERMES_BASE_URL / HERMES_API_KEY）")
         client = await self._http()
@@ -353,6 +452,7 @@ class HermesClient:
             resp = await client.request(
                 method, path, json=json_body,
                 timeout=timeout or self.cfg.timeout_seconds,
+                headers=headers,
             )
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
             raise HermesUnavailable(f"无法连接 Hermes：{e}") from e
@@ -499,6 +599,74 @@ class HermesClient:
         return {
             "result": result,
             "model": data.get("model") or self.cfg.agent_model,
+            # 网关报告的原始身份（不回填请求值；缺失保持空串，由编排层判「身份未知」）
+            "reported_model": str(data.get("model") or "").strip(),
+            "reported_provider": str(data.get("provider") or "").strip(),
+            "usage": data.get("usage") or {},
+            "raw_excerpt": text[:2000],
+        }
+
+    async def review_questions(self, messages: List[Dict[str, Any]],
+                               session_id: str,
+                               timeout: Optional[float] = None) -> Dict[str, Any]:
+        """用配置的复查模型执行一次只读复查。
+
+        返回 {reviews, model_requested, reported_model, reported_provider, usage, raw_excerpt}。
+        - 独立会话头 X-Hermes-Session-Id（不复用首轮会话的模型锁）。
+        - 请求体带 model + 可选 provider + 可选 model_options（网关按此路由到第二模型）。
+        - 不自动重试；错误分类沿用 _request（鉴权/拒绝/不可达/未确认）。
+        """
+        if not self.cfg.configured:
+            raise HermesNotConfigured("未配置 Hermes 地址或密钥（HERMES_BASE_URL / HERMES_API_KEY）")
+        if not self.cfg.review_model.strip():
+            raise HermesRejected("未配置复查模型（hermes.review_model）")
+
+        review_model = self.cfg.review_model.strip()
+        payload: Dict[str, Any] = {
+            "model": review_model,
+            "messages": messages,
+            "stream": False,
+            "temperature": 0,
+        }
+        if self.cfg.review_provider.strip():
+            payload["provider"] = self.cfg.review_provider.strip()
+        if self.cfg.review_model_options:
+            payload["model_options"] = self.cfg.review_model_options
+
+        requested = review_model + (
+            f"（provider={self.cfg.review_provider.strip()}）"
+            if self.cfg.review_provider.strip() else "")
+        started = time.time()
+        log.info("调用复查模型 session=%s model=%s timeout=%ss",
+                 session_id, requested, timeout or self.cfg.review_timeout_seconds)
+        resp = await self._request(
+            "POST", "/v1/chat/completions", json_body=payload,
+            timeout=timeout or self.cfg.review_timeout_seconds,
+            headers={"X-Hermes-Session-Id": session_id})
+        elapsed = time.time() - started
+        if elapsed > 30:
+            log.info("复查请求耗时 %.0fs session=%s", elapsed, session_id)
+
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise HermesResultInvalid(f"复查响应不是合法 JSON: {e}") from e
+
+        choices = data.get("choices") or []
+        if not choices:
+            raise HermesResultInvalid("复查响应缺少 choices")
+        message = choices[0].get("message") or {}
+        text = message.get("content") or ""
+        raw = extract_result_json(text)
+        response = validate_review_response(raw)
+        reported_model = str(data.get("model") or "").strip()
+        log.info("复查完成 session=%s 题数=%d 网关报告模型=%s",
+                 session_id, len(response.reviews), reported_model or "（未报告）")
+        return {
+            "reviews": [r.model_dump() for r in response.reviews],
+            "model_requested": requested,
+            "reported_model": reported_model,
+            "reported_provider": str(data.get("provider") or "").strip(),
             "usage": data.get("usage") or {},
             "raw_excerpt": text[:2000],
         }

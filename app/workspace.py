@@ -614,13 +614,18 @@ def workspace_relative_path(settings: Settings, path: str) -> str:
 
 
 def _rel(settings: Settings, path: str) -> str:
-    """对外只暴露工作区相对路径，避免泄露服务器绝对路径。"""
+    """对外只暴露工作区相对路径，避免泄露服务器绝对路径。
+
+    统一用正斜杠：工作区路径同时用于接口输出与前端展示，
+    Windows 开发环境下不应因为路径分隔符差异产生不同结果。
+    """
     if not path:
         return ""
     try:
-        return str(Path(path).resolve().relative_to(workspace_root(settings)))
+        rel = str(Path(path).resolve().relative_to(workspace_root(settings)))
     except ValueError:
-        return Path(path).name
+        rel = str(Path(path).name)
+    return rel.replace("\\", "/")
 
 
 def task_materials_summary(settings: Settings, assets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

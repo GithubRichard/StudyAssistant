@@ -14,7 +14,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from . import db, git_sync, grading, hermes, scope, workspace
+from . import db, git_sync, grading, hermes, review, scope, workspace
 from .config import Settings
 from .hermes import HermesClient, HermesError, HermesUncertain
 from .schemas import (fill_question_uids, grading_result_to_v3, normalize_result,
@@ -254,9 +254,10 @@ class TaskRunner:
 
         try:
             assets = await self._collect_assets(task, run)
-            timeout = min(s.hermes.timeout_seconds, s.limits.max_task_minutes * 60)
-            log.info("开始执行 task_id=%s run_no=%d timeout=%.0fs assets=%d",
-                     task_id, run["run_no"], timeout, len(assets))
+            budget = min(s.hermes.timeout_seconds, s.limits.max_task_minutes * 60)
+            deadline = time.monotonic() + budget
+            log.info("开始执行 task_id=%s run_no=%d budget=%.0fs assets=%d",
+                     task_id, run["run_no"], budget, len(assets))
             prev_result: Optional[Dict[str, Any]] = None
             if s.is_hermes:
                 scope_info = scope.describe_scope(task, await _term_start_date(s, task["openid"]))
@@ -268,10 +269,10 @@ class TaskRunner:
                         "scope_missing": scope_info["missing"]},
                     {**run, "output_dir": str(output_dir)}, assets, prev_result)
                 payload = await asyncio.wait_for(
-                    self.client.run_task(messages, session_id), timeout=timeout)
+                    self.client.run_task(messages, session_id), timeout=budget)
             else:
                 payload = await asyncio.wait_for(
-                    self._run_legacy(task, assets), timeout=timeout)
+                    self._run_legacy(task, assets), timeout=budget)
         except asyncio.TimeoutError:
             await self._mark_uncertain(task, run, "执行超时，结果未确认")
             return
@@ -290,7 +291,16 @@ class TaskRunner:
             await self._mark_uncertain(task, run, f"内部错误，结果未确认: {e}")
             return
 
-        await self._finish(task, run, payload, output_dir, prev_result)
+        # 首轮预处理（复查与归档共用）：学科回填、uid、补充轮次覆盖校验、区间与缺口
+        result = await self._prepare_result(task, run, payload, prev_result)
+        if result is None:
+            return
+
+        # 服务端二次复查（第二模型）：只写复查字段，失败不吞首轮成果
+        if s.is_hermes:
+            result = await self._run_review(task, run, result, deadline, payload)
+
+        await self._finish(task, run, payload, result, output_dir, prev_result)
 
     async def _current_run(self, task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         runs = await db.list_runs(self.settings.db_path, task["id"])
@@ -332,11 +342,15 @@ class TaskRunner:
             "usage": {"prompt_tokens": itok, "completion_tokens": otok},
         }
 
-    async def _finish(self, task: Dict[str, Any], run: Dict[str, Any],
-                      payload: Dict[str, Any], output_dir,
-                      prev_result: Optional[Dict[str, Any]] = None) -> None:
+    async def _prepare_result(self, task: Dict[str, Any], run: Dict[str, Any],
+                              payload: Dict[str, Any],
+                              prev_result: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """首轮结果预处理：学科回填、uid、补充轮次覆盖校验、区间与缺口合并。
+
+        在复查与归档之前完成，保证复查与归档看到的是同一份已回填结果。
+        补充轮次覆盖校验失败时标任务失败并返回 None。
+        """
         s = self.settings
-        task_id = task["id"]
         result = payload["result"]
 
         # 学科：优先用模型按材料判断出的学科；模型没给时回落到任务上的学科
@@ -358,7 +372,7 @@ class TaskRunner:
                     f"补充轮次结果缺失上一轮 {len(gaps)} 道题（{sample}），"
                     f"已拒绝覆盖写入，次数已退还",
                     certain_not_executed=True)
-                return
+                return None
             # 归档沿用上一轮路径并追加章节标题，同一任务的归档保持在同一文档
             arch = result.setdefault("archive", {})
             prev_path = (prev_result.get("archive") or {}).get("suggested_path", "")
@@ -382,6 +396,137 @@ class TaskRunner:
             result["exam_scope"] = task.get("exam_scope", "")
         if not result.get("training_kind"):
             result["training_kind"] = task.get("training_kind", "")
+        return result
+
+    async def _collect_review_assets(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """复查用完整材料：本任务全部附件按提交顺序、按 id 去重（含首轮与补充轮次）。
+
+        复查需要完整作业材料做核查，不能只带当前轮次新增的图片。
+        """
+        rows = await db.list_task_assets(self.settings.db_path, task["id"])
+        if not rows and task.get("image_path"):
+            rows = [{"id": "legacy", "path": task["image_path"],
+                     "mime": "image/jpeg", "bytes": 0}]
+        assets: List[Dict[str, Any]] = []
+        seen: set = set()
+        for row in rows:
+            if row["id"] in seen:
+                continue
+            seen.add(row["id"])
+            assets.append({**row, "data_url": workspace.load_asset_data_url(row)})
+        return assets
+
+    async def _run_review(self, task: Dict[str, Any], run: Dict[str, Any],
+                          result: Dict[str, Any], deadline: float,
+                          first_payload: Dict[str, Any]) -> Dict[str, Any]:
+        """服务端二次复查编排（第二模型）：每轮最多一次调用。
+
+        只写 review / review_summary 等服务端管理字段；调用失败、身份不可信、
+        覆盖对账不过、合并校验失败都只影响复查字段（如实标注），不吞首轮成果。
+        取消异常原样上抛（服务停止仍按既有「结果未确认」纪律处理）。
+        """
+        s = self.settings
+        h = s.hermes
+        task_id, run_no = task["id"], run["run_no"]
+
+        if not h.review_configured:
+            return review.apply_not_configured(result)
+        targets, overflow = review.select_review_targets(
+            result.get("questions") or [], h.review_max_questions)
+        if not targets:
+            return review.apply_not_required(result)
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            log.warning("复查未派发：任务预算已耗尽 task_id=%s", task_id)
+            return review.apply_not_run(result, "任务时间预算已耗尽，复查未派发")
+
+        try:
+            assets = await self._collect_review_assets(task)
+        except workspace.WorkspaceError as e:
+            # 附件缺失：降级为文字核查并如实标注，不让材料读取失败毁掉复查
+            log.warning("复查材料读取失败，按无图核查 task_id=%s: %s", task_id, e)
+            assets = []
+        coverage = "full_images" if assets else "text_only"
+
+        timeout = min(h.review_timeout_seconds, remaining)
+        log.info("开始复查 task_id=%s run_no=%d 送审=%d 超限=%d timeout=%.0fs coverage=%s",
+                 task_id, run_no, len(targets), len(overflow), timeout, coverage)
+        try:
+            messages = hermes.build_review_messages(s, task, run, targets, assets)
+            payload = await asyncio.wait_for(
+                self.client.review_questions(
+                    messages, f"review-{task_id}-{run_no}", timeout=timeout),
+                timeout=timeout)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - 复查失败不影响首轮成果
+            log.warning("复查调用失败 task_id=%s: %s", task_id, e)
+            return review.apply_failed(
+                result, targets, overflow, f"复查调用失败：{e}")
+
+        # usage 累计：两次真实调用的消耗如实入账（远端没返回的不编造）
+        usage = dict(first_payload.get("usage") or {})
+        for key in ("prompt_tokens", "completion_tokens"):
+            usage[key] = (int(usage.get(key, 0) or 0)
+                          + int((payload.get("usage") or {}).get(key, 0) or 0))
+        first_payload["usage"] = usage
+
+        meta = {
+            "model_requested": payload.get("model_requested", ""),
+            "model_reported": payload.get("reported_model", ""),
+            "model_identity": "",
+            "coverage": coverage,
+        }
+        identity, identity_note = review.check_model_identity(
+            payload, first_payload,
+            h.review_expected_model, h.review_expected_provider)
+        meta["model_identity"] = identity
+        if identity != review.IDENTITY_CONFIRMED:
+            log.warning("复查模型身份%s task_id=%s: %s", identity, task_id, identity_note)
+            label = "未确认" if identity == review.IDENTITY_UNKNOWN else "不符"
+            return review.apply_failed(
+                result, targets, overflow,
+                f"复查模型身份{label}：{identity_note}", meta)
+
+        reviews_by_id, problems = review.reconcile_reviews(
+            targets, payload.get("reviews") or [])
+        if problems:
+            log.warning("复查输出对账失败 task_id=%s: %s", task_id, "；".join(problems))
+            return review.apply_failed(
+                result, targets, overflow,
+                "复查输出未通过覆盖对账：" + "；".join(problems), meta)
+
+        merged = review.apply_review_result(result, targets, reviews_by_id, overflow, meta)
+        try:
+            hermes.validate_result(merged)
+        except hermes.HermesResultInvalid as e:
+            # 防御式回退：合并结果不合法时退回规范化基线，不把非法数据写库
+            log.warning("复查合并结果未通过校验，回退基线 task_id=%s: %s", task_id, e)
+            fallback = review.apply_failed(
+                result, targets, overflow,
+                f"复查合并结果未通过协议校验：{e}", meta)
+            hermes.validate_result(fallback)
+            return fallback
+        summary = merged.get("review_summary") or {}
+        log.info("复查完成 task_id=%s run_no=%d state=%s disagreed=%d unverified=%d",
+                 task_id, run_no, summary.get("state"),
+                 summary.get("disagreed", 0), summary.get("unverified", 0))
+        return merged
+
+    async def _finish(self, task: Dict[str, Any], run: Dict[str, Any],
+                      payload: Dict[str, Any], result: Dict[str, Any], output_dir,
+                      prev_result: Optional[Dict[str, Any]] = None) -> None:
+        s = self.settings
+        task_id = task["id"]
+
+        # 服务端二次复查附记随本轮归档一次写入：与结果 JSON 同源（同一份 result），
+        # 归档正文与结构化字段不会各说各话；没有合法归档时沿用既有跳过语义。
+        review_md = review.build_review_markdown(result)
+        if review_md:
+            arch = result.setdefault("archive", {})
+            md = (arch.get("content_markdown") or "").strip()
+            arch["content_markdown"] = f"{md}\n\n{review_md}" if md else review_md
 
         archive = await workspace.apply_archive(s, task, run, result)
 

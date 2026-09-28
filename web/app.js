@@ -461,7 +461,7 @@ async function pageLearn(app, r, alive) {
         </div>` : ""}
         <label class="field"><span>文字说明${tab === "grading" ? "（可选）" : ""}</span>
           <textarea name="text" rows="3" placeholder="${tab === "qa" ? "把问题写清楚，比如哪一步卡住了" : tab === "training" ? "想练哪些知识点？越具体越好" : "补充说明（可选）"}"></textarea></label>
-        <label class="field"><span>图片（可多次拍照逐张添加，最多 20 张；支持 iPhone 的 HEIC）</span>
+        <label class="field"><span>图片（可多次拍照逐张添加，最多 20 张；按页码顺序添加，跨页题请拍全两页；支持 iPhone 的 HEIC）</span>
           <input name="images" type="file" accept="image/*,.heic,.heif" multiple></label>
         <div id="imgPreview" class="img-preview"></div>
         <div id="imgHint" class="img-hint"></div>
@@ -588,6 +588,45 @@ const STATUS_LABEL = {
   unanswered: "未作答", unprocessed: "未处理",
 };
 
+/* 二次复查（第二模型）文案：状态、逐题结论与模型身份核验结果 */
+const REVIEW_SUMMARY_LABEL = {
+  completed: "已完成", partial: "部分完成", failed: "未完成",
+  not_run: "未执行", not_required: "无需复查",
+};
+const REVIEW_STATE_LABEL = {
+  agreed: "未发现异议", disagreed: "有异议", unverified: "无法核查",
+  unprocessed: "未完成核查", not_applicable: "未送复查",
+};
+const REVIEW_IDENTITY_LABEL = {
+  confirmed: "身份已确认", mismatch: "路由不符", unknown: "身份未确认",
+};
+
+function reviewSummaryHtml(task) {
+  const summary = ((task.result || {}).review_summary) || {};
+  if (!summary.state || summary.state === "not_required") return "";
+  const stateLabel = REVIEW_SUMMARY_LABEL[summary.state] || summary.state;
+  const counts = [];
+  if (summary.target_count) counts.push(`应复查 ${summary.target_count} 题`);
+  if (summary.scope) counts.push(`送审 ${summary.scope} 题`);
+  if (summary.disagreed) counts.push(`有异议 ${summary.disagreed} 题`);
+  if (summary.unverified) counts.push(`无法核查 ${summary.unverified} 题`);
+  if (summary.unprocessed) counts.push(`未送审 ${summary.unprocessed} 题`);
+  const modelLine = [];
+  if (summary.model_requested) modelLine.push(`请求 ${summary.model_requested}`);
+  if (summary.model_reported) modelLine.push(`实际 ${summary.model_reported}`);
+  if (summary.model_requested && summary.model_identity)
+    modelLine.push(REVIEW_IDENTITY_LABEL[summary.model_identity] || summary.model_identity);
+  const tone = summary.state === "completed" ? "good" : (summary.state === "partial" ? "warn" : "bad");
+  return `
+    <div class="card">
+      <div class="card-title">二次复查（第二模型）</div>
+      <div class="result-stats"><span class="stat ${tone}">${esc(stateLabel)}</span></div>
+      ${counts.length ? `<p>${esc(counts.join(" · "))}</p>` : ""}
+      ${modelLine.length ? `<div class="muted small">复查模型：${esc(modelLine.join("，"))}（复查只提异议，不改判）</div>` : ""}
+      ${summary.note ? `<div class="muted small">${esc(summary.note)}</div>` : ""}
+    </div>`;
+}
+
 function sortQuestionsForResult(questions) {
   const rank = { wrong: 0, uncertain: 1, unanswered: 2, unprocessed: 3, correct: 4 };
   return [...questions].sort((a, b) => (rank[a.status] ?? 5) - (rank[b.status] ?? 5));
@@ -600,6 +639,15 @@ function resultBodyHtml(task, questions, ledgerByUid) {
   const uncertainCount = questions.filter((q) => q.status === "uncertain").length;
   const correctCount = questions.filter((q) => q.status === "correct").length;
   const focusQs = questions.filter((q) => q.status !== "correct");
+
+  const reviewRow = (q) => {
+    const r = q.review || {};
+    if (!r.state || r.state === "not_applicable") return "";
+    const label = REVIEW_STATE_LABEL[r.state] || r.state;
+    const detail = [r.basis, r.note].filter(Boolean).join("；");
+    const tone = r.state === "agreed" ? "" : (r.state === "disagreed" ? "error-text" : "muted");
+    return `<div class="q-row"><span class="q-label">二次复查</span><div class="${tone}">${esc(label)}${detail ? `：${esc(detail)}` : ""}</div></div>`;
+  };
 
   const qCard = (q) => {
     const entry = q.uid ? ledgerByUid[q.uid] : null;
@@ -615,6 +663,8 @@ function resultBodyHtml(task, questions, ledgerByUid) {
       ${q.error_rule ? `<div class="q-row"><span class="q-label">错因</span><div>${esc(q.error_rule)}</div></div>` : ""}
       ${q.knowledge_point ? `<div class="q-row"><span class="q-label">知识点</span><div>${esc(q.knowledge_point)}</div></div>` : ""}
       ${(q.steps || []).length ? `<div class="q-row"><span class="q-label">解析</span><div>${(q.steps || []).map((s) => `<p>${esc(s)}</p>`).join("")}</div></div>` : ""}
+      ${q.final_decision_basis && (q.review || {}).state === "disagreed" ? `<div class="q-row"><span class="q-label">判定说明</span><div class="muted">${esc(q.final_decision_basis)}</div></div>` : ""}
+      ${reviewRow(q)}
       ${q.status === "wrong" || q.status === "uncertain" ? `
       <div class="q-actions">
         ${entry
@@ -637,6 +687,7 @@ function resultBodyHtml(task, questions, ledgerByUid) {
       ${overview.summary ? `<p>${esc(overview.summary)}</p>` : ""}
       <div class="muted small">错题与存疑题已记入复习台账，可跨天跟进订正与复测</div>
     </div>
+    ${reviewSummaryHtml(task)}
     ${focusQs.length ? `<div class="section-title">错题与存疑题（${focusQs.length}）</div>
       ${focusQs.map(qCard).join("")}` : `<div class="card center"><p>${emptyText}</p></div>`}`;
 }
@@ -654,7 +705,7 @@ function followupCardHtml(task, hasResult) {
       ${missing.length ? `<ul class="missing-list">${missing.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>` : ""}
       <form id="followupForm">
         <label class="field"><span>补充说明</span><textarea name="text" rows="3" placeholder="补充缺失的信息"></textarea></label>
-        <label class="field"><span>补充图片（可多次拍照逐张添加，最多 20 张；支持 iPhone 的 HEIC）</span>
+        <label class="field"><span>补充图片（可多次拍照逐张添加，最多 20 张；按页码顺序添加，跨页题请拍全两页；支持 iPhone 的 HEIC）</span>
           <input name="images" type="file" accept="image/*,.heic,.heif" multiple></label>
         <div id="followupPreview" class="img-preview"></div>
         <div id="followupHint" class="img-hint"></div>
@@ -935,6 +986,7 @@ async function pageReviewDetail(app, r, alive) {
       ${e.error_rule ? `<div class="q-row"><span class="q-label">错因</span><div>${esc(e.error_rule)}</div></div>` : ""}
       ${e.knowledge_point ? `<div class="q-row"><span class="q-label">知识点</span><div>${esc(e.knowledge_point)}</div></div>` : ""}
       ${e.note ? `<div class="q-row"><span class="q-label">备注</span><div>${esc(e.note)}</div></div>` : ""}
+      ${e.task_id ? `<div class="q-row"><span class="q-label">来源任务</span><div><a href="#/task/${esc(e.task_id)}">查看任务与归档</a></div></div>` : ""}
     </div>
     <div class="card">
       <div class="card-title">跟进动作</div>

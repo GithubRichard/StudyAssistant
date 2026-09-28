@@ -32,7 +32,9 @@ TMP = Path(tempfile.mkdtemp(prefix="study_smoke_"))
 SETTINGS = Settings.model_validate({
     "engine": {"mode": "hermes"},
     "hermes": {"base_url": "http://hermes.local", "api_key": "test-key",
-               "verify_skill": True, "timeout_seconds": 30},
+               "verify_skill": True, "timeout_seconds": 30,
+               "review_model": "glm", "review_expected_model": "glm-5.3",
+               "review_expected_provider": "zai"},
     "auth": {"allowed_openids": []},
     "data_dir": str(TMP / "data"),
     "workspace": {"dir": str(TMP / "workspace"), "init_readme": True},
@@ -120,15 +122,22 @@ try:
 
         view = wait_done(client, token, task_id)
         assert view["status"] == "waiting_input", view
-        assert mock.send_count == 1, "不应重复调用模型"
+        # 首轮 + 服务端二次复查各一次，不重复调用
+        assert mock.send_count == 2, f"应恰好调用两次模型（首轮+复查），实际 {mock.send_count}"
 
         result = view["result"]
         assert result["overview"]["wrong"] == 1 and result["overview"]["unanswered"] == 1
-        assert result["review_summary"]["state"] == "completed"
+        # 复查由服务端执行：状态与模型身份来自真实调用结果，不是模型自述
+        summary = result["review_summary"]
+        assert summary["state"] == "completed", summary
+        assert summary["scope"] == 1 and summary["target_count"] == 1
+        assert summary["model_reported"] == "glm-5.3", summary
+        assert summary["model_identity"] == "confirmed", summary
         assert result["questions"][0]["review"]["state"] == "agreed"
+        assert result["questions"][1]["review"]["state"] == "not_applicable"
         assert result["missing_info"], "缺少材料时应列出待补充项"
         assert view["runs"][0]["status"] == "waiting_input"
-        print("✓ 技能执行完成：五态统计 + 二次核查状态 + 待补充项齐全")
+        print("✓ 技能执行完成：五态统计 + 服务端二次复查（模型身份已核验）+ 待补充项齐全")
 
         # 3. 归档与成果：归档落在该账号自己的子目录下
         account = account_dir_name(login["openid"])

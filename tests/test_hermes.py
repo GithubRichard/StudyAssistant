@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import json
 import unittest
+from pathlib import Path
 
 import httpx
 
 from app.config import HermesConfig
 from app.hermes import (HermesAuthError, HermesClient, HermesNotConfigured,
-                        HermesResultInvalid, HermesUnavailable, HermesUncertain,
-                        build_messages, extract_result_json, validate_result)
+                        HermesRejected, HermesResultInvalid, HermesUnavailable,
+                        HermesUncertain, build_messages, build_review_messages,
+                        extract_result_json, validate_result)
 from tests.mock_hermes import LEARNING_RESULT, MockHermes
 
 
@@ -320,8 +322,10 @@ class MessageTest(unittest.TestCase):
         run = {"run_no": 1, "kind": "initial", "output_dir": "/tmp/out"}
         messages = build_messages(settings, task, run, [])
         text = json.dumps(messages, ensure_ascii=False)
+        header_text = messages[1]["content"][0]["text"]
         self.assertIn("leo-study-assistant", text)
-        self.assertIn("/tmp/ws", text)
+        # 工作区路径按平台解析（Windows 上 /tmp/ws 会变成盘符路径），比对原始文本
+        self.assertIn(str(Path("/tmp/ws")), header_text)
         self.assertNotIn("secret-key", text)
         self.assertNotIn("Authorization", text)
 
@@ -358,6 +362,24 @@ class MessageTest(unittest.TestCase):
         # 上一轮归档长文本不应进上下文（省 token）
         self.assertNotIn("很长很长的归档正文不应进上下文", text)
 
+    def test_task_header_has_cross_page_rule(self):
+        """跨页规则必须出现在任务头（模型实际收到的最高优先级指令）。"""
+        settings = self._settings()
+        task = {"id": "t1", "task_type": "grading", "subject": "数学", "input_text": ""}
+        run = {"run_no": 1, "kind": "initial", "output_dir": "/tmp/out"}
+        messages = build_messages(settings, task, run, [
+            {"id": "a1", "data_url": "data:image/jpeg;base64,AAAA"},
+            {"id": "a2", "data_url": "data:image/jpeg;base64,BBBB"},
+        ])
+        text = messages[1]["content"][0]["text"]
+        self.assertIn("跨页题", text)
+        self.assertIn("合并为一条", text)
+        self.assertIn("起始页", text)
+        self.assertIn("相邻图片可能是同一道题的连续页", text)
+        self.assertIn("不得因为题干跨页就拆成两条题", text)
+        # 跨页缺页时必须走存疑，不允许猜
+        self.assertIn("无法确认续页关系", text)
+
     def test_followup_without_prev_result_has_no_revision_section(self):
         settings = self._settings()
         task = {"id": "t1", "task_type": "grading", "input_text": ""}
@@ -378,6 +400,129 @@ class MessageTest(unittest.TestCase):
         self.assertIn("用户文字说明", text)
         self.assertIn("只看第 3 题", text)
         self.assertNotIn("增量修订", text)
+
+
+class ReviewQuestionsTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.mock = MockHermes()
+        self.mock.install()
+        self.addCleanup(self.mock.uninstall)
+
+    async def test_review_request_body_and_session(self):
+        client = HermesClient(make_cfg(
+            review_model="glm",
+            review_model_options={"reasoning": {"effort": "high"}}))
+        payload = await client.review_questions(
+            [{"role": "user", "content": "x"}], "review-t1-2")
+        self.assertEqual(payload["reviews"][0]["id"], "sim-p12-q1")
+        self.assertEqual(payload["reported_model"], "glm-5.3")
+        self.assertEqual(payload["reported_provider"], "zai")
+        sent = [r for r in self.mock.requests
+                if r.url.path == "/v1/chat/completions"][0]
+        self.assertEqual(sent.headers.get("x-hermes-session-id"), "review-t1-2")
+        body = self.mock.bodies[0]
+        self.assertEqual(body["model"], "glm")
+        self.assertNotIn("provider", body)          # 别名方式不传 provider
+        self.assertEqual(body["model_options"], {"reasoning": {"effort": "high"}})
+        self.assertEqual(body["temperature"], 0)
+        await client.aclose()
+
+    async def test_review_with_underlying_model_id_sends_provider(self):
+        self.mock.review_model = "glm-5.3"
+        client = HermesClient(make_cfg(review_model="glm-5.3", review_provider="zai"))
+        await client.review_questions([{"role": "user", "content": "x"}], "review-t1-1")
+        body = self.mock.bodies[0]
+        self.assertEqual(body["model"], "glm-5.3")
+        self.assertEqual(body["provider"], "zai")
+        await client.aclose()
+
+    async def test_review_without_review_model_is_rejected(self):
+        client = HermesClient(make_cfg())
+        with self.assertRaises(HermesRejected):
+            await client.review_questions([{"role": "user", "content": "x"}], "review-t1-1")
+        self.assertEqual(self.mock.review_count, 0)
+        await client.aclose()
+
+    async def test_review_invalid_output_raises(self):
+        self.mock.review_fail_mode = "invalid_review"
+        client = HermesClient(make_cfg(review_model="glm"))
+        with self.assertRaises(HermesResultInvalid):
+            await client.review_questions([{"role": "user", "content": "x"}], "review-t1-1")
+        await client.aclose()
+
+    async def test_review_missing_identity_is_not_faked(self):
+        """网关没报告模型时，reported_model 必须为空，不能用请求别名冒充。"""
+        self.mock.review_fail_mode = "identity_missing"
+        client = HermesClient(make_cfg(review_model="glm"))
+        payload = await client.review_questions(
+            [{"role": "user", "content": "x"}], "review-t1-1")
+        self.assertEqual(payload["reported_model"], "")
+        self.assertEqual(payload["model_requested"], "glm")
+        await client.aclose()
+
+    async def test_review_auth_error_propagates(self):
+        self.mock.review_fail_mode = "auth"
+        client = HermesClient(make_cfg(review_model="glm"))
+        with self.assertRaises(HermesAuthError):
+            await client.review_questions([{"role": "user", "content": "x"}], "review-t1-1")
+        await client.aclose()
+
+    async def test_review_does_not_auto_retry(self):
+        self.mock.review_fail_mode = "server_error"
+        client = HermesClient(make_cfg(review_model="glm"))
+        with self.assertRaises(HermesUnavailable):
+            await client.review_questions([{"role": "user", "content": "x"}], "review-t1-1")
+        self.assertEqual(self.mock.review_count, 1, "复查失败不自动重试")
+        await client.aclose()
+
+
+class BuildReviewMessagesTest(unittest.TestCase):
+    def _settings(self, review_model: str = "glm"):
+        from app.config import Settings
+
+        return Settings.model_validate({
+            "engine": {"mode": "hermes"},
+            "hermes": {"base_url": "http://127.0.0.1:8642", "api_key": "secret-key",
+                       "review_model": review_model},
+            "workspace": {"dir": "/tmp/ws"},
+        })
+
+    def _question(self):
+        return {
+            "id": "sim-p12-q1", "no": "1", "source": "模拟作业", "page": "P12",
+            "stem": "解方程 2x+1=9", "student_answer": "x=5", "status": "wrong",
+            "correct_answer": "x=4", "steps": ["2x=8", "x=4"],
+            "error_rule": "移项时忘记变号", "knowledge_point": "一元一次方程",
+            "evidence": "原图 P12 第 1 题",
+        }
+
+    def test_review_message_contains_question_and_contract(self):
+        settings = self._settings()
+        task = {"id": "t1", "task_type": "grading", "subject": "数学", "grade_level": "七年级"}
+        run = {"run_no": 1, "kind": "initial"}
+        messages = build_review_messages(settings, task, run, [self._question()], [])
+        text = messages[1]["content"][0]["text"]
+        self.assertIn("sim-p12-q1", text)
+        self.assertIn("移项时忘记变号", text)
+        self.assertIn("disagreed 必须给 basis", text)
+        # 只核查、只提异议的纪律必须出现在提示词里
+        self.assertIn("不裁决、不改判", messages[0]["content"])
+        self.assertIn("存疑题", text)
+        # 无图片时必须声明只能做文字转录核查
+        self.assertIn("文字转录", text)
+        self.assertNotIn("secret-key", text)
+
+    def test_review_message_inlines_images(self):
+        settings = self._settings()
+        task = {"id": "t1", "task_type": "grading", "subject": "数学"}
+        run = {"run_no": 1, "kind": "initial"}
+        messages = build_review_messages(
+            settings, task, run, [self._question()],
+            [{"id": "a1", "data_url": "data:image/jpeg;base64,AAAA"}])
+        content = messages[1]["content"]
+        self.assertEqual(content[1]["type"], "image_url")
+        self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/jpeg"))
+        self.assertIn("1 张图片", content[0]["text"])
 
 
 if __name__ == "__main__":

@@ -94,6 +94,41 @@ curl -s http://127.0.0.1:8642/v1/skills -H "Authorization: Bearer $HERMES_API_KE
 
 > 就绪判定分三步：先用 `/health`（依次回退 `/v1/health`、`/v1/capabilities`）判断网关是否**有响应**（非 2xx 也算活着），再识别密钥是否有效，最后才枚举技能。**探针返回 5xx 或技能列表接口坏了，都不会被误报成「连不上」，也不会阻止任务执行。**
 
+### 3.1 服务端二次复查（第二模型，可选）
+
+首轮批改通过协议校验后，服务端会把**判错题与存疑题**连同作业原图交给另一个模型独立复查；
+复查只提异议、不改判，结论写进结果与归档（详见 `hermes/skills/leo-study-assistant/references/review-rules.md`）。
+
+配置（`config.yaml` 的 `hermes` 段，全部留空 = 不复查，结果如实标 `not_run`）：
+
+```yaml
+hermes:
+  # 方式一：网关 model_routes 别名（推荐；网关侧配 glm: {provider: zai, model: glm-5.3}）
+  review_model: "glm"
+  review_model_options: {"reasoning": {"effort": "high"}}
+  review_expected_model: "glm-5.3"     # 期望别名解析到的底层模型（用于身份核验）
+  review_expected_provider: "zai"
+  # 方式二：底层模型 ID + provider（需网关开启 direct_model_requests）
+  # review_model: "glm-5.3"
+  # review_provider: "zai"
+  review_timeout_seconds: 300          # 实际取 min(此值, 任务剩余预算)
+  review_max_questions: 30             # 超出部分如实标未送审，判错题优先
+```
+
+启用前必须在真实环境确认（离线测试通过 ≠ 可用）：
+
+1. **路由生效**：只给 `model` 不给 `provider` 会被网关静默忽略（回落全局默认模型）；
+   `model_routes` 别名只需 `model`，改完要 `hermes gateway restart`。
+2. **effort 兼容**：GLM-5.3 / 5.3-flash 只接受 `low / high / max`，`medium` 会 400（code 1210）；
+   用 `zai`，不要用自定义端点的 `zhipu`（会绕过 GLM 专属适配）。
+3. **身份可核验**：结果里的「实际模型」来自网关报告；报告缺失或与首轮相同都会按
+   「身份未确认 / 路由不符」如实标注为复查失败，不用请求值冒充。
+4. **图片链路**：复查模型需能读图；缺图时复查自动降级为「仅文字核查」并如实标注。
+5. **工具隔离**：只读提示词不是权限控制，启用前核实复查会话的实际工具权限。
+
+复查失败不影响首轮成果：任务照常归档入台账，`review_summary.state` 如实标 `failed`，
+小程序与网页的结果页都会展示复查状态、异议依据与模型身份。
+
 ## 4. 配置要点（config.yaml）
 
 | 配置 | 说明 |
@@ -101,6 +136,7 @@ curl -s http://127.0.0.1:8642/v1/skills -H "Authorization: Bearer $HERMES_API_KE
 | `engine.mode` | `hermes`（默认）或 `legacy`（旧的多模型直连，结果会标注未执行技能流程） |
 | `hermes.agent_model` | Hermes 的 Agent 别名（默认 `hermes-agent`），**不是**底层模型 ID |
 | `hermes.verify_skill` | 是否用 `/v1/skills` 校验技能已安装 |
+| `hermes.review_model` 等 | 服务端二次复查（第二模型），**默认留空不启用**；配置方式见下节 |
 | `auth.allowed_openids` | 允许使用的微信 openid 白名单；为空=不限制（仅开发） |
 | `workspace.dir` | 授权学习工作区；归档按账号隔离（`<dir>/<账号>/<学科>/…`，见下节；原题目录仅本地） |
 | `family.{default_grade_level,subjects,term_start_date}` | 家庭学习配置默认值；小程序「学习设置」保存后覆盖（学期起始日期用于期中/期末默认区间） |
@@ -236,9 +272,9 @@ uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000
 2. 改 `miniprogram/utils/config.js` 的 `BASE_URL`（**只填本服务地址，不要填 Hermes**）
 3. 调试时勾选「不校验合法域名」；上线前完成备案与域名配置（`request` + `uploadFile`）
 
-页面：学习（任务类型、训练类型、资料区间、考试范围、图片与文字）、复习（错题台账、按学科与订正状态筛选、登记复测结果）、结果（状态、五态、订正与复测、二次核查、补充材料、成果、Git 同步状态）、历史、我的（学习设置入口、运行与同步状态）、学习设置（学期起始日期/年级/学科清单）；错题本页保留人工收藏的阅读入口。
+页面：学习（任务类型、训练类型、资料区间、考试范围、图片与文字）、复习（错题台账、按学科与订正状态筛选、登记复测结果）、结果（状态、五态、订正与复测、二次复查状态与异议依据、补充材料、成果、Git 同步状态）、历史、我的（学习设置入口、运行与同步状态）、学习设置（学期起始日期/年级/学科清单）；错题本页保留人工收藏的阅读入口。
 
-> 网页版前端（`web/`）本轮未同步改造，仍为旧版界面；接口保持向后兼容（新增字段只会被忽略）。
+> 网页版（`web/`）已具备任务结果（含二次复查展示）、复习台账与历史页面；「学习设置」暂仅小程序提供。接口保持向后兼容（新增字段只会被忽略）。
 
 ## 8. 部署（Linux，容器 host 网络）
 
@@ -297,6 +333,8 @@ cd /opt/study-assistant && scripts/update-and-logs.sh
 | 归档没写入 | 检查 `archive.suggested_path` 是否为 3 段合法路径（`学科/子目录/文件名.md`）、是否越界；账号层由服务端拼接，不要自己加 |
 | 加了第二个账号，两个孩子的记录混在一起 | 归档已按账号分目录；若仍是旧布局，先 `git pull` + `docker compose up -d --build --force-recreate grader`，再用 `scripts/migrate_workspace_accounts.py` 迁移历史文件 |
 | 改了 `.env` 没生效 | 必须 `--force-recreate` 重建容器 |
+| 结果里复查状态是 `failed` / `not_run` | `not_run` = 未配置 `hermes.review_model`；`failed` = 调用失败、身份未确认/路由不符或复查输出未通过对账，看 `review_summary.note` 与服务端日志；首轮批改与归档不受影响 |
+| 配了复查模型但显示「身份未确认」 | 网关响应没报告实际模型：配置 `review_expected_model` / `review_expected_provider` 并确认网关版本会返回模型身份；报告与首轮相同模型则是路由未生效（检查 `model_routes` 与 `direct_model_requests`） |
 
 ## 10. 目录结构
 
@@ -346,9 +384,9 @@ workspace/
 ## 11. 尚未实现（如需启用请另行授权）
 
 - 与真实 Hermes 的联调（版本、工具权限、模型工具调用能力）
-- 二次核查模型映射（技能指定的 IDE 模型名不是 API 型号）
+- 二次复查的**真实环境联调**（服务端编排已实现并通过离线测试）：`model_routes` 别名与 `direct_model_requests` 实际行为、响应身份字段语义、复查会话工具隔离、复查模型图片链路；未确认前 `hermes.review_model` 保持留空
 - PDF 生成与云端邮件（本轮不做，`delivery.pdf/email` 如实标注未配置）
-- 网页版前端的复习台账与学习设置界面（接口已就绪，小程序已接入）
+- 网页版前端的学习设置界面（复习台账与任务结果已就绪，含二次复查展示）
 - 家长聚合账号（一个家长看多个孩子）：归档已按账号隔离，但仍是一个账号 = 一个孩子，没有「家长视角」
 
 > 学习记录 Git 同步已在服务端实现（受控提交推送 + 冲突记录），默认关闭，需在配置中显式开启。

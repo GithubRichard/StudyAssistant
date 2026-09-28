@@ -30,8 +30,8 @@
   "sections": [{"title": "做得好的题", "body": "Markdown 正文"}],
   "missing_info": ["需要家长补充：本学期开学日期"],
   "parent_tips": ["每天 10 分钟，重做 P12 第 3 题变式"],
-  "review_summary": {"state": "not_required", "scope": 0, "disagreed": 0, "unverified": 0,
-                     "note": "无已判错题，跳过二次核查"},
+  "review_summary": {"state": "not_run", "scope": 0, "disagreed": 0, "unverified": 0,
+                     "note": ""},
   "archive": {"suggested_path": "数学/错题解析/2026-09-26.md", "action": "append",
               "content_markdown": "## 来源：9月3周数学作业\n\n..."},
   "delivery": {
@@ -60,7 +60,7 @@
 | `sections` | 否 | 报告正文段落（Markdown） |
 | `missing_info` | 否 | 待补充材料或信息，逐条可执行 |
 | `parent_tips` | 否 | 家长可执行的复习建议 |
-| `review_summary` | 否 | 二次核查状态 |
+| `review_summary` | 否 | 二次复查状态；**由服务端填写**，首轮写默认值或省略 |
 | `archive.content_markdown` | 否 | 追加到归档文件的 Markdown 正文 |
 | `delivery.*.status` | 否 | 见交付状态白名单 |
 
@@ -80,9 +80,9 @@
   "error_rule": "移项时忘记变号",
   "knowledge_point": "一元一次方程移项",
   "evidence": "原图 P12 第 3 题，孩子写上 x=5",
-  "review": {"state": "agreed", "note": "核查未发现异议", "basis": "由 2x=8 推出 x=4"},
+  "review": {"state": "not_applicable", "note": "", "basis": ""},
   "final_decision": "kept_wrong",
-  "final_decision_basis": "复核原始作答后维持原判定",
+  "final_decision_basis": "按首轮判定依据：移项后 2x=8，孩子写成 x=5",
   "remediation": {"state": "pending_correction", "updated_date": "",
                   "linked_training": "", "note": "等待孩子订正"}
 }
@@ -91,9 +91,14 @@
 | 字段 | 取值 |
 | --- | --- |
 | `status` | `correct` / `wrong` / `unanswered` / `uncertain` / `unprocessed` |
-| `review.state` | `agreed` / `disagreed` / `unverified` / `unprocessed` / `not_applicable` |
+| `review.state` | `agreed` / `disagreed` / `unverified` / `unprocessed` / `not_applicable`；由服务端按复查结果填写，首轮写 `not_applicable` |
 | `final_decision` | `kept_wrong` / `corrected_to_correct` / `kept_correct` / `kept_uncertain` / `reclassified_unanswered` / `pending` |
 | `remediation.state` | `pending_correction` / `corrected_pending_retest` / `retest_passed` / `retest_failed` / `not_applicable` |
+
+`page` 写**起始页**（如 `P12`）。题干、图表或共用条件跨页时，仍**合并为一条**题目记录，
+跨页区间写在 `stem` 或 `evidence` 里（如「第 12-13 页」）；不要因为跨页拆成两条题，
+也不要只取其中一页。同来源同题号出现不同页码时，服务端会在 `missing_info` 给出
+「疑似跨页分叉，请人工核对」提示（只提示，不自动合并、不改判）。
 
 `remediation` 语义（订正与复测）：
 
@@ -129,13 +134,26 @@
 - 只登记真实发生的作答，不重复登记同一事件；`question_uid` 可留空，由服务端按来源+日期+页码+题号回填。
 - 再次实际作答才是新的复测事件；重新核查、重读图片不算。
 
-## 核查汇总（`review_summary`）
+## 核查汇总（`review_summary`）——**由服务端填写，不是你的输出**
+
+二次复查（第二模型）由**业务后端**在结果校验通过后执行：后端把判错题与存疑题
+发给配置的复查模型独立核查，并按真实执行情况重写 `review` 与 `review_summary`。
+**首轮输出一律省略这些键或写默认值**（`review.state=not_applicable`、
+`review_summary.state="not_run"` 且计数为 `0`）；不得自称已完成二次核查或双重确认——
+模型自述的核查结论会被服务端覆盖，还可能被视为违规。
+
+服务端管理字段的最终语义（仅供理解，不要求你填写）：
 
 | 字段 | 取值 |
 | --- | --- |
-| `state` | `not_required` / `completed` / `partial` / `failed` / `not_run` |
-| `scope` / `disagreed` / `unverified` | 整数：送核查 / 有异议 / 无法核查的题数；没有错题时 `scope` 写 `0`，不要写文字说明 |
-| `note` | 原因说明，必须与真实调用情况一致 |
+| `state` | `not_required`（无判错/存疑题）/ `completed` / `partial` / `failed` / `not_run`（未配置或未派发） |
+| `scope` / `disagreed` / `unverified` | 整数：送审 / 有异议 / 无法核查的题数 |
+| `target_count` / `unprocessed` | 应复查题数 / 未送审或漏掉的题数 |
+| `model_requested` / `model_reported` / `model_identity` | 请求路由、网关报告的模型与身份核验结论 |
+| `coverage` | 材料范围：`full_images` / `text_only` 等 |
+
+`review.state=disagreed` 时服务端会补写 `review.basis`，并在 `final_decision_basis`
+追加「[服务端二次复查记录到异议，尚未重新裁决]」——复查只提异议，不改判。
 
 ## 交付状态（`delivery`）
 
@@ -161,6 +179,9 @@
 
 - `status=wrong` 必须有 `correct_answer` 或 `steps`，且 `error_rule` 必须具体，不得写「粗心」。
 - 未作答与存疑题不得标为 `kept_wrong`，也不得记为「已掌握」。
-- `review.state=disagreed` 必须给出 `review.basis` 与 `final_decision_basis`。
+- `review` / `review_summary` 由服务端按二次复查的真实执行情况填写；首轮不要自填核查结论
+  （协议仍校验 `disagreed` 必须带 `basis` 与 `final_decision_basis`，该约束由服务端复查结果满足）。
 - 题目 `id` 在同一结果内唯一；同来源同页码同题号重复出现时，服务端按去重键区分并提示核对。
+- 缺页或图片不清、无法确认跨页题续页关系时，标 `status=uncertain` 并在 `missing_info` 写明缺哪一页，
+  不猜测、不默认为答错，也不得凭半页题干写成完整题干。
 - 错误率只在分母（已检查题数）可确认时计算，由后端重算，不要自己编造百分比。

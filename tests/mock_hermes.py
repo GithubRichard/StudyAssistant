@@ -8,6 +8,14 @@ import httpx
 
 SKILL_NAME = "leo-study-assistant"
 
+# 复查模型的默认返回：与 LEARNING_RESULT 里唯一判错题对应
+REVIEW_RESULT: Dict[str, Any] = {
+    "reviews": [
+        {"id": "sim-p12-q1", "state": "agreed", "note": "复核由 2x=8 得 x=4，未发现异议",
+         "basis": ""},
+    ],
+}
+
 LEARNING_RESULT: Dict[str, Any] = {
     "schema_version": 3,
     "task_type": "grading",
@@ -80,17 +88,57 @@ def completion_payload(result: Optional[Dict[str, Any]] = None,
     }
 
 
+def review_completion_payload(result: Optional[Dict[str, Any]] = None,
+                              model: str = "glm-5.3",
+                              provider: str = "zai") -> Dict[str, Any]:
+    body = result if result is not None else REVIEW_RESULT
+    content = "复查完成。\n```json\n" + json.dumps(body, ensure_ascii=False) + "\n```"
+    payload = {
+        "id": "chatcmpl-mock-review",
+        "object": "chat.completion",
+        "model": model,
+        "choices": [{"index": 0, "finish_reason": "stop",
+                     "message": {"role": "assistant", "content": content}}],
+        "usage": {"prompt_tokens": 200, "completion_tokens": 50},
+    }
+    if provider:
+        payload["provider"] = provider
+    return payload
+
+
 class MockHermes:
     """可配置的模拟服务，记录收到的请求便于断言。"""
 
     def __init__(self, *, skills: Optional[List[str]] = None,
                  result: Optional[Dict[str, Any]] = None,
-                 fail_mode: str = "") -> None:
+                 fail_mode: str = "",
+                 review_result: Optional[Dict[str, Any]] = None,
+                 review_model: str = "glm",
+                 review_reported_model: str = "glm-5.3",
+                 review_reported_provider: str = "zai",
+                 review_fail_mode: str = "") -> None:
         self.skills = skills if skills is not None else [SKILL_NAME]
         self.result = result
         self.fail_mode = fail_mode
+        # 复查相关：review_model 是配置的请求别名；reported_* 是网关报告的身份
+        self.review_result = review_result
+        self.review_model = review_model
+        self.review_reported_model = review_reported_model
+        self.review_reported_provider = review_reported_provider
+        self.review_fail_mode = review_fail_mode
         self.requests: List[httpx.Request] = []
+        self.bodies: List[Dict[str, Any]] = []
         self.send_count = 0
+        self.review_count = 0
+
+    def _is_review_request(self, body: Dict[str, Any]) -> bool:
+        """复查请求的判定：请求模型是复查别名，或系统提示含只读复查员标记。"""
+        if body.get("model") == self.review_model:
+            return True
+        for message in body.get("messages") or []:
+            if "只读复查员" in str(message.get("content", "")):
+                return True
+        return False
 
     async def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -123,6 +171,16 @@ class MockHermes:
 
         if path == "/v1/chat/completions":
             self.send_count += 1
+            try:
+                body = json.loads(request.content) if request.content else {}
+            except ValueError:
+                body = {}
+            self.bodies.append(body)
+
+            if self._is_review_request(body):
+                self.review_count += 1
+                return self._handle_review()
+
             if self.fail_mode == "auth":
                 return httpx.Response(401, json={"error": "unauthorized"})
             if self.fail_mode == "server_error":
@@ -144,6 +202,30 @@ class MockHermes:
             return httpx.Response(200, json=completion_payload(self.result))
 
         return httpx.Response(404, json={"error": f"unknown path {path}"})
+
+    def _handle_review(self) -> httpx.Response:
+        """复查请求的响应：可单独模拟鉴权失败、身份缺失、误路由与非法输出。"""
+        mode = self.review_fail_mode
+        if mode == "auth":
+            return httpx.Response(401, json={"error": "unauthorized"})
+        if mode == "server_error":
+            return httpx.Response(500, json={"error": "boom"})
+        if mode == "timeout":
+            raise httpx.ReadTimeout("mock: 复查读取超时", request=None)
+        if mode == "identity_missing":
+            return httpx.Response(200, json=review_completion_payload(
+                self.review_result, model="", provider=""))
+        if mode == "misrouted":
+            # 误路由：网关忽略了复查模型，报告的实际跑的是首轮模型
+            return httpx.Response(200, json=review_completion_payload(
+                self.review_result, model="hermes-agent", provider=""))
+        if mode == "invalid_review":
+            return httpx.Response(200, json=review_completion_payload(
+                {"reviews": []}))
+        return httpx.Response(200, json=review_completion_payload(
+            self.review_result,
+            model=self.review_reported_model,
+            provider=self.review_reported_provider))
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handler)

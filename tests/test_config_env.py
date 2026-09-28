@@ -66,5 +66,69 @@ web:
         self.assertTrue(verify_password_hash("pw-one", settings.web.users[0].password_hash))
 
 
+class ReviewConfigTest(unittest.TestCase):
+    """服务端二次复查配置：默认关闭、非法值拒绝、选项字典隔离。"""
+
+    def test_defaults_disable_review(self):
+        from app.config import HermesConfig
+
+        cfg = HermesConfig(base_url="http://h", api_key="k")
+        self.assertEqual(cfg.review_model, "")
+        self.assertFalse(cfg.review_configured)
+        self.assertEqual(cfg.review_timeout_seconds, 300.0)
+        self.assertEqual(cfg.review_max_questions, 30)
+
+    def test_review_configured_when_model_set(self):
+        from app.config import HermesConfig
+
+        cfg = HermesConfig(base_url="http://h", api_key="k", review_model="glm")
+        self.assertTrue(cfg.review_configured)
+
+    def test_non_positive_values_rejected(self):
+        from pydantic import ValidationError
+
+        from app.config import HermesConfig
+
+        with self.assertRaises(ValidationError):
+            HermesConfig(base_url="http://h", api_key="k",
+                         review_model="glm", review_timeout_seconds=0)
+        with self.assertRaises(ValidationError):
+            HermesConfig(base_url="http://h", api_key="k",
+                         review_model="glm", review_max_questions=0)
+
+    def test_request_level_fields_banned_from_model_options(self):
+        from pydantic import ValidationError
+
+        from app.config import HermesConfig
+
+        for key in ("model", "provider", "messages", "base_url", "headers",
+                    "authorization", "session", "stream"):
+            with self.subTest(key=key):
+                with self.assertRaises(ValidationError):
+                    HermesConfig(base_url="http://h", api_key="k",
+                                 review_model="glm",
+                                 review_model_options={key: "x"})
+
+    def test_non_serializable_options_rejected(self):
+        from pydantic import ValidationError
+
+        from app.config import HermesConfig
+
+        with self.assertRaises(ValidationError):
+            HermesConfig(base_url="http://h", api_key="k", review_model="glm",
+                         review_model_options={"reasoning": {"effort": object()}})
+
+    def test_options_dict_not_shared_between_instances(self):
+        from app.config import HermesConfig
+
+        a = HermesConfig(base_url="http://h", api_key="k", review_model="glm",
+                         review_model_options={"reasoning": {"effort": "high"}})
+        b = HermesConfig(base_url="http://h", api_key="k", review_model="glm")
+        self.assertEqual(a.review_model_options, {"reasoning": {"effort": "high"}})
+        self.assertEqual(b.review_model_options, {})
+        a.review_model_options["reasoning"]["effort"] = "low"
+        self.assertEqual(b.review_model_options, {})
+
+
 if __name__ == "__main__":
     unittest.main()

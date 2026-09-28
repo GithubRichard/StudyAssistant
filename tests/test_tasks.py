@@ -45,6 +45,10 @@ class FakeClient:
         return {"result": self.result, "model": "hermes-agent",
                 "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
 
+    async def review_questions(self, messages, session_id, timeout=None):
+        # 本文件未配置复查模型；若走到这里说明配置泄漏进了不该复查的用例
+        raise AssertionError("test_tasks 未配置复查模型，不应触发复查调用")
+
 
 async def seed_user(settings: Settings, openid: str) -> None:
     await db.get_or_create_user(settings.db_path, openid, settings.quota.new_user_bonus)

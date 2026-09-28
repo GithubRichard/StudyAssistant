@@ -10,10 +10,11 @@ Hermes 模式下缺少 Hermes 地址或密钥不会导致启动失败，但运�
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -80,7 +81,12 @@ class EngineConfig(BaseModel):
 
 
 class HermesConfig(BaseModel):
-    """Hermes Agent API 接入配置。密钥只从环境变量注入，不写入仓库。"""
+    """Hermes Agent API 接入配置。密钥只从环境变量注入，不写入仓库。
+
+    复查模型配置（review_*）默认全部留空：留空即不启用服务端二次复查，
+    老配置不改也能启动。启用前提见 README「二次复查」一节：
+    需先在真实环境确认路由别名、响应身份字段与图片链路，再行开启。
+    """
 
     base_url: str = ""                       # 例如 http://127.0.0.1:8642（默认仅本机可达）
     api_key: str = ""
@@ -92,9 +98,54 @@ class HermesConfig(BaseModel):
     verify_skill: bool = True                # 是否通过 /v1/skills 校验技能已安装
     readiness_ttl_seconds: int = 30          # 就绪状态缓存时长
 
+    # ---------- 服务端二次复查（第二模型）配置 ----------
+    review_model: str = ""                   # model_routes 别名（如 "glm"）或底层模型 ID（如 "glm-5.3"）
+    review_provider: str = ""                # 用底层模型 ID 时必填（如 "zai"）；用别名时留空
+    review_model_options: Dict[str, Any] = Field(
+        default_factory=dict)                # 例如 {"reasoning": {"effort": "high"}}；GLM-5.3 不接受 medium
+    review_timeout_seconds: float = 300.0    # 复查单次上限；实际取 min(此值, 任务剩余预算)
+    review_max_questions: int = 30           # 单次送复查的题数上限，超出标 unprocessed
+    review_expected_model: str = ""          # 期望别名解析到的底层模型（声明性配置，不是调用成功的证据）
+    review_expected_provider: str = ""       # 期望的底层 provider（同上，仅用于身份核对）
+
+    @field_validator("review_timeout_seconds", "review_max_questions")
+    @classmethod
+    def _positive(cls, v: float, info) -> float:
+        if v <= 0:
+            raise ValueError(f"hermes.{info.field_name} 必须为正数")
+        return v
+
+    @field_validator("review_model_options")
+    @classmethod
+    def _check_review_options(cls, v: Dict[str, Any]) -> Dict[str, Any]:
+        """复查模型选项只允许 JSON 可序列化的模型参数。
+
+        禁止混入 messages / base_url / headers / authorization 等请求级字段：
+        模型选项不应成为覆盖请求本体或会话头的后门。
+        """
+        if not isinstance(v, dict):
+            raise ValueError("hermes.review_model_options 必须是字典")
+        banned = {"model", "provider", "messages", "base_url", "headers",
+                  "authorization", "session", "stream"}
+        for key in v:
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError("hermes.review_model_options 的键必须是非空字符串")
+            if key.strip().lower() in banned:
+                raise ValueError(f"hermes.review_model_options 不允许包含请求级字段: {key}")
+        try:
+            json.dumps(v, ensure_ascii=False)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"hermes.review_model_options 必须可 JSON 序列化: {e}") from e
+        return v
+
     @property
     def configured(self) -> bool:
         return bool(self.base_url and self.api_key)
+
+    @property
+    def review_configured(self) -> bool:
+        """复查模型留空 = 不做服务端二次复查（结果如实标 not_run）。"""
+        return bool(self.review_model.strip())
 
 
 class AuthConfig(BaseModel):

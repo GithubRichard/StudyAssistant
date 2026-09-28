@@ -21,8 +21,16 @@ const Q_LABEL = {
   uncertain: '待核实', unprocessed: '未处理',
 };
 const REVIEW_LABEL = {
-  agreed: '核查未发现异议', disagreed: '核查有异议', unverified: '无法核查',
-  unprocessed: '未送核查', not_applicable: '未核查',
+  agreed: '复查未发现异议', disagreed: '复查有异议', unverified: '复查无法核查',
+  unprocessed: '未完成核查', not_applicable: '未送复查',
+};
+// 服务端二次复查（第二模型）整体状态与模型身份核验文案
+const REVIEW_SUMMARY_TEXT = {
+  completed: '已完成', partial: '部分完成', failed: '未完成',
+  not_run: '未执行', not_required: '无需复查',
+};
+const REVIEW_IDENTITY_TEXT = {
+  confirmed: '身份已确认', mismatch: '路由不符', unknown: '身份未确认',
 };
 const DELIVERY_LABEL = {
   not_configured: '未配置', skipped: '已跳过', generated: '已生成',
@@ -53,6 +61,7 @@ Page({
     statusText: '加载中',
     statusPill: 'pill-pending',
     result: null,
+    reviewView: null,
     runs: [],
     artifacts: [],
     error: '',
@@ -122,6 +131,7 @@ Page({
         statusText: STATUS_TEXT[t.status] || t.status,
         statusPill: STATUS_PILL[t.status] || 'pill-pending',
         result,
+        reviewView: this.buildReviewView(result),
         runs: t.runs || [],
         artifacts: t.artifacts || [],
         error: t.error || '',
@@ -170,6 +180,29 @@ Page({
     push('email', '邮件交付');
     push('git', '记录同步');
     return rows;
+  },
+
+  // 二次复查汇总视图：旧结果没有这些字段时返回 null（不显示该卡片）
+  buildReviewView(result) {
+    const summary = (result && result.review_summary) || null;
+    if (!summary || !summary.state || summary.state === 'not_required') return null;
+    const counts = [];
+    if (summary.target_count) counts.push(`应复查 ${summary.target_count} 题`);
+    if (summary.scope) counts.push(`送审 ${summary.scope} 题`);
+    if (summary.disagreed) counts.push(`有异议 ${summary.disagreed} 题`);
+    if (summary.unverified) counts.push(`无法核查 ${summary.unverified} 题`);
+    if (summary.unprocessed) counts.push(`未送审 ${summary.unprocessed} 题`);
+    const modelBits = [];
+    if (summary.model_requested) modelBits.push(`请求 ${summary.model_requested}`);
+    if (summary.model_reported) modelBits.push(`实际 ${summary.model_reported}`);
+    if (summary.model_requested && summary.model_identity)
+      modelBits.push(REVIEW_IDENTITY_TEXT[summary.model_identity] || summary.model_identity);
+    return {
+      stateText: REVIEW_SUMMARY_TEXT[summary.state] || summary.state,
+      counts: counts.join(' · '),
+      modelLine: modelBits.join('，'),
+      note: summary.note || '',
+    };
   },
 
   onFollowupInput(e) { this.setData({ followupText: e.detail.value }); },

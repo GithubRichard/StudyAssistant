@@ -12,7 +12,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
@@ -219,6 +219,46 @@ class QuestionReview(StrictModel):
         return self
 
 
+# ---------- 第二模型复查输出协议（独立于 StudyResult）----------
+# 复查方无权改学业判定：协议里只有逐题核查结论，不含 status / 答案 / 订正 / 复测字段。
+REVIEW_ITEM_STATES = ("agreed", "disagreed", "unverified")
+
+
+class ReviewItem(StrictModel):
+    """复查方对单道送审题的结论：无异议 / 有异议（须给依据）/ 无法核查。"""
+
+    id: str
+    state: str = "unverified"
+    note: str = ""
+    basis: str = ""
+
+    @model_validator(mode="after")
+    def _check(self) -> "ReviewItem":
+        if not self.id.strip():
+            raise ValueError("复查项 id 不能为空")
+        if self.state not in REVIEW_ITEM_STATES:
+            raise ValueError(f"复查项 state 非法: {self.state}")
+        if self.state == "disagreed" and not self.basis.strip():
+            raise ValueError(f"复查项 {self.id}: state=disagreed 必须提供 basis（可核验依据）")
+        return self
+
+
+class ReviewResponse(StrictModel):
+    """复查方整体输出。reviews 必须显式提供（空列表视为非法，由服务端对账）。"""
+
+    reviews: List[ReviewItem]
+
+    @model_validator(mode="after")
+    def _check(self) -> "ReviewResponse":
+        ids = [r.id.strip() for r in self.reviews]
+        if len(ids) != len(set(ids)):
+            dup = sorted({i for i in ids if ids.count(i) > 1})
+            raise ValueError(f"复查项 id 重复: {', '.join(dup)}")
+        if not self.reviews:
+            raise ValueError("复查响应 reviews 不能为空列表")
+        return self
+
+
 class QuestionResult(StrictModel):
     id: str
     uid: str = ""               # 稳定去重键（来源+日期+页码+题号），由服务端回填
@@ -317,6 +357,13 @@ class ReviewSummary(StrictModel):
     disagreed: LooseInt = 0
     unverified: LooseInt = 0
     note: str = ""
+    # ---------- 服务端二次复查扩展字段（全部带默认值，旧结果不写这些键也能读）----------
+    target_count: LooseInt = 0     # 当前全部应复查题数（wrong + uncertain）
+    unprocessed: LooseInt = 0      # 未送审或响应漏掉、尚无复查结果的题数
+    model_requested: str = ""      # 请求路由（别名或底层模型 ID + provider），仅记录意图
+    model_reported: str = ""       # 网关报告的模型；缺失时保持空串，不用请求值冒充
+    model_identity: str = ""       # confirmed / mismatch / unknown（身份核验结论）
+    coverage: str = ""             # 材料范围说明：full_images / partial_images / text_only / none
 
     @model_validator(mode="before")
     @classmethod
@@ -521,11 +568,68 @@ def archive_subdir(relative_path: str) -> str:
     return parts[1] if len(parts) >= 3 else ""
 
 
+# 页码归一化：只取第一个「字母+数字」片段当起始页（P12-13 / P12~13 / 第 12 页 → P12 / 12）
+_PAGE_TOKEN_RE = re.compile(r"[A-Za-z]*\d+")
+
+
+def page_start_token(page: str) -> str:
+    """把页码归一化到起始页，用于比较同一题号是否落在不同页上。
+
+    跨页题的页码可能被写成 `P12-13`、`P12~13`、`第 12-13 页`，统一取第一个
+    「字母+数字」片段（→ `P12` / `12`）；无法识别时返回大写去空白的原文。
+    """
+    text = (page or "").strip().upper().replace(" ", "")
+    if not text:
+        return ""
+    match = _PAGE_TOKEN_RE.search(text)
+    return match.group(0).upper() if match else text
+
+
+def cross_page_divergence_notes(result: Dict[str, Any]) -> List[str]:
+    """只读检测疑似跨页分叉：同来源同题号但页码不一致。
+
+    跨页题被拆成两条（如第 5 题分别登记成 P12 与 P13）、或其中一条漏填页码时，
+    服务端无法判断是否为同一题，只如实提示人工核对：不改判、不合并条目、不改 uid。
+    仅返回提示文本，由调用方并入 missing_info。
+    """
+    groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for question in result.get("questions") or []:
+        source = (question.get("source") or "").strip()
+        no = (question.get("no") or "").strip()
+        if not source or not no:
+            continue  # 来源或题号缺失时无从判断，不猜
+        group = groups.setdefault((source, no), {"pages": [], "has_blank": False})
+        page_raw = (question.get("page") or "").strip()
+        if not page_raw:
+            group["has_blank"] = True
+        elif page_raw not in group["pages"]:
+            group["pages"].append(page_raw)
+
+    samples: List[str] = []
+    for (source, no), group in groups.items():
+        distinct = {page_start_token(p) for p in group["pages"]}
+        if len(distinct) < 2 and not (distinct and group["has_blank"]):
+            continue
+        shown = " / ".join(group["pages"]) or "（页码空缺）"
+        if group["has_blank"]:
+            shown += " / （页码空缺）"
+        samples.append(f"来源「{source}」第 {no} 题：{shown}")
+    if not samples:
+        return []
+
+    sample = "；".join(samples[:3]) + ("…" if len(samples) > 3 else "")
+    return [
+        f"检测到 {len(samples)} 处疑似跨页分叉（同来源同题号但页码不一致：{sample}），"
+        f"请人工核对是否为同一道题的续页；若属同一题，请以起始页登记为一条"
+    ]
+
+
 def fill_question_uids(result: Dict[str, Any], date_str: str) -> Dict[str, Any]:
     """回填题目与复测事件的稳定去重键。
 
     去重键 = 学科+来源+日期+页码+题号；同一题重复出现时不重复计入出错事件，
     重复条目会带 `-2` 后缀并在 missing_info 中如实说明，便于人工核对。
+    另外做一次只读的疑似跨页分叉检测（同来源同题号但页码不一致），只提示不合并。
     """
     subject = result.get("subject", "") or ""
     seen: Dict[str, int] = {}
@@ -553,11 +657,17 @@ def fill_question_uids(result: Dict[str, Any], date_str: str) -> Dict[str, Any]:
     for retest in result.get("retests") or []:
         _assign(retest)
 
+    notes: List[str] = []
     if duplicated:
+        notes.append(
+            f"检测到 {duplicated} 条重复题目条目（同来源同页码同题号），"
+            f"已按去重键区分，请核对是否重复识图")
+    notes.extend(cross_page_divergence_notes(result))
+    if notes:
         missing = result.setdefault("missing_info", [])
-        note = f"检测到 {duplicated} 条重复题目条目（同来源同页码同题号），已按去重键区分，请核对是否重复识图"
-        if note not in missing:
-            missing.append(note)
+        for note in notes:
+            if note not in missing:
+                missing.append(note)
     return result
 
 
