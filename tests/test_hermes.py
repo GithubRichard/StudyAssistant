@@ -1,6 +1,7 @@
 """Hermes 适配层测试：协议解析、错误分类、不自动重试、结果协议校验。"""
 from __future__ import annotations
 
+import copy
 import json
 import unittest
 from pathlib import Path
@@ -247,6 +248,113 @@ class ResultContractTest(unittest.TestCase):
         with self.assertRaises(HermesResultInvalid):
             validate_result(broken)
 
+    def test_non_wrong_blank_remediation_survives_full_validation(self):
+        from app.schemas import normalize_result
+
+        for status in ("correct", "unanswered", "uncertain", "unprocessed"):
+            for state in ("", " ", "\t"):
+                with self.subTest(status=status, state=state):
+                    raw = copy.deepcopy(LEARNING_RESULT)
+                    raw["questions"][1].update({
+                        "status": status, "student_answer": "原作答不变",
+                        "evidence": "仍需核对的证据",
+                        "remediation": {"state": state, "note": "已有说明"},
+                    })
+                    before = copy.deepcopy(raw)
+                    result = validate_result(raw)
+                    self.assertEqual(result["questions"][1]["remediation"]["state"],
+                                     "not_applicable")
+                    self.assertEqual(result["questions"][1]["remediation"]["note"], "已有说明")
+                    for key in ("status", "student_answer", "evidence"):
+                        self.assertEqual(result["questions"][1][key], raw["questions"][1][key])
+                    self.assertEqual(result["questions"][0]["remediation"]["state"],
+                                     "pending_correction")
+                    self.assertEqual(result["missing_info"], before["missing_info"])
+                    self.assertEqual(result["retests"], before["retests"])
+                    displayed = normalize_result(raw)
+                    self.assertIsNotNone(displayed)
+                    self.assertEqual(displayed["questions"][1]["remediation"]["state"],
+                                     "not_applicable")
+                    self.assertEqual(raw, before)
+
+    def test_wrong_blank_state_error_retains_path_and_visible_value(self):
+        for state in ("", " ", "\t"):
+            with self.subTest(state=state):
+                raw = copy.deepcopy(LEARNING_RESULT)
+                raw["questions"][0]["remediation"]["state"] = state
+                with self.assertRaises(HermesResultInvalid) as ctx:
+                    validate_result(raw)
+                self.assertIn("questions.0.remediation", str(ctx.exception))
+                self.assertIn(f"remediation.state 非法: {state!r}", str(ctx.exception))
+
+    def test_missing_or_null_state_uses_existing_non_wrong_default_only(self):
+        for fields in ({}, {"remediation": {}}, {"remediation": None},
+                       {"remediation": {"state": None}}):
+            with self.subTest(fields=fields):
+                raw = copy.deepcopy(LEARNING_RESULT)
+                raw["questions"][1].pop("remediation", None)
+                raw["questions"][1].update(copy.deepcopy(fields))
+                self.assertEqual(validate_result(raw)["questions"][1]["remediation"]["state"],
+                                 "not_applicable")
+                raw["questions"][0].pop("remediation", None)
+                raw["questions"][0].update(copy.deepcopy(fields))
+                with self.assertRaises(HermesResultInvalid) as ctx:
+                    validate_result(raw)
+                self.assertIn("判错题必须给出订正/复测状态", str(ctx.exception))
+
+    def test_non_wrong_cannot_claim_correction_or_retest_state(self):
+        for status in ("correct", "unanswered", "uncertain", "unprocessed"):
+            for state in ("pending_correction", "corrected_pending_retest",
+                          "retest_passed", "retest_failed"):
+                with self.subTest(status=status, state=state):
+                    raw = copy.deepcopy(LEARNING_RESULT)
+                    raw["questions"][1].update({"status": status, "remediation": {
+                        "state": state, "updated_date": "2026-09-28"}})
+                    with self.assertRaises(HermesResultInvalid) as ctx:
+                        validate_result(raw)
+                    self.assertIn("不是错题", str(ctx.exception))
+
+    def test_wrong_retest_states_still_require_dates(self):
+        for state in ("corrected_pending_retest", "retest_passed", "retest_failed"):
+            with self.subTest(state=state):
+                raw = copy.deepcopy(LEARNING_RESULT)
+                raw["questions"][0]["remediation"] = {"state": state}
+                with self.assertRaises(HermesResultInvalid) as ctx:
+                    validate_result(raw)
+                self.assertIn("updated_date", str(ctx.exception))
+                raw["questions"][0]["remediation"]["updated_date"] = "2026-09-28"
+                self.assertEqual(validate_result(raw)["questions"][0]["remediation"]["state"],
+                                 state)
+
+    def test_v2_non_wrong_blank_state_is_read_only_compatible(self):
+        from app.schemas import normalize_result
+
+        raw = copy.deepcopy(LEARNING_RESULT)
+        raw["schema_version"] = 2
+        raw["questions"][0].pop("remediation", None)
+        raw["questions"][1]["remediation"] = {"state": "\t"}
+        before = copy.deepcopy(raw)
+        result = normalize_result(raw)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["schema_version"], 2)
+        self.assertEqual(result["legacy_schema"], 2)
+        for question in result["questions"]:
+            self.assertEqual(question["remediation"]["state"], "not_applicable")
+            self.assertIn("未记录订正与复测状态", question["remediation"]["note"])
+        self.assertEqual(raw, before)
+
+    def test_invalid_state_diagnostic_does_not_include_full_response(self):
+        raw = copy.deepcopy(LEARNING_RESULT)
+        raw["questions"][0]["remediation"]["state"] = "x" * 500 + "private-state-tail"
+        raw["questions"][0]["student_answer"] = "private-student-answer"
+        with self.assertRaises(HermesResultInvalid) as ctx:
+            validate_result(raw)
+        message = str(ctx.exception)
+        self.assertIn("questions.0.remediation", message)
+        self.assertLess(len(message), 200)
+        self.assertNotIn("private-state-tail", message)
+        self.assertNotIn("private-student-answer", message)
+
     def test_null_text_fields_are_treated_as_missing(self):
         """模型写 null（如 remediation.updated_date=null）不应废掉整卷结果。"""
         data = dict(LEARNING_RESULT)
@@ -328,6 +436,17 @@ class MessageTest(unittest.TestCase):
         self.assertIn(str(Path("/tmp/ws")), header_text)
         self.assertNotIn("secret-key", text)
         self.assertNotIn("Authorization", text)
+
+    def test_remediation_prompt_distinguishes_state_from_empty_date(self):
+        task = {"id": "t1", "task_type": "grading", "input_text": ""}
+        run = {"run_no": 1, "kind": "initial", "output_dir": "/tmp/out"}
+        text = build_messages(self._settings(), task, run, [])[1]["content"][0]["text"]
+        self.assertIn('remediation.state="not_applicable"', text)
+        self.assertIn('remediation.updated_date=""', text)
+        self.assertIn("枚举状态必须使用合法值，不得写空字符串或纯空白", text)
+        self.assertIn("仅允许为空的自由文本", text)
+        self.assertIn("必须给出 remediation.updated_date（实际发生日期）", text)
+        self.assertNotIn("非错题这一栏", text)
 
     def test_images_are_inlined_not_as_paths(self):
         settings = self._settings()

@@ -169,7 +169,10 @@ class Remediation(StrictModel):
     @model_validator(mode="after")
     def _check(self) -> "Remediation":
         if self.state not in REMEDIATION_STATES:
-            raise ValueError(f"remediation.state 非法: {self.state}")
+            preview = repr(self.state[:80])
+            if len(self.state) > 80 or len(preview) > 120:
+                preview = preview[:117] + "..."
+            raise ValueError(f"remediation.state 非法: {preview}")
         self.updated_date = (self.updated_date or "").strip()
         if self.updated_date and not _DATE_RE.match(self.updated_date):
             raise ValueError("remediation.updated_date 必须形如 YYYY-MM-DD")
@@ -277,6 +280,22 @@ class QuestionResult(StrictModel):
     final_decision: str = "pending"
     final_decision_basis: str = ""
     remediation: Remediation = Field(default_factory=Remediation)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_blank_remediation_state(cls, data: Any) -> Any:
+        """只容错明确非错题的空状态；错题缺少状态仍交给严格校验。"""
+        if not isinstance(data, dict) or data.get("status") not in (
+            "correct", "unanswered", "uncertain", "unprocessed"
+        ):
+            return data
+        remediation = data.get("remediation")
+        if not isinstance(remediation, dict):
+            return data
+        state = remediation.get("state")
+        if isinstance(state, str) and not state.strip():
+            return {**data, "remediation": {**remediation, "state": "not_applicable"}}
+        return data
 
     @model_validator(mode="after")
     def _check(self) -> "QuestionResult":

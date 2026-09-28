@@ -4,12 +4,14 @@
 """
 from __future__ import annotations
 
+import copy
 import unittest
 
 from pydantic import ValidationError
 
-from app.schemas import (ReviewResponse, cross_page_divergence_notes,
-                         fill_question_uids, page_start_token)
+from app.schemas import (QuestionResult, Remediation, ReviewResponse,
+                         cross_page_divergence_notes, fill_question_uids,
+                         page_start_token)
 
 SOURCE = "9月3周数学作业"
 
@@ -130,6 +132,106 @@ class FillQuestionUidsTest(unittest.TestCase):
                                                   _question("6", "P13")]}
         filled = fill_question_uids(result, "2026-09-28")
         self.assertNotIn("missing_info", filled)
+
+
+class RemediationStateTest(unittest.TestCase):
+    def test_non_wrong_blank_states_normalized_without_mutating_input(self):
+        for status in ("correct", "unanswered", "uncertain", "unprocessed"):
+            for state in ("", " ", "\t", " \t\n"):
+                with self.subTest(status=status, state=state):
+                    raw = {
+                        "id": "q1", "status": status, "student_answer": "x=4",
+                        "correct_answer": "x=4", "steps": ["2x=8"],
+                        "evidence": "作答尚待核实", "final_decision_basis": "初判依据",
+                        "remediation": {"state": state, "updated_date": "2026-09-28",
+                                        "linked_training": "已有练习", "note": "保留备注"},
+                    }
+                    before = copy.deepcopy(raw)
+                    result = QuestionResult.model_validate(raw).model_dump()
+                    self.assertEqual(raw, before)
+                    for key, value in before.items():
+                        expected = ({**value, "state": "not_applicable"}
+                                    if key == "remediation" else value)
+                        self.assertEqual(result[key], expected)
+
+    def test_standalone_blank_state_has_no_question_context(self):
+        for state in ("", " ", "\t"):
+            with self.subTest(state=state):
+                with self.assertRaises(ValidationError) as ctx:
+                    Remediation.model_validate({"state": state})
+                self.assertIn(f"remediation.state 非法: {state!r}",
+                              ctx.exception.errors()[0]["msg"])
+
+    def test_wrong_blank_state_not_normalized(self):
+        for state in ("", " ", "\t"):
+            with self.subTest(state=state):
+                raw = {"id": "q1", "status": "wrong", "correct_answer": "x=4",
+                       "error_rule": "移项未变号", "remediation": {"state": state}}
+                with self.assertRaises(ValidationError) as ctx:
+                    QuestionResult.model_validate(raw)
+                self.assertEqual(ctx.exception.errors()[0]["loc"], ("remediation",))
+                self.assertIn(repr(state), ctx.exception.errors()[0]["msg"])
+
+    def test_unknown_or_missing_question_status_not_normalized(self):
+        for status_fields in ({}, {"status": None}, {"status": ""},
+                              {"status": "正确"}, {"status": " correct "}):
+            with self.subTest(status_fields=status_fields):
+                raw = {"id": "q1", **status_fields, "remediation": {"state": ""}}
+                before = copy.deepcopy(raw)
+                with self.assertRaises(ValidationError) as ctx:
+                    QuestionResult.model_validate(raw)
+                self.assertTrue(any(e["loc"] == ("remediation",)
+                                    for e in ctx.exception.errors()))
+                self.assertEqual(raw, before)
+
+    def test_nonblank_invalid_states_not_corrected(self):
+        for state in ("pending", "不适用", " not_applicable ", "not_applicable\t"):
+            with self.subTest(state=state):
+                with self.assertRaises(ValidationError):
+                    QuestionResult.model_validate({
+                        "id": "q1", "status": "correct", "remediation": {"state": state}})
+
+    def test_invalid_state_types_and_structures_rejected(self):
+        for state in (None, 0, False, [], {}):
+            with self.subTest(state=state):
+                with self.assertRaises(ValidationError):
+                    QuestionResult.model_validate({
+                        "id": "q1", "status": "correct", "remediation": {"state": state}})
+        for value in ("", [], None, 0):
+            with self.subTest(remediation=value):
+                with self.assertRaises(ValidationError):
+                    QuestionResult.model_validate({
+                        "id": "q1", "status": "correct", "remediation": value})
+        for value in (None, [], ""):
+            with self.subTest(question=value):
+                with self.assertRaises(ValidationError):
+                    QuestionResult.model_validate(value)
+
+    def test_valid_states_and_missing_defaults_unchanged(self):
+        for state in ("not_applicable", "pending_correction", "corrected_pending_retest",
+                      "retest_passed", "retest_failed"):
+            with self.subTest(state=state):
+                raw = {"state": state, "updated_date": "2026-09-28"}
+                result = Remediation.model_validate(raw)
+                self.assertEqual(result.state, state)
+                self.assertEqual(result.updated_date, raw["updated_date"])
+        self.assertEqual(Remediation.model_validate({}).state, "not_applicable")
+        for fields in ({}, {"remediation": {}}):
+            result = QuestionResult.model_validate({"id": "q1", "status": "correct", **fields})
+            self.assertEqual(result.remediation.state, "not_applicable")
+
+    def test_retest_states_still_require_actual_date(self):
+        for state in ("corrected_pending_retest", "retest_passed", "retest_failed"):
+            with self.subTest(state=state):
+                with self.assertRaises(ValidationError):
+                    Remediation.model_validate({"state": state})
+
+    def test_invalid_state_error_preview_is_bounded(self):
+        with self.assertRaises(ValidationError) as ctx:
+            Remediation.model_validate({"state": "x" * 500 + "private-tail"})
+        message = ctx.exception.errors()[0]["msg"]
+        self.assertLess(len(message), 180)
+        self.assertNotIn("private-tail", message)
 
 
 class ReviewResponseTest(unittest.TestCase):

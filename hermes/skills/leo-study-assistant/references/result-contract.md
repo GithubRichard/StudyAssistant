@@ -3,8 +3,9 @@
 业务后端会解析最终回答中的 ```json 代码块并严格校验。字段名与取值白名单必须一致；
 多余字段被忽略，缺失或违规会让整次任务判定为失败（不会写入学习记录）。
 
-**文本字段一律用字符串**：没有内容就写空字符串 `""` 或直接省略该键，**不要写 JSON `null`**。
-（后端会把 `null` 当作「未提供」处理，但不要依赖这一点——必填字段写 `null` 照样判失败。）
+**文本字段一律用字符串**：仅允许为空的自由文本（如 `note`、`linked_training`）无内容时写空字符串 `""` 或省略可选键，**不要写 JSON `null`**。
+**枚举状态必须使用合法值，不得写空字符串或纯空白**，包括 `status`、`remediation.state`、`review.state`、`review_summary.state`、`final_decision`；服务端管理字段如需省略，遵循下文规定。
+（后端会把 `null` 当作「未提供」处理，但不要依赖这一点——必填字段及有证据要求的字段仍须满足各自约束。）
 
 **计数字段只写阿拉伯数字**：`overview.*`、`review_summary.scope / disagreed / unverified`
 等栏位不要写说明文字（后端会从文字里抠数字或按 0 处理，但真实含义就丢了）。
@@ -112,7 +113,8 @@
 
 - `corrected_pending_retest` / `retest_passed` / `retest_failed` 必须给出 `updated_date`（实际发生日期）。
 - **生成练习不等于完成练习，完成订正不等于已经掌握**；没有新结果时保持原状态，不得因为「做过练习」写成通过。
-- 非错题的 `remediation.state` 必须是 `not_applicable`，`updated_date` 写空字符串 `""`。
+- 非错题（`correct / unanswered / uncertain / unprocessed`）必须填写 `remediation.state="not_applicable"`，`remediation.updated_date=""`；`linked_training`、`note` 无内容时可写空字符串。状态字段本身不能留空。
+- 错题必须根据实际证据填写订正状态，不能写空字符串或 `not_applicable`；不得为补齐字段编造已订正或复测通过的记录。
 
 ## 复测事件（`retests[]`）
 
