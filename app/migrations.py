@@ -330,6 +330,20 @@ async def run_migrations(path: str) -> dict:
                              (time.time(),))
             applied.append(3)
 
+        if 4 not in versions:
+            # v4：分阶段批改的阶段落库（stage=当前阶段名，stages_json=各阶段产出）
+            run_columns = await _column_names(db, "task_runs")
+            for name, ddl in (("stage", "TEXT NOT NULL DEFAULT ''"),
+                              ("stages_json", "TEXT NOT NULL DEFAULT ''")):
+                if name not in run_columns:
+                    await db.execute(f"ALTER TABLE task_runs ADD COLUMN {name} {ddl}")
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS schema_version("
+                "version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)")
+            await db.execute("INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(4, ?)",
+                             (time.time(),))
+            applied.append(4)
+
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA busy_timeout=5000")
         await db.commit()

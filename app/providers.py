@@ -40,6 +40,16 @@ class BaseProvider(ABC):
                     system_prompt: str, user_prompt: str) -> GradeOutcome:
         ...
 
+    @abstractmethod
+    async def complete_text(self, system_prompt: str, user_prompt: str,
+                            max_tokens: int = 4000) -> GradeOutcome:
+        """纯文本补全（分阶段批改的求解/比对/诊断阶段用，不传图）。"""
+
+    @abstractmethod
+    async def grade_multi(self, images: list, system_prompt: str,
+                          user_prompt: str, max_tokens: int = 8000) -> GradeOutcome:
+        """多图批改：images 为 [(image_bytes, mime)]，一次调用看全所有图片。"""
+
 
 class OpenAICompatibleProvider(BaseProvider):
     """走 /chat/completions 的厂商：千问 / GLM / DeepSeek / 豆包 / Kimi…"""
@@ -47,19 +57,44 @@ class OpenAICompatibleProvider(BaseProvider):
     async def grade(self, image_bytes: bytes, mime: str,
                     system_prompt: str, user_prompt: str) -> GradeOutcome:
         b64 = base64.b64encode(image_bytes).decode("ascii")
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            ]},
+        ]
+        return await self._chat(messages, max_tokens=4000)
+
+    async def complete_text(self, system_prompt: str, user_prompt: str,
+                            max_tokens: int = 4000) -> GradeOutcome:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        return await self._chat(messages, max_tokens=max_tokens)
+
+    async def grade_multi(self, images: list, system_prompt: str,
+                          user_prompt: str, max_tokens: int = 8000) -> GradeOutcome:
+        parts: list = [{"type": "text", "text": user_prompt}]
+        for image_bytes, mime in images:
+            b64 = base64.b64encode(image_bytes).decode("ascii")
+            parts.append({"type": "image_url",
+                          "image_url": {"url": f"data:{mime};base64,{b64}"}})
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": parts},
+        ]
+        return await self._chat(messages, max_tokens=max_tokens)
+
+    async def _chat(self, messages: list, max_tokens: int) -> GradeOutcome:
         url = self.cfg.base_url.rstrip("/") + "/chat/completions"
         payload = {
             "model": self.cfg.model,
             "temperature": 0.2,          # 批改要稳定，温度调低
-            "max_tokens": 4000,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": [
-                    {"type": "text", "text": user_prompt},
-                    {"type": "image_url",
-                     "image_url": {"url": f"data:{mime};base64,{b64}"}},
-                ]},
-            ],
+            "max_tokens": max_tokens,
+            "messages": messages,
         }
         headers = {"Authorization": f"Bearer {self.cfg.api_key}"}
 

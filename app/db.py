@@ -35,7 +35,7 @@ _TASK_FIELDS = {
 }
 _RUN_FIELDS = {
     "status", "started_at", "finished_at", "error", "result_json",
-    "hermes_session_id", "input_text",
+    "hermes_session_id", "input_text", "stage", "stages_json",
 }
 
 

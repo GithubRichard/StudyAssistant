@@ -14,11 +14,13 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from . import db, git_sync, grading, hermes, review, scope, workspace
-from .config import Settings
+from . import db, git_sync, grading, hermes, review, scope, staged, workspace
+from .config import Settings, provider_chain
 from .hermes import HermesClient, HermesError, HermesUncertain
 from .schemas import (fill_question_uids, grading_result_to_v3, normalize_result,
                       request_hash)
+from .staged import StageError
+from .staged import StageError
 
 log = logging.getLogger(__name__)
 
@@ -259,11 +261,20 @@ class TaskRunner:
             log.info("开始执行 task_id=%s run_no=%d budget=%.0fs assets=%d",
                      task_id, run["run_no"], budget, len(assets))
             prev_result: Optional[Dict[str, Any]] = None
-            if s.is_hermes:
+            staged_chain = provider_chain(s) if (
+                (task.get("task_type") or "grading") == "grading"
+                and s.staged_grading.enabled) else []
+            if run.get("kind") == "followup" and (staged_chain or s.is_hermes):
+                # 修订基准：上一轮已落库的批阅结果；补充轮次做增量修订，不是重新批阅
+                # （legacy 保持原行为：prev_result 为 None，不做覆盖校验）
+                prev_result = normalize_result(task.get("result_json"))
+            if staged_chain:
+                # 分阶段批改优先：提取→独立求解→比对→诊断，准确率高于单次大调用
+                payload = await asyncio.wait_for(
+                    self._run_staged(task, run, assets, staged_chain, prev_result),
+                    timeout=budget)
+            elif s.is_hermes:
                 scope_info = scope.describe_scope(task, await _term_start_date(s, task["openid"]))
-                if run.get("kind") == "followup":
-                    # 修订基准：上一轮已落库的批阅结果；补充轮次做增量修订，不是重新批阅
-                    prev_result = normalize_result(task.get("result_json"))
                 messages = hermes.build_messages(
                     s, {**task, "scope_note": scope_info["note"],
                         "scope_missing": scope_info["missing"]},
@@ -275,6 +286,11 @@ class TaskRunner:
                     self._run_legacy(task, assets), timeout=budget)
         except asyncio.TimeoutError:
             await self._mark_uncertain(task, run, "执行超时，结果未确认")
+            return
+        except StageError as e:
+            # 阶段内所有模型都失败：任务未产出结果，退款并标失败，用户可重试
+            await self._mark_failed(task, run, f"分阶段批改失败: {e.message}",
+                                   certain_not_executed=True)
             return
         except HermesUncertain as e:
             await self._mark_uncertain(task, run, str(e))
@@ -350,6 +366,7 @@ class TaskRunner:
         在复查与归档之前完成，保证复查与归档看到的是同一份已回填结果。
         补充轮次覆盖校验失败时标任务失败并返回 None。
         """
+
         s = self.settings
         result = payload["result"]
 
@@ -397,6 +414,59 @@ class TaskRunner:
         if not result.get("training_kind"):
             result["training_kind"] = task.get("training_kind", "")
         return result
+
+    async def _run_staged(self, task: Dict[str, Any], run: Dict[str, Any],
+                          assets: List[Dict[str, Any]], chain: List[str],
+                          prev_result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """分阶段批改：提取 → 独立求解 → 比对判定 → 错因诊断。
+
+        全部图片一次送入提取阶段（legacy 只取第一张）；每阶段产出经
+        on_stage 回调写入 run.stage / run.stages_json，支持断点观察与按阶段重试。
+        """
+        import base64
+
+        images: List[tuple] = []
+        for a in assets:
+            data_url = a.get("data_url") or ""
+            if "," not in data_url:
+                continue
+            raw = base64.b64decode(data_url.split(",", 1)[1])
+            images.append((raw, a.get("mime", "image/jpeg")))
+        if not images:
+            raise TaskError("分阶段批改需要作业图片")
+        log.info("分阶段批改 task_id=%s run_no=%d images=%d followup=%s",
+                 task["id"], run["run_no"], len(images),
+                 bool(prev_result) and run.get("kind") == "followup")
+
+        stages_store: Dict[str, Any] = {}
+
+        async def on_stage(name: str, data: Any) -> None:
+            stages_store[name] = data
+            await db.update_run(
+                self.settings.db_path, run["id"], stage=name,
+                stages_json=json.dumps(stages_store, ensure_ascii=False))
+
+        # 补充轮次用本轮文字（e745431 修复：不用任务创建时的文字）
+        run_text = (run.get("input_text") or "").strip()
+        input_text = run_text or (task.get("input_text") or "").strip()
+        is_followup = run.get("kind") == "followup" and prev_result is not None
+
+        outcome = await staged.grade_staged(
+            images,
+            task.get("subject", "") or "", task.get("grade_level", "") or "",
+            input_text, self.settings, chain=chain,
+            prev_result=prev_result if is_followup else None,
+            followup_no=run["run_no"] if is_followup else 0,
+            on_stage=on_stage)
+        await db.add_daily_cost(self.settings.db_path, outcome.cost)
+        await db.update_run(self.settings.db_path, run["id"], stage="done")
+        return {
+            "result": outcome.result,
+            "provider": "staged",
+            "model": f"staged:{outcome.model}",
+            "usage": {"prompt_tokens": outcome.input_tokens,
+                      "completion_tokens": outcome.output_tokens},
+        }
 
     async def _collect_review_assets(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
         """复查用完整材料：本任务全部附件按提交顺序、按 id 去重（含首轮与补充轮次）。
@@ -558,7 +628,7 @@ class TaskRunner:
         await db.update_task(
             s.db_path, task_id, status=status,
             result_json=json.dumps(result, ensure_ascii=False),
-            provider="hermes", model=payload.get("model", ""),
+            provider=payload.get("provider", "hermes"), model=payload.get("model", ""),
             input_tokens=int((payload.get("usage") or {}).get("prompt_tokens", 0) or 0),
             output_tokens=int((payload.get("usage") or {}).get("completion_tokens", 0) or 0),
             error="", claim_owner="", claim_expires_at=0,

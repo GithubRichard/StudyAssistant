@@ -157,3 +157,16 @@ llm:
 grade_concurrency: 2
 system_prompt_file: "prompt_system.txt"
 user_prompt_template: "请批改这张{subject}作业照片（{grade_level}）。严格按系统指令要求的 JSON 格式输出。"
+
+# 分阶段批改：提取→独立求解→比对判定→错因诊断（默认开启，需 llm.providers 可用）。
+# grading 任务优先走该流水线；关闭或无可用 provider 时回落到原有路径。
+staged_grading:
+  enabled: true
+  extract_max_tokens: 8000
+  solve_max_tokens: 6000
+  compare_max_tokens: 4000
+  diagnose_max_tokens: 6000
+  # 各阶段 system prompt 覆盖（留空用内置默认值）：
+  # extract_prompt: ""
+  # solve_prompt: ""
+  # diagnose_prompt: ""

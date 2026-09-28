@@ -236,6 +236,32 @@ v0.1 的「单图 + 多模型直连」路径保留，用于显式回退：
 
 ---
 
+## 7.5 分阶段批改（staged grading，默认开启）
+
+动机：单次大调用里 OCR/手写转写、求解、判定混在同一个注意力窗口，
+转写错误会污染求解，学生答案会锚定模型。拆成四阶段后每阶段职责单一、输入受控：
+
+1. **提取**（多模态，一次看全所有图片）：只转写题干与手写答案，不做对错判断；
+   字迹无法辨认标 `uncertain`，绝不猜。
+2. **独立求解**（纯文本）：只给题干，**不给学生答案**，物理隔离锚定效应。
+3. **比对判定**：服务端先做确定性归一化比对（全角/空白/负号统一），
+   模型只裁决仍不等价的项（纯文本）。
+4. **错因诊断**（纯文本）：只针对错题；`error_rule` 禁止"粗心"类空话（服务端校验）。
+
+实现要点（`app/staged.py`）：
+
+- 每阶段独立走 provider 链 + JSON 强校验 + 语义检查，失败换备胎；全部失败抛 `StageError`
+- 每阶段产出经 `on_stage` 回调写入 `task_runs.stage / stages_json`（migration v4），
+  支持断点观察与按阶段重试；阶段失败退款（`certain_not_executed=True`）
+- 组装阶段把产出合并为 v3 结果并过 `validate_result` 严格校验，再进原有 `_finish`
+ （uid 回填、台账、归档、Git、订正事件逻辑全部复用）
+- 补充轮次：未受影响题目由服务端直接透传、不经过模型；只重算受影响题；
+  `revision_coverage_gaps` 的 uid 覆盖校验仍然是最后防线
+- 路由（`tasks.execute`）：grading 任务 + `staged_grading.enabled` + provider 链非空 →
+  `_run_staged`；否则走 Hermes 单次 / legacy 路径。`_finish` 的 provider 字段如实标记 `staged`
+
+---
+
 ## 8. 部署方案
 
 ```

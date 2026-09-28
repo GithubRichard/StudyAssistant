@@ -50,6 +50,23 @@ class ProviderConfig(BaseModel):
     enabled: bool = True
 
 
+class StagedGradingConfig(BaseModel):
+    """分阶段批改配置：提取→独立求解→比对→诊断。
+
+    enabled=True 时，grading 任务优先走分阶段流水线（需 llm.providers 可用），
+    否则回落到 Hermes 单次 / legacy 路径。
+    各 *_prompt 为空时用 app/staged.py 内置默认值；填了则整体替换该阶段 system prompt。
+    """
+    enabled: bool = True
+    extract_max_tokens: int = 8000
+    solve_max_tokens: int = 6000
+    compare_max_tokens: int = 4000
+    diagnose_max_tokens: int = 6000
+    extract_prompt: str = ""
+    solve_prompt: str = ""
+    diagnose_prompt: str = ""
+
+
 class LlmConfig(BaseModel):
     default_provider: str = "qwen"
     fallback_order: List[str] = Field(default_factory=list)
@@ -300,6 +317,7 @@ class Settings(BaseModel):
     system_prompt_file: str = ""
     system_prompt: str = ""
     user_prompt_template: str = "请批改这张{subject}作业照片（{grade_level}）。严格按系统指令要求的 JSON 格式输出。"
+    staged_grading: StagedGradingConfig = Field(default_factory=StagedGradingConfig)
 
     @property
     def db_path(self) -> str:
