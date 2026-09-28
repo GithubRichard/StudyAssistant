@@ -94,7 +94,7 @@
         <text class="add-text">拍照/相册</text>
       </view>
     </view>
-    <text class="muted">按页码顺序添加，拍得越正越清晰，结果越准。</text>
+    <text class="muted">按页码顺序添加，跨页题请拍全两页；拍得越正越清晰，结果越准。</text>
     <text class="muted">照片仅用于本次批改，存在服务器私有目录：不写入学习记录、不进入 Git、不随记录分发。原题请自行留在本地。</text>
   </view>
 
