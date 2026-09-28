@@ -336,6 +336,49 @@ class MessageTest(unittest.TestCase):
         self.assertEqual(content[1]["type"], "image_url")
         self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/jpeg"))
 
+    def test_followup_includes_prev_result_and_revision_rules(self):
+        settings = self._settings()
+        task = {"id": "t1", "openid": "u1", "task_type": "grading", "subject": "数学",
+                "input_text": "原始说明"}
+        run = {"run_no": 2, "kind": "followup", "output_dir": "/tmp/out",
+               "input_text": "补充：第三题漏拍"}
+        prev = {"subject": "数学",
+                "questions": [{"uid": "数学|作业|2026-09-28||3", "no": "3",
+                               "status": "wrong"}],
+                "missing_info": ["第3题缺图"],
+                "archive": {"suggested_path": "数学/错题解析/2026-09-28.md",
+                            "content_markdown": "很长很长的归档正文不应进上下文"}}
+        messages = build_messages(settings, task, run, [], prev)
+        text = messages[1]["content"][0]["text"]
+        self.assertIn("增量修订", text)
+        self.assertIn("补充：第三题漏拍", text)
+        self.assertIn("数学|作业|2026-09-28||3", text)
+        self.assertIn("每个 uid 都必须出现", text)
+        self.assertIn("原始提交说明", text)
+        # 上一轮归档长文本不应进上下文（省 token）
+        self.assertNotIn("很长很长的归档正文不应进上下文", text)
+
+    def test_followup_without_prev_result_has_no_revision_section(self):
+        settings = self._settings()
+        task = {"id": "t1", "task_type": "grading", "input_text": ""}
+        run = {"run_no": 2, "kind": "followup", "output_dir": "/tmp/out",
+               "input_text": "补充说明"}
+        messages = build_messages(settings, task, run, [])
+        text = messages[1]["content"][0]["text"]
+        self.assertIn("补充说明", text)
+        self.assertNotIn("增量修订", text)
+
+    def test_initial_run_uses_task_text(self):
+        settings = self._settings()
+        task = {"id": "t1", "task_type": "grading", "input_text": "只看第 3 题"}
+        run = {"run_no": 1, "kind": "initial", "output_dir": "/tmp/out",
+               "input_text": "只看第 3 题"}
+        messages = build_messages(settings, task, run, [])
+        text = messages[1]["content"][0]["text"]
+        self.assertIn("用户文字说明", text)
+        self.assertIn("只看第 3 题", text)
+        self.assertNotIn("增量修订", text)
+
 
 if __name__ == "__main__":
     unittest.main()

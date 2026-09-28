@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 import tempfile
 import time
 import unittest
@@ -33,9 +35,11 @@ class FakeClient:
         self.result = result or dict(LEARNING_RESULT)
         self.error = error
         self.calls = 0
+        self.last_messages = None
 
     async def run_task(self, messages, session_id):
         self.calls += 1
+        self.last_messages = messages
         if self.error:
             raise self.error
         return {"result": self.result, "model": "hermes-agent",
@@ -279,6 +283,77 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task["status"], "waiting_input")
         runs = await db.list_runs(self.settings.db_path, created["task_id"])
         self.assertEqual([r["run_no"] for r in runs], [1, 2])
+
+    def test_revision_coverage_gaps(self):
+        prev = {"questions": [{"uid": "a"}, {"uid": "b"}, {"uid": ""}]}
+        full = {"questions": [{"uid": "a"}, {"uid": "b"}]}
+        dropped = {"questions": [{"uid": "b"}]}
+        self.assertEqual(tasks.revision_coverage_gaps(prev, full), [])
+        self.assertEqual(tasks.revision_coverage_gaps(prev, dropped), ["a"])
+        self.assertEqual(tasks.revision_coverage_gaps(None, dropped), [])
+        self.assertEqual(tasks.revision_coverage_gaps({"questions": []}, dropped), [])
+
+    async def test_followup_text_reaches_model_not_task_text(self):
+        created = await self._create()
+        await run_executor(self.settings, FakeClient())
+        await tasks.add_followup(self.settings, "u1", created["task_id"],
+                                 {"text": "补充：开学日期 9 月 1 日", "asset_ids": []})
+        client = FakeClient()
+        await run_executor(self.settings, client)
+        text = client.last_messages[1]["content"][0]["text"]
+        # 本轮补充说明必须传给模型（之前误用了任务创建时的文字）
+        self.assertIn("补充：开学日期 9 月 1 日", text)
+
+    async def test_followup_revision_rejects_result_that_drops_questions(self):
+        created = await self._create()
+        await run_executor(self.settings, FakeClient())
+        task = await db.get_task(self.settings.db_path, created["task_id"])
+        before = json.loads(task["result_json"])
+        self.assertEqual(len(before["questions"]), 2)
+
+        await tasks.add_followup(self.settings, "u1", created["task_id"],
+                                 {"text": "补充材料", "asset_ids": []})
+        # 模型把补充材料当新作业：只返回第 2 题，丢了第 1 题
+        bad = copy.deepcopy(LEARNING_RESULT)
+        bad["questions"] = [q for q in bad["questions"] if q.get("no") != "1"]
+        await run_executor(self.settings, FakeClient(result=bad))
+
+        task = await db.get_task(self.settings.db_path, created["task_id"])
+        self.assertEqual(task["status"], "failed")
+        self.assertIn("缺失上一轮", task["error"])
+        after = json.loads(task["result_json"])
+        self.assertEqual(len(after["questions"]), 2)  # 上一轮结果未被覆盖
+
+    async def test_followup_revision_merges_and_records_correction(self):
+        created = await self._create()
+        await run_executor(self.settings, FakeClient())
+        await tasks.add_followup(self.settings, "u1", created["task_id"],
+                                 {"text": "补充：第 1 题过程", "asset_ids": []})
+        revised = copy.deepcopy(LEARNING_RESULT)
+        revised["questions"][0]["status"] = "correct"
+        revised["questions"][0]["final_decision"] = "corrected_to_correct"
+        revised["missing_info"] = []
+        revised["archive"]["content_markdown"] = "- 补充：第 1 题实际答对"
+        await run_executor(self.settings, FakeClient(result=revised))
+
+        task = await db.get_task(self.settings.db_path, created["task_id"])
+        self.assertEqual(task["status"], "done")
+        result = json.loads(task["result_json"])
+        self.assertEqual(len(result["questions"]), 2)
+        # 归档仍是同一文件：上一轮内容还在，并追加了补充章节
+        archive = (Path(self.settings.workspace_dir) / "wx-u1" / "数学" / "错题解析"
+                   / "2026-09-26.md")
+        text = archive.read_text(encoding="utf-8")
+        self.assertIn("移项未变号", text)
+        self.assertIn("## 补充材料（第 2 轮）", text)
+        # 台账：订正事件已记录，状态流转到已订正待复测
+        events = await db.list_question_events(self.settings.db_path, "u1")
+        self.assertTrue(any(e["event_type"] == "correction" and e["result"] == "corrected"
+                            for e in events))
+        ledger = await db.list_ledger_by_task(self.settings.db_path, "u1",
+                                              created["task_id"])
+        by_no = {r["question_no"]: r for r in ledger}
+        self.assertEqual(by_no["1"]["remediation_state"], "corrected_pending_retest")
 
     async def test_task_view_reads_legacy_result(self):
         legacy = {"total_questions": 2, "correct_count": 1, "summary": "旧结果",

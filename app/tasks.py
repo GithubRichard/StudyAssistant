@@ -257,13 +257,16 @@ class TaskRunner:
             timeout = min(s.hermes.timeout_seconds, s.limits.max_task_minutes * 60)
             log.info("开始执行 task_id=%s run_no=%d timeout=%.0fs assets=%d",
                      task_id, run["run_no"], timeout, len(assets))
+            prev_result: Optional[Dict[str, Any]] = None
             if s.is_hermes:
                 scope_info = scope.describe_scope(task, await _term_start_date(s, task["openid"]))
+                if run.get("kind") == "followup":
+                    # 修订基准：上一轮已落库的批阅结果；补充轮次做增量修订，不是重新批阅
+                    prev_result = normalize_result(task.get("result_json"))
                 messages = hermes.build_messages(
-                    s, {**task, "input_text": task.get("input_text", ""),
-                        "scope_note": scope_info["note"],
+                    s, {**task, "scope_note": scope_info["note"],
                         "scope_missing": scope_info["missing"]},
-                    {**run, "output_dir": str(output_dir)}, assets)
+                    {**run, "output_dir": str(output_dir)}, assets, prev_result)
                 payload = await asyncio.wait_for(
                     self.client.run_task(messages, session_id), timeout=timeout)
             else:
@@ -287,7 +290,7 @@ class TaskRunner:
             await self._mark_uncertain(task, run, f"内部错误，结果未确认: {e}")
             return
 
-        await self._finish(task, run, payload, output_dir)
+        await self._finish(task, run, payload, output_dir, prev_result)
 
     async def _current_run(self, task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         runs = await db.list_runs(self.settings.db_path, task["id"])
@@ -330,7 +333,8 @@ class TaskRunner:
         }
 
     async def _finish(self, task: Dict[str, Any], run: Dict[str, Any],
-                      payload: Dict[str, Any], output_dir) -> None:
+                      payload: Dict[str, Any], output_dir,
+                      prev_result: Optional[Dict[str, Any]] = None) -> None:
         s = self.settings
         task_id = task["id"]
         result = payload["result"]
@@ -342,6 +346,27 @@ class TaskRunner:
         # 服务端回填稳定去重键，并把区间缺口与考试范围说明如实并入 missing_info
         scope_info = scope.describe_scope(task, await _term_start_date(s, task["openid"]))
         result = fill_question_uids(result, time.strftime("%Y-%m-%d"))
+
+        if run.get("kind") == "followup" and prev_result:
+            # 修订模式 uid 覆盖校验：模型丢题说明把补充材料当成了新作业，
+            # 此时绝不能覆盖上一轮结果；标失败并退还次数，用户可重新补充
+            gaps = revision_coverage_gaps(prev_result, result)
+            if gaps:
+                sample = "、".join(gaps[:5]) + ("…" if len(gaps) > 5 else "")
+                await self._mark_failed(
+                    task, run,
+                    f"补充轮次结果缺失上一轮 {len(gaps)} 道题（{sample}），"
+                    f"已拒绝覆盖写入，次数已退还",
+                    certain_not_executed=True)
+                return
+            # 归档沿用上一轮路径并追加章节标题，同一任务的归档保持在同一文档
+            arch = result.setdefault("archive", {})
+            prev_path = (prev_result.get("archive") or {}).get("suggested_path", "")
+            if prev_path:
+                arch["suggested_path"] = prev_path
+            md = (arch.get("content_markdown") or "").strip()
+            if md and not md.startswith("## 补充材料"):
+                arch["content_markdown"] = f"## 补充材料（第 {run['run_no']} 轮）\n\n{md}"
         missing = result.setdefault("missing_info", [])
         for item in scope_info["missing"]:
             if item not in missing:
@@ -369,7 +394,7 @@ class TaskRunner:
         result["delivery"] = workspace.summarize_delivery(s, result, archive, git_result)
 
         # 台账：错题与存疑题按去重键写入/更新，复测事件只追加不改写历史
-        ledger_count = await _write_ledger(s, task, result, archive)
+        ledger_count = await _write_ledger(s, task, result, archive, prev_result)
 
         artifact_row = workspace.archive_artifact(s, task_id, archive)
         if artifact_row:
@@ -494,8 +519,76 @@ def _ledger_state_for_event(result: str) -> str:
     }.get(result, "")
 
 
+def revision_coverage_gaps(prev_result: Optional[Dict[str, Any]],
+                           result: Dict[str, Any]) -> List[str]:
+    """补充轮次 uid 覆盖检查：返回上一轮有、本轮缺失的题目 uid 列表。
+
+    修订模式要求模型原样保留上一轮所有题目的 uid；缺失说明模型把补充材料
+    当成了新作业从头批阅，这时绝不能用新结果覆盖旧结果。
+    """
+    if not prev_result:
+        return []
+    prev_uids = [str(q.get("uid") or "").strip()
+                 for q in (prev_result.get("questions") or [])]
+    prev_uids = [u for u in prev_uids if u]
+    if not prev_uids:
+        return []
+    new_uids = {str(q.get("uid") or "").strip()
+                for q in (result.get("questions") or [])}
+    return [u for u in prev_uids if u not in new_uids]
+
+
+async def _record_revision_corrections(settings: Settings, task: Dict[str, Any],
+                                       result: Dict[str, Any],
+                                       prev_result: Dict[str, Any],
+                                       archive_rel: str) -> None:
+    """修订边界：上一轮错题在本轮被订正为对，台账记一条订正事件并更新状态。
+
+    只追加事件、不删历史；状态流转到 corrected_pending_retest（已订正待复测），
+    避免旧的「待订正」条目变成僵尸数据。
+    """
+    openid = task["openid"]
+    subject = result.get("subject") or task.get("subject") or ""
+    prev_by_uid = {str(q.get("uid") or "").strip(): q
+                   for q in (prev_result.get("questions") or [])}
+    new_by_uid = {str(q.get("uid") or "").strip(): q
+                  for q in (result.get("questions") or [])}
+    today = time.strftime("%Y-%m-%d")
+    for uid, prev_q in prev_by_uid.items():
+        if not uid or prev_q.get("status") not in LEDGER_STATUSES:
+            continue
+        new_q = new_by_uid.get(uid)
+        if not new_q:
+            continue  # 缺题已被覆盖校验拦截，正常走不到这里
+        corrected = (new_q.get("status") == "correct"
+                     or (new_q.get("final_decision") or "") == "corrected_to_correct")
+        if not corrected:
+            continue
+        entry = await db.get_ledger_by_uid(settings.db_path, openid, uid)
+        if not entry:
+            continue
+        await db.add_question_event(settings.db_path, openid, {
+            "question_uid": uid,
+            "subject": subject,
+            "event_type": "correction",
+            "result": "corrected",
+            "occurred_date": today,
+            "student_answer": new_q.get("student_answer", ""),
+            "note": "补充材料后订正为对",
+            "source_task_id": task["id"],
+            "archive_path": archive_rel,
+        })
+        state = _ledger_state_for_event("corrected")
+        if state:
+            await db.update_ledger_state(
+                settings.db_path, openid, entry["id"],
+                remediation_state=state, archive_path=archive_rel)
+
+
+
 async def _write_ledger(settings: Settings, task: Dict[str, Any], result: Dict[str, Any],
-                        archive: Dict[str, Any]) -> int:
+                        archive: Dict[str, Any],
+                        prev_result: Optional[Dict[str, Any]] = None) -> int:
     """把本次结果写入台账：题目按 uid 去重，复测事件追加并更新对应状态。"""
     subject = result.get("subject") or task.get("subject") or ""
     archive_rel = workspace.workspace_relative_path(settings, archive.get("path", ""))
@@ -545,5 +638,9 @@ async def _write_ledger(settings: Settings, task: Dict[str, Any], result: Dict[s
             await db.update_ledger_state(
                 settings.db_path, openid, entry["id"],
                 remediation_state=state, archive_path=archive_rel)
+
+    if prev_result:
+        # 修订边界：上一轮错题在本轮被订正为对，记订正事件并更新台账状态
+        await _record_revision_corrections(settings, task, result, prev_result, archive_rel)
 
     return written
