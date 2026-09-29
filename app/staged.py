@@ -24,7 +24,7 @@ import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -59,6 +59,8 @@ class ExtractedQuestion(BaseModel):
     page: str = ""
     handwriting_uncertain: bool = False
     uncertain_note: str = ""
+    # 答案归属存疑（服务端去重检测填入）：该题答案疑似与另一题为同一组作答
+    attribution_note: str = ""
 
 
 class ExtractionResult(BaseModel):
@@ -139,6 +141,8 @@ class SolutionItem(BaseModel):
     no: str
     correct_answer: str = ""
     steps: List[str] = Field(default_factory=list)
+    # 题干缺失/信息不足无法求解时为 True，此时 correct_answer 为空，不进入比对
+    undeterminable: bool = False
 
 
 class SolutionResult(BaseModel):
@@ -200,7 +204,8 @@ SOLVE_SYSTEM = """你是{subject}解题专家。你的唯一任务是根据题�
 铁律：
 1. 你看不到学生的作答，只能根据题干求解，不受任何外界信息干扰。
 2. 每道题输出：no（题号，原样照抄）、correct_answer（标准答案）、steps（关键解题步骤，字符串数组）。
-3. 最终回答必须包含且仅包含一个 ```json 代码块，不要输出其他文字。"""
+3. 题干缺失、图片截断或信息不足导致无法求解时：undeterminable 写 true，correct_answer 写空字符串，steps 只写一句原因（如"题干未在图片中显示，无法求解"）——绝不编造答案。
+4. 最终回答必须包含且仅包含一个 ```json 代码块，不要输出其他文字。"""
 
 COMPARE_SYSTEM = """你是答案等价性裁判。判断学生的答案与标准答案是否等价（equivalent 取 true/false）。
 等价规则：
@@ -614,7 +619,9 @@ def _solve_user(items: List[Dict[str, str]], subject: str, grade_level: str) -> 
         "注意：你只拿到题干，没有任何学生作答，独立求解。\n"
         "题目 JSON：\n```json\n"
         f"{json.dumps(items, ensure_ascii=False)}\n```\n"
-        '输出 JSON：{"solutions": [{"no": "题号", "correct_answer": "标准答案", "steps": ["关键步骤"]}]}'
+        '输出 JSON：{"solutions": [{"no": "题号", "correct_answer": "标准答案", '
+        '"undeterminable": false, "steps": ["关键步骤"]}]}；'
+        "题干缺失无法求解时该题 undeterminable 写 true 且 correct_answer 留空"
     )
 
 
@@ -644,7 +651,139 @@ async def solve_stage(items: List[Dict[str, str]], subject: str, grade_level: st
 
 
 # --------------------------------------------------------------------------
-# Stage 3：比对判定（服务端确定性比对 + 模型裁决）
+# 小题拆分：多空题按空展开，统计/台账/展示统一按小题口径
+# --------------------------------------------------------------------------
+
+_BLANK_SEP_RE = re.compile(r"(\d+)\s*[.、．:：]\s*")
+_BLANK_COMPACT_RE = re.compile(r"^(\d+)\s*([A-Za-z]+)$")
+# 答案末尾的括号备注（如 "A（D多余）"），不是答案本身
+_TRAILING_NOTE_RE = re.compile(r"(?<=.)[（(][^）)]{0,30}[）)]$")
+
+
+def _strip_trailing_note(t: str) -> str:
+    return _TRAILING_NOTE_RE.sub("", (t or "").strip()).strip()
+
+
+def split_answer_blanks(text: str) -> List[Tuple[str, str]]:
+    """把一侧答案拆成 [(空号, 答案文本)]。
+
+    支持 "1.B 2.C"、"1. F\\n2. B"、"11F 12B" 等模型常见写法。
+    拆不出或不足 2 空时返回 []（调用方回退为整题一个单元）。
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    # 形式1：编号 + 分隔符
+    parts = _BLANK_SEP_RE.split(text)
+    if len(parts) >= 5 and not parts[0].strip():
+        nums, texts = parts[1::2], parts[2::2]
+        if (len(nums) == len(texts) and len(nums) >= 2
+                and all(n.isdigit() for n in nums) and len(set(nums)) == len(nums)):
+            return [(n, _strip_trailing_note(t)) for n, t in zip(nums, texts)]
+    # 形式2：紧凑编号（每 token 都是"数字+字母"，如 "11F 12B"）
+    tokens = re.split(r"\s+", text)
+    ms = [_BLANK_COMPACT_RE.match(tok) for tok in tokens]
+    if len(tokens) >= 2 and all(ms):
+        nums = [m.group(1) for m in ms]
+        if len(set(nums)) == len(nums):
+            return [(m.group(1), _strip_trailing_note(m.group(2))) for m in ms]
+    return []
+
+
+def pair_blanks(student_answer: str, correct_answer: str) -> Optional[List[Tuple[str, str, str]]]:
+    """对齐两侧答案的空号，返回 [(空号, 学生答案, 标准答案)]。
+
+    无法可靠对齐（编号不一致、数量对不上、格式不明）时返回 None，
+    调用方回退为整题一个单元（即今日之前的行为）。
+    """
+    s = split_answer_blanks(student_answer)
+    c = split_answer_blanks(correct_answer)
+    if len(s) >= 2 and len(c) >= 2:
+        sm, cm = dict(s), dict(c)
+        if set(sm) == set(cm):
+            return [(n, sm[n], cm[n]) for n in sorted(sm, key=int)]
+        return None
+    if not (student_answer or "").strip() and len(c) >= 2:
+        # 整题未作答：按标准答案的空位展开
+        return [(n, "", t) for n, t in c]
+    if not (correct_answer or "").strip() and len(s) >= 2:
+        # 无法求解：按学生答案的空位展开
+        return [(n, t, "") for n, t in s]
+    if len(s) <= 1 < len(c):
+        # 学生侧无编号：只接受按换行切分且数量吻合的位置对齐（空格分隔的不猜）
+        tokens = [t.strip() for t in (student_answer or "").split("\n") if t.strip()]
+        if len(tokens) == len(c):
+            return [(n, _strip_trailing_note(tok), t) for (n, t), tok in zip(c, tokens)]
+    return None
+
+
+def answer_token_sequence(text: str) -> List[str]:
+    """答案的归一化 token 序列（去编号、去备注、小写），用于跨题重复检测。"""
+    blanks = split_answer_blanks(text)
+    if len(blanks) >= 2:
+        return [t.lower() for _, t in blanks if t]
+    return [t.lower() for t in re.split(r"\s+", (text or "").strip()) if t.strip()]
+
+
+_STEM_MISSING_MARKERS = ("未在图片中显示", "内容缺失", "题干缺失", "题目缺失")
+
+
+def _stem_missing(stem: str) -> bool:
+    s = (stem or "").strip()
+    return not s or any(m in s for m in _STEM_MISSING_MARKERS)
+
+
+def dedupe_answer_attribution(questions: List[ExtractedQuestion]) -> List[str]:
+    """同一组答案不许归属到两个题号。
+
+    同一答案序列出现在两道题下时：题干缺失的那道标为归属存疑（后续判 uncertain，
+    不进入比对）；都有题干时不自动改判，只返回 missing_info 提示人工核对。
+    返回：需并入 missing_info 的提示列表。
+    """
+    notes: List[str] = []
+    by_seq: Dict[Tuple[str, ...], List[ExtractedQuestion]] = {}
+    for q in questions:
+        seq = tuple(answer_token_sequence(q.student_answer))
+        if len(seq) >= 2:
+            by_seq.setdefault(seq, []).append(q)
+    for seq, qs in by_seq.items():
+        if len(qs) < 2:
+            continue
+        phantoms = [q for q in qs if _stem_missing(q.stem)]
+        reals = [q for q in qs if not _stem_missing(q.stem)]
+        if phantoms and reals:
+            keeper = reals[0].no
+            for q in phantoms:
+                q.attribution_note = f"答案疑似与「{keeper}」为同一组作答，转写归属存疑"
+        else:
+            nos = "」「".join(q.no for q in qs)
+            shown = "、".join(seq[:6]) + ("…" if len(seq) > 6 else "")
+            notes.append(f"「{nos}」的转写答案疑似为同一组（{shown}），请人工核对答案归属")
+    return notes
+
+
+@dataclass
+class SubItem:
+    """比对/诊断/组装的最小单元：一道小题。
+
+    单空题 sub_id == no；多空题 sub_id 为 f"{no}-{blank}"。
+    uncertain_kind: handwriting（字迹存疑）| unsolvable（题干缺失无法求解）
+                    | attribution（答案归属存疑）| ""（无）
+    """
+    sub_id: str
+    no: str
+    blank: str
+    stem: str
+    page: str
+    student_answer: str
+    correct_answer: str
+    steps: List[str] = field(default_factory=list)
+    uncertain_kind: str = ""
+    note: str = ""
+
+
+# --------------------------------------------------------------------------
+# Stage 3：比对判定（服务端确定性比对 + 模型裁决，按小题展开）
 # --------------------------------------------------------------------------
 
 def normalize_answer(s: str) -> str:
@@ -658,32 +797,92 @@ def normalize_answer(s: str) -> str:
 async def compare_stage(extracted: List[ExtractedQuestion], solutions: Dict[str, SolutionItem],
                         settings: Settings, chain: List[str],
                         provider_factory: Optional[Callable] = None):
-    """Stage 3：返回 {no: status}。unanswered/uncertain 服务端直判，不经过模型。"""
+    """Stage 3：返回 (statuses, subs, outcome, cost)。
+
+    statuses: {sub_id: correct|wrong|unanswered|uncertain}，多空题已按空展开，
+              sub_id 为题号或 "题号-空号"。
+    subs: {sub_id: SubItem}，含每小题的作答/答案/存疑原因。
+    服务端直判（不经过模型）：字迹存疑 / 答案归属存疑 / 未作答 /
+    题干缺失无法求解（含 solve 标 undeterminable 或标准答案为空）。
+    """
     sol_by_no = solutions
     statuses: Dict[str, str] = {}
+    subs: Dict[str, SubItem] = {}
     pending: List[Dict[str, str]] = []
+
+    def _add(sub: SubItem, status: str) -> None:
+        subs[sub.sub_id] = sub
+        statuses[sub.sub_id] = status
+
+    def _add_uncertain_group(no: str, stem: str, page: str, kind: str, note: str,
+                             pairs: Optional[List[Tuple[str, str, str]]]) -> None:
+        if not pairs:
+            _add(SubItem(no, no, "", stem, page, "", "", [], kind, note), "uncertain")
+        else:
+            for blank, sa, ca in pairs:
+                sub_id = f"{no}-{blank}"
+                _add(SubItem(sub_id, no, blank, stem, page, sa, ca, [], kind, note),
+                     "uncertain")
+
     for q in extracted:
         no = q.no
         if q.handwriting_uncertain:
-            statuses[no] = "uncertain"
+            _add(SubItem(no, no, "", q.stem, q.page, "", "", [],
+                         "handwriting", q.uncertain_note or "字迹无法辨认"),
+                 "uncertain")
+            continue
+        if q.attribution_note:
+            _add(SubItem(no, no, "", q.stem, q.page, q.student_answer or "", "", [],
+                         "attribution", q.attribution_note),
+                 "uncertain")
             continue
         sa = (q.student_answer or "").strip()
-        if not sa:
-            statuses[no] = "unanswered"
-            continue
         sol = sol_by_no.get(no)
-        if sol is None:
-            statuses[no] = "uncertain"
+        unsolvable = sol is None or sol.undeterminable or not (sol.correct_answer or "").strip()
+        if unsolvable:
+            reason = ""
+            if sol is not None:
+                reason = (sol.steps[0] if sol.steps else "").strip()
+            _add_uncertain_group(no, q.stem, q.page, "unsolvable",
+                                 reason or "题干缺失，无法独立求解",
+                                 pair_blanks(sa, ""))
             continue
-        if normalize_answer(sa) == normalize_answer(sol.correct_answer):
-            statuses[no] = "correct"
+        if not sa:
+            pairs = pair_blanks("", sol.correct_answer)
+            if not pairs:
+                _add(SubItem(no, no, "", q.stem, q.page, "", sol.correct_answer,
+                             sol.steps), "unanswered")
+            else:
+                for blank, _, ca in pairs:
+                    sub_id = f"{no}-{blank}"
+                    _add(SubItem(sub_id, no, blank, q.stem, q.page, "",
+                                 ca, sol.steps), "unanswered")
+            continue
+        pairs = pair_blanks(sa, sol.correct_answer)
+        if pairs is None:
+            sub = SubItem(no, no, "", q.stem, q.page, sa, sol.correct_answer, sol.steps)
+            if normalize_answer(sa) == normalize_answer(sol.correct_answer):
+                _add(sub, "correct")
+            else:
+                subs[sub.sub_id] = sub
+                pending.append({"no": no, "context": f"第{no}题",
+                                "stem": q.stem, "student_answer": sa,
+                                "correct_answer": sol.correct_answer})
         else:
-            pending.append({"no": no, "stem": q.stem,
-                            "student_answer": sa, "correct_answer": sol.correct_answer})
+            for blank, bsa, bca in pairs:
+                sub_id = f"{no}-{blank}"
+                sub = SubItem(sub_id, no, blank, q.stem, q.page, bsa, bca, sol.steps)
+                if normalize_answer(bsa) == normalize_answer(bca):
+                    _add(sub, "correct")
+                else:
+                    subs[sub.sub_id] = sub
+                    pending.append({"no": sub_id, "context": f"第{no}大题第{blank}空",
+                                    "stem": q.stem, "student_answer": bsa,
+                                    "correct_answer": bca})
     if pending:
-        user = ("判断以下各题学生答案与标准答案是否等价：\n```json\n"
+        user = ("判断以下各小题学生答案与标准答案是否等价（no 照抄小题编号）：\n```json\n"
                 f"{json.dumps(pending, ensure_ascii=False)}\n```\n"
-                '输出 JSON：{"judgments": [{"no": "题号", "equivalent": true}]}')
+                '输出 JSON：{"judgments": [{"no": "小题编号", "equivalent": true}]}')
 
         async def call(provider):
             return await provider.complete_text(
@@ -702,8 +901,8 @@ async def compare_stage(extracted: List[ExtractedQuestion], solutions: Dict[str,
             "compare", CompareResult, chain, settings, call, check, provider_factory)
         for j in parsed.judgments:
             statuses[j.no] = "correct" if j.equivalent else "wrong"
-        return statuses, outcome, cost
-    return statuses, None, 0.0
+        return statuses, subs, outcome, cost
+    return statuses, subs, None, 0.0
 
 
 # --------------------------------------------------------------------------
@@ -713,13 +912,13 @@ async def compare_stage(extracted: List[ExtractedQuestion], solutions: Dict[str,
 async def diagnose_stage(wrong_items: List[Dict[str, Any]], subject: str,
                          settings: Settings, chain: List[str],
                          provider_factory: Optional[Callable] = None):
-    """Stage 4：错题诊断。wrong_items 含 no/stem/student_answer/correct_answer/steps。"""
+    """Stage 4：错题诊断。wrong_items 含 no（小题编号）/context/stem/student_answer/correct_answer/steps。"""
     if not wrong_items:
         return DiagnosisResult(diagnoses=[]), None, 0.0
     system = _stage_system(settings, "diagnose", DIAGNOSE_SYSTEM, subject=subject or "学科")
-    user = ("分析以下错题的错因：\n```json\n"
+    user = ("分析以下错题的错因（no 为小题编号，照抄；context 说明它是第几大题第几空）：\n```json\n"
             f"{json.dumps(wrong_items, ensure_ascii=False)}\n```\n"
-            '输出 JSON：{"diagnoses": [{"no": "题号", "error_rule": "具体错因", '
+            '输出 JSON：{"diagnoses": [{"no": "小题编号", "error_rule": "具体错因", '
             '"knowledge_point": "知识点", "explanation": ["步骤化讲解"], "correct_answer": "标准答案"}]}')
     max_tokens = settings.staged_grading.diagnose_max_tokens
 
@@ -783,7 +982,8 @@ def _build_question(no: str, stem: str, student_answer: str, status: str,
     }
 
 
-def _overview_summary(statuses: Dict[str, str]) -> str:
+def _overview_summary(statuses: Dict[str, str], kinds: Dict[str, str]) -> str:
+    """结果小结：按小题口径计数；存疑按原因拆分说明。"""
     n = len(statuses)
     c = sum(1 for s in statuses.values() if s == "correct")
     w = sum(1 for s in statuses.values() if s == "wrong")
@@ -793,36 +993,74 @@ def _overview_summary(statuses: Dict[str, str]) -> str:
     if u:
         parts.append(f"未作答 {u} 题")
     if uc:
-        parts.append(f"字迹无法辨认 {uc} 题")
+        detail = []
+        hw = sum(1 for sid, s in statuses.items()
+                 if s == "uncertain" and kinds.get(sid) == "handwriting")
+        us = sum(1 for sid, s in statuses.items()
+                 if s == "uncertain" and kinds.get(sid) == "unsolvable")
+        at = sum(1 for sid, s in statuses.items()
+                 if s == "uncertain" and kinds.get(sid) == "attribution")
+        if hw:
+            detail.append(f"字迹无法辨认 {hw} 题")
+        if us:
+            detail.append(f"题干缺失未判定 {us} 题")
+        if at:
+            detail.append(f"答案归属存疑 {at} 题")
+        other = uc - hw - us - at
+        if other:
+            detail.append(f"其他存疑 {other} 题")
+        parts.append("存疑 " + str(uc) + " 题" + (f"（{'；'.join(detail)}）" if detail else ""))
     return "，".join(parts) + "。"
 
 
+def _missing_info_for_subs(subs: List[SubItem]) -> List[str]:
+    """按大题去重，生成补充材料提示（题干缺失 / 归属存疑 / 字迹存疑）。"""
+    missing: List[str] = []
+    seen: List[str] = []
+    for sub in subs:
+        if sub.no in seen or not sub.uncertain_kind:
+            continue
+        seen.append(sub.no)
+        note = (sub.note or "").strip()
+        if sub.uncertain_kind == "unsolvable":
+            missing.append(
+                f"「{sub.no}」{note or '题干缺失，无法独立求解'}，本次未批改；"
+                f"如需批改请补充该题的题干照片或文字。")
+        elif sub.uncertain_kind == "attribution":
+            missing.append(
+                f"「{sub.no}」{note or '答案归属存疑'}，未计入判定；请核对原图确认答案归属。")
+        elif sub.uncertain_kind == "handwriting":
+            missing.append(
+                f"「{sub.no}」字迹无法辨认（{note or '—'}）；建议补充正面清晰照片复核。")
+    return missing
+
+
 def assemble_initial(subject: str, grade_level: str,
-                     extracted: List[ExtractedQuestion],
-                     solutions: Dict[str, SolutionItem],
+                     subs: List[SubItem],
                      statuses: Dict[str, str],
                      diagnoses: Dict[str, DiagnosisItem]) -> Dict[str, Any]:
-    """首轮组装：全部题目走完四阶段后合并。"""
+    """首轮组装：全部小题走完四阶段后合并（统计/台账/展示统一按小题口径）。"""
     questions = []
-    for i, q in enumerate(extracted, start=1):
-        no = q.no
-        sol = solutions.get(no)
-        diag = diagnoses.get(no)
-        status = statuses.get(no, "uncertain")
+    for sub in subs:
+        diag = diagnoses.get(sub.sub_id)
+        status = statuses.get(sub.sub_id, "uncertain")
+        source_note = f"分阶段批改（图片{sub.page or '1'}）"
+        if sub.note:
+            source_note += f"；{sub.note}"
         questions.append(_build_question(
-            no=no, stem=q.stem,
-            student_answer="" if q.handwriting_uncertain else q.student_answer,
+            no=sub.sub_id, stem=sub.stem,
+            student_answer=sub.student_answer,
             status=status,
             correct_answer=(diag.correct_answer if diag and diag.correct_answer
-                            else (sol.correct_answer if sol else "")),
-            steps=(sol.steps if sol else []),
+                            else sub.correct_answer),
+            steps=sub.steps,
             error_rule=(diag.error_rule if diag else ""),
             knowledge_point=(diag.knowledge_point if diag else ""),
-            qid=f"q{no}-{i}" if any(x.no == no for x in extracted[:i - 1]) else f"q{no}",
-            source_note=f"分阶段批改（图片{q.page or '1'}）" + (
-                f"；{q.uncertain_note}" if q.handwriting_uncertain and q.uncertain_note else ""),
+            qid=f"q{sub.sub_id}",
+            source_note=source_note,
         ))
-    summary = _overview_summary(statuses)
+    kinds = {sub.sub_id: sub.uncertain_kind for sub in subs}
+    summary = _overview_summary(statuses, kinds)
     return {
         "schema_version": 3,
         "task_type": "grading",
@@ -832,7 +1070,7 @@ def assemble_initial(subject: str, grade_level: str,
         "questions": questions,
         "retests": [],
         "sections": [{"title": "批改小结", "body": summary}],
-        "missing_info": [],
+        "missing_info": _missing_info_for_subs(subs),
         "parent_tips": [],
         "review_summary": {"state": "not_run", "scope": 0, "disagreed": 0,
                            "unverified": 0,
@@ -845,50 +1083,46 @@ def assemble_initial(subject: str, grade_level: str,
 
 
 def assemble_followup(prev_result: Dict[str, Any],
-                      new_questions: List[ExtractedQuestion],
-                      revisions: List[FollowupRevision],
-                      solutions: Dict[str, SolutionItem],
+                      subs: List[SubItem],
                       statuses: Dict[str, str],
-                      diagnoses: Dict[str, DiagnosisItem]) -> Dict[str, Any]:
-    """补充轮次组装：未受影响题目服务端直接透传，只重算受影响题。"""
+                      diagnoses: Dict[str, DiagnosisItem],
+                      new_sub_ids: Set[str]) -> Dict[str, Any]:
+    """补充轮次组装：未受影响题目服务端直接透传，只重算受影响的小题。
+
+    subs 只包含本轮重算的小题（statuses/diagnoses 的键均为小题 id）。
+    missing_info：未受影响题的旧条目原样保留，受影响题按本轮结论重算。
+    """
     prev_qs = [copy.deepcopy(q) for q in (prev_result.get("questions") or [])]
     by_no = {str(q.get("no", "")): q for q in prev_qs}
     prev_status_by_no = {str(q.get("no", "")): str(q.get("status", "")) for q in prev_qs}
-    affected: Dict[str, Dict[str, Any]] = {}
-    affected_is_prev: Dict[str, bool] = {}
-
-    for rev in revisions:
-        q = by_no.get(str(rev.prev_no))
-        if q is None:
-            continue
-        if rev.student_answer.strip():
-            q["student_answer"] = rev.student_answer
-        affected[str(rev.prev_no)] = q
-        affected_is_prev[str(rev.prev_no)] = True
 
     fresh: List[Dict[str, Any]] = []
-    for i, q in enumerate(new_questions, start=1):
-        qid = f"sup-{q.no}-{i}"
-        d = _build_question(no=q.no, stem=q.stem,
-                            student_answer="" if q.handwriting_uncertain else q.student_answer,
-                            status="uncertain", correct_answer="", steps=[],
-                            error_rule="", knowledge_point="", qid=qid,
-                            source_note="补充材料")
-        fresh.append(d)
-        affected[q.no] = d
-        affected_is_prev[q.no] = False
-
-    for no, d in affected.items():
-        sol = solutions.get(no)
-        diag = diagnoses.get(no)
-        status = statuses.get(no, "uncertain")
-        prev_status = prev_status_by_no.get(no) if affected_is_prev.get(no) else None
+    for sub in subs:
+        status = statuses.get(sub.sub_id, "uncertain")
+        diag = diagnoses.get(sub.sub_id)
+        source_note = "补充材料" + (f"；{sub.note}" if sub.note else "")
+        if sub.sub_id in new_sub_ids:
+            d = _build_question(no=sub.sub_id, stem=sub.stem,
+                                student_answer=sub.student_answer,
+                                status="uncertain", correct_answer="", steps=[],
+                                error_rule="", knowledge_point="",
+                                qid=f"sup-{sub.sub_id}",
+                                source_note=source_note)
+            fresh.append(d)
+        else:
+            d = by_no.get(sub.sub_id)
+            if d is None:
+                continue
+            d["student_answer"] = sub.student_answer
+        prev_status = prev_status_by_no.get(sub.sub_id)
         d["status"] = status
         d["correct_answer"] = (diag.correct_answer if diag and diag.correct_answer
-                               else (sol.correct_answer if sol else ""))
-        d["steps"] = sol.steps if sol else []
+                               else sub.correct_answer)
+        d["steps"] = sub.steps
         d["error_rule"] = diag.error_rule if diag else ""
         d["knowledge_point"] = diag.knowledge_point if diag else ""
+        if sub.note:
+            d["evidence"] = (d.get("evidence") or "") + f"；{sub.note}"
         if status == "wrong":
             d["final_decision"] = "kept_wrong"
             d["remediation"] = {"state": "pending_correction", "updated_date": "",
@@ -914,7 +1148,17 @@ def assemble_followup(prev_result: Dict[str, Any],
     all_statuses = {str(q.get("no", "")): str(q.get("status", "uncertain")) for q in prev_qs}
     for d in fresh:
         all_statuses[str(d["no"])] = str(d["status"])
-    summary = _overview_summary(all_statuses)
+    kinds = {sub.sub_id: sub.uncertain_kind for sub in subs}
+    for q in prev_qs:
+        # 未受影响题沿用上一轮口径：无法从旧记录还原存疑原因时不细分
+        kinds.setdefault(str(q.get("no", "")), "")
+    summary = _overview_summary(all_statuses, kinds)
+
+    affected_ids = {sub.sub_id for sub in subs} | {sub.no for sub in subs}
+    prev_missing = [m for m in (prev_result.get("missing_info") or [])
+                    if not any(f"「{aid}」" in m for aid in affected_ids)]
+    missing_info = prev_missing + _missing_info_for_subs(subs)
+
     result = {
         "schema_version": 3,
         "task_type": "grading",
@@ -924,7 +1168,7 @@ def assemble_followup(prev_result: Dict[str, Any],
         "questions": questions,
         "retests": list(prev_result.get("retests") or []),
         "sections": [{"title": "批改小结", "body": summary}],
-        "missing_info": list(prev_result.get("missing_info") or []),
+        "missing_info": missing_info,
         "parent_tips": list(prev_result.get("parent_tips") or []),
         "review_summary": {"state": "not_run", "scope": 0, "disagreed": 0,
                            "unverified": 0,
@@ -987,6 +1231,14 @@ async def grade_staged(images: List[Tuple[bytes, str]],
         track(outcome, c)
     await emit("extract", parsed.model_dump())
 
+    # ---- 答案归属去重：同一组答案不许归属到两个题号 ----
+    # 疑似"借用"别题答案的题（题干缺失）会被打上 attribution_note，
+    # 后续比对阶段直接判 uncertain，不进入对错比较。
+    if is_followup:
+        attribution_notes = dedupe_answer_attribution(list(parsed.new_questions))
+    else:
+        attribution_notes = dedupe_answer_attribution(parsed.questions)
+
     if is_followup:
         revisions = list(parsed.revisions)
         new_qs = list(parsed.new_questions)
@@ -1016,22 +1268,24 @@ async def grade_staged(images: List[Tuple[bytes, str]],
     await emit("solve", sol_parsed.model_dump())
     solutions = {s.no: s for s in sol_parsed.solutions}
 
-    # ---- Stage 3：比对 ----
-    statuses, outcome, cost = await compare_stage(
+    # ---- Stage 3：比对（按小题展开） ----
+    statuses, subs, outcome, cost = await compare_stage(
         extracted_for_compare, solutions, settings, chain, provider_factory)
     if outcome:
         track(outcome, cost)
     await emit("compare", {"statuses": statuses})
+    subs_list = list(subs.values())
 
-    # ---- Stage 4：诊断（只针对错题） ----
+    # ---- Stage 4：诊断（只针对判错的小题） ----
     wrong_items = []
-    for q in extracted_for_compare:
-        if statuses.get(q.no) == "wrong":
-            sol = solutions.get(q.no)
+    for sub in subs_list:
+        if statuses.get(sub.sub_id) == "wrong":
             wrong_items.append({
-                "no": q.no, "stem": q.stem, "student_answer": q.student_answer,
-                "correct_answer": sol.correct_answer if sol else "",
-                "steps": sol.steps if sol else [],
+                "no": sub.sub_id,
+                "context": (f"第{sub.no}大题第{sub.blank}空" if sub.blank
+                            else f"第{sub.no}题"),
+                "stem": sub.stem, "student_answer": sub.student_answer,
+                "correct_answer": sub.correct_answer, "steps": sub.steps,
             })
     diag_parsed, outcome, cost = await diagnose_stage(
         wrong_items, subject, settings, chain, provider_factory)
@@ -1042,11 +1296,14 @@ async def grade_staged(images: List[Tuple[bytes, str]],
 
     # ---- 组装 + v3 严格校验 ----
     if is_followup:
-        raw = assemble_followup(prev_result, new_qs, revisions,
-                                solutions, statuses, diagnoses)
+        new_nos = {q.no for q in new_qs}
+        new_sub_ids = {s.sub_id for s in subs_list if s.no in new_nos}
+        raw = assemble_followup(prev_result, subs_list, statuses, diagnoses, new_sub_ids)
     else:
-        raw = assemble_initial(subject, grade_level, parsed.questions,
-                               solutions, statuses, diagnoses)
+        raw = assemble_initial(subject, grade_level, subs_list, statuses, diagnoses)
+    if attribution_notes:
+        # 都有题干时的"疑似重复"只提示人工核对，不改判
+        raw["missing_info"] = list(attribution_notes) + list(raw.get("missing_info") or [])
     try:
         result = validate_result(raw)
     except Exception as e:

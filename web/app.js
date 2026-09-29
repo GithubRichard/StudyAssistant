@@ -814,7 +814,10 @@ async function pageResult(app, r, alive) {
       <a class="btn ghost block" href="#/history">返回任务历史</a></div></div>`);
     return;
   }
-  renderResultView(app, task, { title: "批改结果" });
+  // 已完成但结果还缺信息（如题干缺失/字迹存疑/答案归属存疑）：
+  // 在结果下方给出补充材料入口，后端 add_followup 本来就允许 done 任务追加。
+  const missing = ((task.result || {}).missing_info || []).filter((m) => (m || "").trim());
+  renderResultView(app, task, { title: "批改结果", followup: missing.length > 0 });
 }
 
 /* ---------------- 做题页（一题一屏） ---------------- */

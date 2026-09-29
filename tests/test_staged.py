@@ -953,3 +953,267 @@ class StageProviderCapTest(unittest.IsolatedAsyncioTestCase):
             call, None, factory_for(scripts, self.calls))
         self.assertEqual(outcome.provider, "backup")
         self.assertEqual(len(parsed.questions), 3)
+
+
+class BlankSplitTest(unittest.TestCase):
+    def test_split_numbered_with_separator(self):
+        self.assertEqual(staged.split_answer_blanks("1.B 2.C 3.A"),
+                         [("1", "B"), ("2", "C"), ("3", "A")])
+
+    def test_split_numbered_multiline(self):
+        self.assertEqual(staged.split_answer_blanks("1. F\n2. B\n3. C"),
+                         [("1", "F"), ("2", "B"), ("3", "C")])
+
+    def test_split_compact(self):
+        self.assertEqual(staged.split_answer_blanks("11F 12B 13C"),
+                         [("11", "F"), ("12", "B"), ("13", "C")])
+
+    def test_split_strips_trailing_note(self):
+        self.assertEqual(staged.split_answer_blanks("1.F 2.B 3.C 4.E 5.A（D多余）"),
+                         [("1", "F"), ("2", "B"), ("3", "C"), ("4", "E"), ("5", "A")])
+
+    def test_split_single_answer_returns_empty(self):
+        self.assertEqual(staged.split_answer_blanks("x=4"), [])
+        self.assertEqual(staged.split_answer_blanks("creatively"), [])
+        self.assertEqual(staged.split_answer_blanks(""), [])
+
+    def test_pair_aligned_numbers(self):
+        self.assertEqual(staged.pair_blanks("B\nC\nA", "1.B 2.C 3.D"),
+                         [("1", "B", "B"), ("2", "C", "C"), ("3", "A", "D")])
+
+    def test_pair_unanswered_expands_by_correct(self):
+        self.assertEqual(staged.pair_blanks("", "1.B 2.C"),
+                         [("1", "", "B"), ("2", "", "C")])
+
+    def test_pair_unsolvable_expands_by_student(self):
+        self.assertEqual(staged.pair_blanks("11F 12B", ""),
+                         [("11", "F", ""), ("12", "B", "")])
+
+    def test_pair_mismatched_numbers_returns_none(self):
+        self.assertIsNone(staged.pair_blanks("1.F 2.B", "11.F 12.B 13.C"))
+
+    def test_pair_single_line_student_not_guessed(self):
+        # 单行空格分隔的学生答案不做位置猜测：回退整题
+        self.assertIsNone(staged.pair_blanks("B C A", "1.B 2.C 3.D"))
+
+
+class UndeterminableTest(unittest.IsolatedAsyncioTestCase):
+    """修1：solve 判无法求解 → 整题 uncertain，不进 compare 模型裁决、不进诊断。"""
+
+    def setUp(self):
+        self.calls = []
+        extract = json.dumps({"questions": [
+            {"no": "1", "stem": "解方程 2x+1=9", "student_answer": "x=4",
+             "page": "1", "handwriting_uncertain": False, "uncertain_note": ""},
+            {"no": "2", "stem": "（题目内容未在图片中显示）",
+             "student_answer": "A", "page": "1",
+             "handwriting_uncertain": False, "uncertain_note": ""},
+        ]}, ensure_ascii=False)
+        solve = json.dumps({"solutions": [
+            {"no": "1", "correct_answer": "x=4", "steps": ["2x=8"]},
+            {"no": "2", "correct_answer": "", "undeterminable": True,
+             "steps": ["题干未在图片中显示，无法求解"]},
+        ]}, ensure_ascii=False)
+        self.scripts = {"fake": {"extract": [extract], "solve": [solve],
+                                 "compare": [], "diagnose": []}}
+        self.settings = make_settings("fake")
+
+    async def _grade(self):
+        return await staged.grade_staged(
+            [(b"img", "image/jpeg")], "数学", "七年级", "", self.settings,
+            provider_factory=factory_for(self.scripts, self.calls))
+
+    async def test_undeterminable_is_uncertain_not_wrong(self):
+        outcome = await self._grade()
+        by_no = {q["no"]: q for q in outcome.result["questions"]}
+        self.assertEqual(by_no["1"]["status"], "correct")
+        self.assertEqual(by_no["2"]["status"], "uncertain")
+        self.assertNotEqual(by_no["2"]["status"], "wrong")
+        # 未进诊断：没有错因
+        self.assertEqual(by_no["2"]["error_rule"], "")
+        self.assertEqual(by_no["2"]["correct_answer"], "")
+
+    async def test_compare_model_not_called_for_undeterminable(self):
+        await self._grade()
+        compare_calls = [c for c in self.calls if c["stage"] == "compare"]
+        self.assertEqual(compare_calls, [])
+
+    async def test_missing_info_asks_for_stem(self):
+        outcome = await self._grade()
+        missing = outcome.result["missing_info"]
+        self.assertTrue(any("「2」" in m and "未批改" in m for m in missing),
+                        f"missing_info={missing}")
+
+    async def test_summary_counts_unsolvable(self):
+        outcome = await self._grade()
+        summary = outcome.result["overview"]["summary"]
+        self.assertIn("共检查 2 题", summary)
+        self.assertIn("题干缺失未判定 1 题", summary)
+
+
+class PerBlankTest(unittest.IsolatedAsyncioTestCase):
+    """修4：多空题按小题展开，统计/诊断/台账键都按小题。"""
+
+    def setUp(self):
+        self.calls = []
+        extract = json.dumps({"questions": [
+            {"no": "1", "stem": "完形填空 passage…", "student_answer": "B\nC\nA",
+             "page": "1", "handwriting_uncertain": False, "uncertain_note": ""},
+        ]}, ensure_ascii=False)
+        solve = json.dumps({"solutions": [
+            {"no": "1", "correct_answer": "1.B 2.C 3.D", "steps": ["第3空…"]},
+        ]}, ensure_ascii=False)
+        compare = json.dumps({"judgments": [{"no": "1-3", "equivalent": False}]},
+                             ensure_ascii=False)
+        diagnose = json.dumps({"diagnoses": [
+            {"no": "1-3", "error_rule": "第3空误选A",
+             "knowledge_point": "KP", "explanation": ["应选D"],
+             "correct_answer": "D"},
+        ]}, ensure_ascii=False)
+        self.scripts = {"fake": {"extract": [extract], "solve": [solve],
+                                 "compare": [compare], "diagnose": [diagnose]}}
+        self.settings = make_settings("fake")
+
+    async def test_sub_questions_and_counts(self):
+        outcome = await staged.grade_staged(
+            [(b"img", "image/jpeg")], "英语", "七年级", "", self.settings,
+            provider_factory=factory_for(self.scripts, self.calls))
+        by_no = {q["no"]: q for q in outcome.result["questions"]}
+        self.assertEqual(set(by_no), {"1-1", "1-2", "1-3"})
+        self.assertEqual(by_no["1-1"]["status"], "correct")
+        self.assertEqual(by_no["1-2"]["status"], "correct")
+        self.assertEqual(by_no["1-3"]["status"], "wrong")
+        # 诊断挂在错的小题上
+        self.assertIn("第3空", by_no["1-3"]["error_rule"])
+        self.assertEqual(by_no["1-3"]["student_answer"], "A")
+        self.assertEqual(by_no["1-3"]["correct_answer"], "D")
+        # 统计按小题
+        ov = outcome.result["overview"]
+        self.assertEqual(ov["checked_questions"], 3)
+        self.assertIn("共检查 3 题，答对 2 题，答错 1 题", ov["summary"])
+        # id 按小题区分；uid 由下游 fill_question_uids 按题号回填
+        ids = [q["id"] for q in outcome.result["questions"]]
+        self.assertEqual(len(set(ids)), 3)
+        from app.schemas import fill_question_uids
+        filled = fill_question_uids(outcome.result, "2026-09-29")
+        uids = [q["uid"] for q in filled["questions"]]
+        self.assertEqual(len(set(uids)), 3)
+
+    async def test_diagnose_called_with_sub_id(self):
+        await staged.grade_staged(
+            [(b"img", "image/jpeg")], "英语", "七年级", "", self.settings,
+            provider_factory=factory_for(self.scripts, self.calls))
+        diag_calls = [c for c in self.calls if c["stage"] == "diagnose"]
+        self.assertEqual(len(diag_calls), 1)
+        self.assertIn('"1-3"', diag_calls[0]["user"])
+
+
+class AttributionDedupTest(unittest.IsolatedAsyncioTestCase):
+    """修2：同一组答案不许归属到两个题号。"""
+
+    def _grade(self, extract_questions, solve_solutions, calls):
+        scripts = {"fake": {"extract": [json.dumps({"questions": extract_questions},
+                                                   ensure_ascii=False)],
+                            "solve": [json.dumps({"solutions": solve_solutions},
+                                                 ensure_ascii=False)],
+                            "compare": [], "diagnose": []}}
+        settings = make_settings("fake")
+        return staged.grade_staged(
+            [(b"img", "image/jpeg")], "英语", "七年级", "", settings,
+            provider_factory=factory_for(scripts, calls))
+
+    async def test_phantom_with_missing_stem_is_uncertain(self):
+        calls = []
+        outcome = await self._grade(
+            [{"no": "二", "stem": "选词填空 passage", "student_answer": "1. F\n2. B\n3. C",
+              "page": "1", "handwriting_uncertain": False, "uncertain_note": ""},
+             {"no": "三", "stem": "（题目内容未在图片中显示）",
+              "student_answer": "11F 12B 13C", "page": "1",
+              "handwriting_uncertain": False, "uncertain_note": ""}],
+            [{"no": "二", "correct_answer": "1.F 2.B 3.C", "steps": []},
+             {"no": "三", "correct_answer": "", "undeterminable": True,
+              "steps": ["题干缺失"]}],
+            calls)
+        by_no = {q["no"]: q for q in outcome.result["questions"]}
+        # "二"按小题展开且全对
+        self.assertEqual(by_no["二-1"]["status"], "correct")
+        self.assertEqual(by_no["二-2"]["status"], "correct")
+        self.assertEqual(by_no["二-3"]["status"], "correct")
+        # "三"是借用答案的幽灵题：uncertain，不判 wrong
+        self.assertEqual(by_no["三"]["status"], "uncertain")
+        missing = outcome.result["missing_info"]
+        self.assertTrue(any("「三」" in m and "归属" in m for m in missing),
+                        f"missing_info={missing}")
+
+    async def test_both_real_stems_only_warns(self):
+        calls = []
+        outcome = await self._grade(
+            [{"no": "4", "stem": "题干4", "student_answer": "A\nB",
+              "page": "1", "handwriting_uncertain": False, "uncertain_note": ""},
+             {"no": "5", "stem": "题干5", "student_answer": "A\nB",
+              "page": "1", "handwriting_uncertain": False, "uncertain_note": ""}],
+            [{"no": "4", "correct_answer": "1.A 2.B", "steps": []},
+             {"no": "5", "correct_answer": "1.A 2.B", "steps": []}],
+            calls)
+        by_no = {q["no"]: q for q in outcome.result["questions"]}
+        # 都有题干：不自动改判，只提示人工核对
+        self.assertEqual(by_no["4-1"]["status"], "correct")
+        self.assertEqual(by_no["5-1"]["status"], "correct")
+        missing = outcome.result["missing_info"]
+        self.assertTrue(any("核对答案归属" in m for m in missing),
+                        f"missing_info={missing}")
+
+
+class ProductionIncidentRegressionTest(unittest.IsolatedAsyncioTestCase):
+    """生产事故回归：2026-09-29 dfae3eed3b804094。
+
+    完形 1-10 全对、选词填空 5 空全对；extract_zoom 把选词填空的答案又填进
+    了题干缺失的"三、短文填空"。期望：15 小题全对，"三"标存疑（归属存疑），
+    不判 wrong、不进诊断、不进错题台账口径。
+    """
+
+    async def test_full_paper(self):
+        calls = []
+        extract = json.dumps({"questions": [
+            {"no": "1", "stem": "完形填空 passage…",
+             "student_answer": "B\nC\nA\nA\nB\nB\nB\nA\nB\nA",
+             "page": "1", "handwriting_uncertain": False, "uncertain_note": ""},
+            {"no": "二", "stem": "选词填空 passage…",
+             "student_answer": "1. F\n2. B\n3. C\n4. E\n5. A",
+             "page": "1", "handwriting_uncertain": False, "uncertain_note": ""},
+            {"no": "三", "stem": "（题目内容未在图片中显示）",
+             "student_answer": "11F 12B 13C 14E 15A",
+             "page": "1", "handwriting_uncertain": False, "uncertain_note": ""},
+        ]}, ensure_ascii=False)
+        solve = json.dumps({"solutions": [
+            {"no": "1", "correct_answer": "1.B 2.C 3.A 4.A 5.B 6.B 7.B 8.A 9.B 10.A",
+             "steps": []},
+            {"no": "二", "correct_answer": "1.F 2.B 3.C 4.E 5.A", "steps": []},
+            {"no": "三", "correct_answer": "", "undeterminable": True,
+             "steps": ["题干未在图片中显示，无法求解"]},
+        ]}, ensure_ascii=False)
+        scripts = {"fake": {"extract": [extract], "solve": [solve],
+                             "compare": [], "diagnose": []}}
+        outcome = await staged.grade_staged(
+            [(b"img", "image/jpeg")], "英语", "七年级", "", make_settings("fake"),
+            provider_factory=factory_for(scripts, calls))
+        by_no = {q["no"]: q for q in outcome.result["questions"]}
+        # 15 个小题全对
+        for i in range(1, 11):
+            self.assertEqual(by_no[f"1-{i}"]["status"], "correct")
+        for i in range(1, 6):
+            self.assertEqual(by_no[f"二-{i}"]["status"], "correct")
+        # "三"是幽灵题：存疑，不判错
+        self.assertEqual(by_no["三"]["status"], "uncertain")
+        self.assertEqual(by_no["三"]["error_rule"], "")
+        # 诊断/模型比对都不该被调用（全是确定性直判）
+        self.assertEqual([c for c in calls if c["stage"] == "compare"], [])
+        self.assertEqual([c for c in calls if c["stage"] == "diagnose"], [])
+        # 统计口径
+        ov = outcome.result["overview"]
+        self.assertEqual(ov["checked_questions"], 16)
+        self.assertIn("答对 15 题", ov["summary"])
+        self.assertIn("答案归属存疑 1 题", ov["summary"])
+        # 补充材料入口有内容
+        missing = outcome.result["missing_info"]
+        self.assertTrue(any("「三」" in m for m in missing), f"missing_info={missing}")
