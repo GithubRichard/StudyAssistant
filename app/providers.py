@@ -29,6 +29,8 @@ class GradeOutcome(BaseModel):
     provider: str
     model: str
     thinking: str = ""   # 模型思考过程（reasoning_content），为空表示网关没返回
+    # 上游结束原因（"length" 表示被 max_tokens 截断），用于避免把截断当成功
+    finish_reason: str = ""
 
 
 class BaseProvider(ABC):
@@ -111,9 +113,15 @@ class OpenAICompatibleProvider(BaseProvider):
                 if resp.status_code != 200:
                     raise ProviderError(f"HTTP {resp.status_code}: {resp.text[:300]}")
                 data = resp.json()
-                message = data["choices"][0]["message"] or {}
+                choice = data["choices"][0] or {}
+                message = choice.get("message") or {}
                 content = message.get("content") or ""
                 usage = data.get("usage", {}) or {}
+                finish_reason = str(choice.get("finish_reason") or "")
+                if finish_reason == "length":
+                    # 输出被 max_tokens 截断：同参数重试没有意义，交由上层换备胎
+                    log.warning("provider=%s 输出被截断（max_tokens=%d），不再重试",
+                                self.name, max_tokens)
                 return GradeOutcome(
                     text=content,
                     input_tokens=int(usage.get("prompt_tokens", 0)),
@@ -121,6 +129,7 @@ class OpenAICompatibleProvider(BaseProvider):
                     provider=self.name,
                     model=self.cfg.model,
                     thinking=thinking.extract_reasoning(message),
+                    finish_reason=finish_reason,
                 )
             except Exception as e:  # noqa: BLE001 - 统一重试
                 last_err = e

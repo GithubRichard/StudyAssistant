@@ -22,16 +22,21 @@ def make_settings(*names: str) -> Settings:
 
 
 class FakeProvider:
-    """按剧本返回各阶段 JSON；script[stage] 是响应/异常队列。"""
+    """按剧本返回各阶段 JSON；script[stage] 是响应/异常队列。
 
-    def __init__(self, name, script, calls):
+    与真实 provider 一致地保存 cfg（分阶段按它读取厂商输出上限）。
+    """
+
+    def __init__(self, name, script, calls, cfg=None):
         self.name = name
+        self.cfg = cfg
         self._script = script
         self.calls = calls
 
-    def _respond(self, stage, system, user, n_images=0):
+    def _respond(self, stage, system, user, n_images=0, max_tokens=0):
         self.calls.append({"stage": stage, "system": system, "user": user,
-                           "n_images": n_images, "provider": self.name})
+                           "n_images": n_images, "max_tokens": max_tokens,
+                           "provider": self.name})
         queue = self._script.get(stage, [])
         if not queue:
             if stage == "extract_zoom":
@@ -43,12 +48,15 @@ class FakeProvider:
             item = queue.pop(0)
         if isinstance(item, Exception):
             raise item
+        if isinstance(item, GradeOutcome):
+            # 允许剧本直接给出 outcome（例如 finish_reason=length 的截断响应）
+            return item
         return GradeOutcome(text=item, input_tokens=10, output_tokens=20,
                             provider=self.name, model=f"fake-{self.name}")
 
     async def grade_multi(self, images, system, user, max_tokens=8000):
         stage = "extract_zoom" if "复核员" in system else "extract"
-        return self._respond(stage, system, user, len(images))
+        return self._respond(stage, system, user, len(images), max_tokens)
 
     async def complete_text(self, system, user, max_tokens=4000):
         if "解题专家" in system:
@@ -59,12 +67,12 @@ class FakeProvider:
             stage = "diagnose"
         else:
             raise AssertionError(f"无法识别阶段: {system[:40]}")
-        return self._respond(stage, system, user)
+        return self._respond(stage, system, user, 0, max_tokens)
 
 
 def factory_for(scripts: dict, calls: list):
     def factory(name, cfg):
-        return FakeProvider(name, scripts[name], calls)
+        return FakeProvider(name, scripts[name], calls, cfg)
     return factory
 
 
@@ -826,4 +834,122 @@ class ExtractZoomTest(unittest.IsolatedAsyncioTestCase):
         # 预处理不改变题数；图片仍是有效 JPEG（fail-open 不阻断）
         scripts = self._scripts()
         parsed, calls, _ = await self._extract(scripts, self._settings())
+        self.assertEqual(len(parsed.questions), 3)
+
+    async def test_zoom_accepts_prefixed_no(self):
+        """模型把题号写成「题3」这类包装时，唯一映射仍能合并，不再整阶段失败。"""
+        for raw_no in ("题3", "第3题", "No.3"):
+            with self.subTest(no=raw_no):
+                self.calls.clear()
+                item = json.dumps({"reread": [
+                    {"no": raw_no, "student_answer": "a²+2ab+b²",
+                     "handwriting_uncertain": False, "uncertain_note": ""}]},
+                    ensure_ascii=False)
+                scripts = self._scripts(extract_zoom=[item])
+                parsed, calls, _ = await self._extract(scripts, self._settings())
+                q3 = {q.no: q for q in parsed.questions}["3"]
+                self.assertEqual(q3.student_answer, "a²+2ab+b²")
+                self.assertFalse(q3.handwriting_uncertain)
+                self.assertEqual(parsed.zoom_note, "")
+
+    async def test_zoom_ignores_unknown_no_without_failing(self):
+        """复核返回未送审的题号：忽略并记录，不阻断首轮结果。"""
+        item = json.dumps({"reread": [
+            {"no": "题9", "student_answer": "x", "handwriting_uncertain": False,
+             "uncertain_note": ""},
+            {"no": "题3", "student_answer": "a²+2ab+b²", "handwriting_uncertain": False,
+             "uncertain_note": ""}]}, ensure_ascii=False)
+        scripts = self._scripts(extract_zoom=[item])
+        parsed, calls, _ = await self._extract(scripts, self._settings())
+        q3 = {q.no: q for q in parsed.questions}["3"]
+        # 合法的那条照样合并
+        self.assertEqual(q3.student_answer, "a²+2ab+b²")
+        self.assertIn("无法匹配", parsed.zoom_note)
+        self.assertIn("题9", parsed.zoom_note)
+
+    async def test_zoom_duplicate_no_keeps_first(self):
+        """同一题号重复返回：只取首次，后者不覆盖。"""
+        item = json.dumps({"reread": [
+            {"no": "3", "student_answer": "首次", "handwriting_uncertain": False,
+             "uncertain_note": ""},
+            {"no": "题3", "student_answer": "第二次", "handwriting_uncertain": False,
+             "uncertain_note": ""}]}, ensure_ascii=False)
+        scripts = self._scripts(extract_zoom=[item])
+        parsed, calls, _ = await self._extract(scripts, self._settings())
+        q3 = {q.no: q for q in parsed.questions}["3"]
+        self.assertEqual(q3.student_answer, "首次")
+        self.assertIn("重复题号", parsed.zoom_note)
+
+    async def test_zoom_failure_keeps_transcript_and_marks_blank_uncertain(self):
+        """复核耗尽备胎：不抛错、保留首轮转写；判空题降级为存疑并写明原因。"""
+        blank_first = json.dumps({"questions": [
+            {"no": "1", "stem": "题一", "student_answer": "", "page": "1",
+             "handwriting_uncertain": False, "uncertain_note": ""},
+            {"no": "2", "stem": "题二", "student_answer": "b", "page": "1",
+             "handwriting_uncertain": True, "uncertain_note": "字迹潦草"},
+        ]}, ensure_ascii=False)
+        scripts = {"fake": {"extract": [blank_first],
+                            "extract_zoom": [ProviderError("boom")]}}
+        parsed, calls, _ = await self._extract(scripts, self._settings())
+        by_no = {q.no: q for q in parsed.questions}
+        # 判空题：复核没跑成 → 不能据此认定"学生没作答"，降级为存疑
+        self.assertTrue(by_no["1"].handwriting_uncertain)
+        self.assertIn("无法确认是未作答还是漏读", by_no["1"].uncertain_note)
+        # 原本存疑的题保持原样
+        self.assertTrue(by_no["2"].handwriting_uncertain)
+        self.assertEqual(by_no["2"].uncertain_note, "字迹潦草")
+        # 阶段记录里如实说明，不只留一行服务器日志
+        self.assertIn("放大复核未完成", parsed.zoom_note)
+        # 复核没有成功产出：不产生可计费的阶段调用记录
+        self.assertEqual([c["stage"] for c in self.calls], ["extract", "extract_zoom"])
+
+
+class StageProviderCapTest(unittest.IsolatedAsyncioTestCase):
+    """厂商输出上限与截断识别：避免备胎一调用就被 max_tokens 400 打死。"""
+
+    def setUp(self):
+        self.calls = []
+        self.img = [(_tiny_jpeg(), "image/jpeg")]
+
+    async def test_provider_cap_limits_stage_max_tokens(self):
+        settings = make_settings("fake")
+        settings.llm.providers["fake"].max_output_tokens = 1024
+        scripts = {"fake": {"extract": [EXTRACT_OK], "solve": [SOLVE_OK],
+                            "compare": [COMPARE_OK], "diagnose": [DIAGNOSE_OK]}}
+        await staged.grade_staged(
+            self.img, "数学", "七年级", "", settings,
+            provider_factory=factory_for(scripts, self.calls))
+        extract_call = [c for c in self.calls if c["stage"] == "extract"][0]
+        solve_call = [c for c in self.calls if c["stage"] == "solve"][0]
+        # 阶段上限 8000/6000 都被压到厂商上限 1024
+        self.assertEqual(extract_call["max_tokens"], 1024)
+        self.assertEqual(solve_call["max_tokens"], 1024)
+
+    async def test_stage_max_tokens_without_cap_uses_stage_limit(self):
+        settings = make_settings("fake")
+        scripts = {"fake": {"extract": [EXTRACT_OK], "solve": [SOLVE_OK],
+                            "compare": [COMPARE_OK], "diagnose": [DIAGNOSE_OK]}}
+        await staged.grade_staged(
+            self.img, "数学", "七年级", "", settings,
+            provider_factory=factory_for(scripts, self.calls))
+        extract_call = [c for c in self.calls if c["stage"] == "extract"][0]
+        self.assertEqual(extract_call["max_tokens"],
+                         settings.staged_grading.extract_max_tokens)
+
+    async def test_truncated_output_switches_to_next_provider(self):
+        """finish_reason=length 不能当成功：换备胎重试。"""
+        settings = make_settings("fake", "backup")
+        truncated = GradeOutcome(text="{", input_tokens=5, output_tokens=1024,
+                                 provider="fake", model="fake-fake",
+                                 finish_reason="length")
+        scripts = {"fake": {"extract": [truncated]},
+                   "backup": {"extract": [EXTRACT_OK]}}
+
+        async def call(provider):
+            return await provider.grade_multi([(b"x", "image/jpeg")], "s", "u")
+
+        parsed, outcome, cost = await staged._run_stage(
+            "extract", staged.ExtractionResult, ["fake", "backup"], settings,
+            call, None, factory_for(scripts, self.calls))
+        self.assertEqual(outcome.provider, "backup")
         self.assertEqual(len(parsed.questions), 3)

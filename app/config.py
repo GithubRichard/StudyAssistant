@@ -45,6 +45,9 @@ class ProviderConfig(BaseModel):
     model: str
     timeout: int = 90
     max_retries: int = 2
+    # 厂商输出上限（如 glm-4v-flash 只接受 max_tokens ≤ 1024）；0 = 不限制，
+    # 分阶段批改实际取「阶段上限」与该值的较小者，否则备胎一调用就 400
+    max_output_tokens: int = 0
     price_input_per_1m: float = 0.0
     price_output_per_1m: float = 0.0
     enabled: bool = True

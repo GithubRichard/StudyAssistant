@@ -23,6 +23,7 @@ import json
 import logging
 import re
 import unicodedata
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field, ValidationError
@@ -62,6 +63,8 @@ class ExtractedQuestion(BaseModel):
 
 class ExtractionResult(BaseModel):
     questions: List[ExtractedQuestion] = Field(default_factory=list)
+    # 放大复核的服务端说明（复核失败/题号对不上时写入，随阶段记录落库，供人工核对）
+    zoom_note: str = ""
 
 
 class FollowupRevision(BaseModel):
@@ -73,6 +76,7 @@ class FollowupRevision(BaseModel):
 class FollowupExtraction(BaseModel):
     new_questions: List[ExtractedQuestion] = Field(default_factory=list)
     revisions: List[FollowupRevision] = Field(default_factory=list)
+    zoom_note: str = ""
 
 
 class ZoomRereadItem(BaseModel):
@@ -234,6 +238,17 @@ def _stage_cost(outcome, cfg) -> float:
                  + (outcome.output_tokens / 1_000_000) * cfg.price_output_per_1m, 4)
 
 
+def _stage_max_tokens(cfg: Any, want: int) -> int:
+    """阶段输出上限与厂商上限取小。
+
+    备胎模型可能有更小的输出上限（如 glm-4v-flash 只接受 max_tokens ≤ 1024），
+    一律按阶段上限发过去会被 400 拒绝，备胎等于没有。
+    cfg 为 None（测试替身）或未配置上限时按阶段上限。
+    """
+    cap = int(getattr(cfg, "max_output_tokens", 0) or 0)
+    return min(want, cap) if 0 < cap < want else want
+
+
 async def _run_stage(stage: str, model_cls, chain: List[str], settings: Settings,
                      call: Callable, semantic_check: Optional[Callable] = None,
                      provider_factory: Optional[Callable] = None):
@@ -248,6 +263,11 @@ async def _run_stage(stage: str, model_cls, chain: List[str], settings: Settings
         except ProviderError as e:
             errors.append(f"{name}: {e}")
             log.warning("分阶段批改[%s]切换备胎（调用失败）: %s", stage, e)
+            continue
+        if getattr(outcome, "finish_reason", "") == "length":
+            # 输出被 max_tokens 截断：JSON 多半不完整，不能因为 HTTP 200 就当成功
+            errors.append(f"{name}: 输出被截断（finish_reason=length）")
+            log.warning("分阶段批改[%s]切换备胎（输出截断）: provider=%s", stage, name)
             continue
         try:
             parsed = model_cls.model_validate(extract_json(outcome.text))
@@ -306,18 +326,24 @@ def _extract_user_followup(n_images: int, run_text: str, followup_no: int,
 
 
 def _zoom_user(items: List[ExtractedQuestion], image_desc: List[str]) -> str:
-    """局部放大复核的 user prompt：只列待复核题号 + 图片顺序说明。"""
+    """局部放大复核的 user prompt：只列待复核题号 + 图片顺序说明。
+
+    题号以结构化形式给出（no="1"）并要求原样回传：早前写作「题1」，
+    模型照抄成 "题1" 后与服务端待复核题号对不上，整阶段被判失败。
+    """
     lines = ["请复核以下题号的学生手写答案（首轮转写时字迹存疑或疑似漏读）："]
     for q in items:
         stem = (q.stem or "").replace("\n", " ")
         if len(stem) > 60:
             stem = stem[:60] + "…"
         ref = q.uncertain_note or ("（首轮判空，疑似漏读）" if not q.student_answer else "")
-        lines.append(f"- 题{q.no}（图{q.page}）：题干：{stem}"
+        lines.append(f'- no="{q.no}"（图{q.page}）：题干：{stem}'
                      + (f"｜首轮备注：{ref}" if ref else ""))
-    lines.append("图片顺序：" + "；".join(image_desc) + "。只输出上述题号，"
-                 "JSON 格式：{\"reread\": [{\"no\": \"题号\", \"student_answer\": \"转写\", "
-                 "\"handwriting_uncertain\": false, \"uncertain_note\": \"\"}]}")
+    lines.append("图片顺序：" + "；".join(image_desc) + "。"
+                 "只复核上面列出的题号；输出的 no 必须与给出的 no 完全一致"
+                 "（原样回传，不要加「题」字、括号、序号或任何其它字符）。"
+                 'JSON 格式：{"reread": [{"no": "与上面完全一致的 no", "student_answer": "转写", '
+                 '"handwriting_uncertain": false, "uncertain_note": ""}]}')
     return "\n".join(lines)
 
 
@@ -327,37 +353,127 @@ def _needs_zoom(questions: List[ExtractedQuestion]) -> List[ExtractedQuestion]:
             if q.handwriting_uncertain or not (q.student_answer or "").strip()]
 
 
+_NO_PREFIXES = ("No.", "no.", "NO.", "No", "no", "NO", "第", "题", "#", "＃")
+
+
+def _zoom_no_candidates(raw: str) -> List[str]:
+    """复核返回题号的有限变体（精确优先）。
+
+    只剥离明显无歧义的前后缀（「题1」「第1题」「No.1」这类包装）。
+    刻意不做「1(1) → 1」的激进归一化：那会把同一大题下的不同小题合并成同一题，
+    比一次题号对不上更危险。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return []
+    keys: List[str] = [text]
+    core = unicodedata.normalize("NFKC", text).strip()
+    if core and core not in keys:
+        keys.append(core)
+    stripped = core
+    for prefix in _NO_PREFIXES:
+        if stripped.startswith(prefix):
+            stripped = stripped[len(prefix):].strip()
+            break
+    if stripped.endswith("题"):
+        stripped = stripped[:-1].strip()
+    if stripped and stripped not in keys:
+        keys.append(stripped)
+    return keys
+
+
+def _match_zoom_target(raw: str,
+                       by_no: Dict[str, ExtractedQuestion]) -> Optional[ExtractedQuestion]:
+    """把复核返回的题号映射到待复核题；只在唯一可判定时返回，否则 None。"""
+    for key in _zoom_no_candidates(raw):
+        target = by_no.get(key)
+        if target is not None:
+            return target
+    return None
+
+
+@dataclass
+class ZoomMergeStats:
+    """复核合并统计：更新题数 + 未匹配 / 重复返回的原始题号（只记录，不抛错）。"""
+
+    updated: int = 0
+    unmatched: List[str] = field(default_factory=list)
+    duplicated: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ZoomOutcome:
+    """放大复核结果。outcome 为空表示本次复核没有产出可用结果（失败即降级）。"""
+
+    updated: int = 0
+    outcome: Any = None
+    cost: float = 0.0
+    note: str = ""
+
+
 def _merge_zoom(questions: List[ExtractedQuestion],
-                reread: List[ZoomRereadItem]) -> int:
-    """把复核结果合并回转写：按题号匹配，只更新有变化的题。返回更新题数。"""
+                reread: List[ZoomRereadItem]) -> ZoomMergeStats:
+    """把复核结果合并回转写：按题号匹配，只更新有变化的题。
+
+    复核是"增强"：未知题号与重复返回只丢弃并记录，不覆盖已有转写、不报错。
+    """
     by_no = {str(q.no): q for q in questions}
-    updated = 0
+    stats = ZoomMergeStats()
+    seen: set = set()
     for r in reread:
-        q = by_no.get(str(r.no))
-        if q is None:
+        target = _match_zoom_target(r.no, by_no)
+        if target is None:
+            stats.unmatched.append(str(r.no))
             continue
+        if target.no in seen:
+            stats.duplicated.append(str(r.no))
+            continue
+        seen.add(target.no)
+        q = target
         new_ans = (r.student_answer or "").strip()
         if r.handwriting_uncertain:
             if not q.handwriting_uncertain or q.student_answer:
                 q.handwriting_uncertain = True
                 q.student_answer = ""
                 q.uncertain_note = r.uncertain_note or q.uncertain_note
-                updated += 1
+                stats.updated += 1
         elif new_ans != (q.student_answer or "").strip() or q.handwriting_uncertain:
             # 复核辨认出答案（含"首轮判空→复核找到字迹"、"存疑→确认答案"、
             # "存疑→复核确认空白"三种），以复核为准
             q.student_answer = r.student_answer
             q.handwriting_uncertain = False
             q.uncertain_note = ""
-            updated += 1
-    return updated
+            stats.updated += 1
+    return stats
+
+
+def _mark_unresolved_blank(targets: List[ExtractedQuestion], reason: str) -> List[str]:
+    """复核未完成时，把"首轮判空"的题降级为存疑，返回受影响题号。
+
+    这些题之所以进入复核，正是因为"判空"可能是漏读；复核没跑成，就不能据此认定
+    "学生没作答"（否则会被比对阶段判成 unanswered，把一个可能是漏读的题当成空白题）。
+    """
+    affected: List[str] = []
+    for q in targets:
+        if (q.student_answer or "").strip():
+            continue
+        if not q.handwriting_uncertain:
+            q.handwriting_uncertain = True
+            affected.append(str(q.no))
+        if not q.uncertain_note:
+            q.uncertain_note = f"放大复核未完成（{reason}）：无法确认是未作答还是漏读"
+    return affected
 
 
 async def _zoom_reread(questions: List[ExtractedQuestion],
                        prepped: List[Tuple[bytes, str]],
                        settings: Settings, chain: List[str],
-                       provider_factory: Optional[Callable] = None):
-    """对字迹存疑题做局部放大复核。返回 (更新题数, outcome, cost)，无需复核返回 None。"""
+                       provider_factory: Optional[Callable] = None) -> Optional[ZoomOutcome]:
+    """对字迹存疑题做局部放大复核。无需复核返回 None。
+
+    复核只是增强：耗尽备胎或输出不可用时**不阻断主流程**——保留首轮转写继续后续阶段，
+    并在 ZoomOutcome.note 里如实说明（该说明随提取阶段记录落库，供人工核对）。
+    """
     cfg = settings.staged_grading
     if not cfg.extract_zoom_reread:
         return None
@@ -388,25 +504,41 @@ async def _zoom_reread(questions: List[ExtractedQuestion],
 
     system = EXTRACT_ZOOM_SYSTEM
     user = _zoom_user(targets, image_desc)
-    need_nos = {str(q.no) for q in targets}
     max_tokens = cfg.extract_max_tokens
 
     async def call(provider):
-        return await provider.grade_multi(zoom_images, system, user,
-                                          max_tokens=max_tokens)
+        return await provider.grade_multi(
+            zoom_images, system, user,
+            max_tokens=_stage_max_tokens(getattr(provider, "cfg", None), max_tokens))
 
-    def check(parsed):
-        for r in parsed.reread:
-            if str(r.no) not in need_nos:
-                raise ValueError(f"复核返回了未要求的题号: {r.no}")
+    try:
+        parsed, outcome, cost = await _run_stage("extract_zoom", ZoomRereadResult,
+                                                 chain, settings, call, None,
+                                                 provider_factory)
+    except StageError as e:
+        reason = (e.message or "").strip()[:120]
+        affected = _mark_unresolved_blank(targets, reason)
+        log.warning("分阶段批改[extract] 放大复核未完成，已保留首轮转写：%s"
+                    "（%d 题判空降级为存疑）", e.message, len(affected))
+        return ZoomOutcome(
+            updated=0, outcome=None, cost=0.0,
+            note=f"放大复核未完成（{reason}）；已保留首轮转写，"
+                 f"{len(affected)} 道判空题标为存疑待人工核对")
 
-    parsed, outcome, cost = await _run_stage("extract_zoom", ZoomRereadResult,
-                                             chain, settings, call, check,
-                                             provider_factory)
-    updated = _merge_zoom(questions, parsed.reread)
+    stats = _merge_zoom(questions, parsed.reread)
     log.info("分阶段批改[extract] 放大复核完成：%d 题待复核，%d 题转写被更新",
-             len(targets), updated)
-    return updated, outcome, cost
+             len(targets), stats.updated)
+    notes: List[str] = []
+    if stats.unmatched:
+        notes.append(f"放大复核有 {len(stats.unmatched)} 条题号无法匹配已忽略"
+                     f"（{', '.join(stats.unmatched[:5])}）")
+    if stats.duplicated:
+        notes.append(f"放大复核有 {len(stats.duplicated)} 条重复题号只取首次"
+                     f"（{', '.join(stats.duplicated[:5])}）")
+    note = "；".join(notes)
+    if note:
+        log.warning("分阶段批改[extract] %s", note)
+    return ZoomOutcome(updated=stats.updated, outcome=outcome, cost=cost, note=note)
 
 
 async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_level: str,
@@ -439,7 +571,9 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
     max_tokens = cfg.extract_max_tokens
 
     async def call(provider):
-        return await provider.grade_multi(prepped, system, user, max_tokens=max_tokens)
+        return await provider.grade_multi(
+            prepped, system, user,
+            max_tokens=_stage_max_tokens(getattr(provider, "cfg", None), max_tokens))
 
     def check(parsed):
         qs = parsed.questions if not is_followup else parsed.new_questions
@@ -455,13 +589,16 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
                                              call, check, provider_factory)
     calls = [(outcome, cost)]
 
-    # 局部放大复核：只针对字迹存疑/判空的题
+    # 局部放大复核：只针对字迹存疑/判空的题（失败即降级，不阻断主流程）
     zoom_targets = parsed.questions if not is_followup else parsed.new_questions
     zoomed = await _zoom_reread(zoom_targets, prepped, settings, chain,
                                 provider_factory)
     if zoomed:
-        _updated, z_outcome, z_cost = zoomed
-        calls.append((z_outcome, z_cost))
+        if zoomed.outcome is not None:
+            calls.append((zoomed.outcome, zoomed.cost))
+        if zoomed.note:
+            # 随提取阶段记录落库（runs[].stages.extract.zoom_note），不只留一行日志
+            parsed.zoom_note = zoomed.note
 
     total_cost = round(sum(c for _, c in calls), 4)
     return parsed, calls, total_cost
@@ -491,7 +628,9 @@ async def solve_stage(items: List[Dict[str, str]], subject: str, grade_level: st
     max_tokens = settings.staged_grading.solve_max_tokens
 
     async def call(provider):
-        return await provider.complete_text(system, user, max_tokens=max_tokens)
+        return await provider.complete_text(
+            system, user,
+            max_tokens=_stage_max_tokens(getattr(provider, "cfg", None), max_tokens))
 
     def check(parsed):
         want = {i["no"] for i in safe_items}
@@ -549,7 +688,9 @@ async def compare_stage(extracted: List[ExtractedQuestion], solutions: Dict[str,
         async def call(provider):
             return await provider.complete_text(
                 COMPARE_SYSTEM, user,
-                max_tokens=settings.staged_grading.compare_max_tokens)
+                max_tokens=_stage_max_tokens(
+                    getattr(provider, "cfg", None),
+                    settings.staged_grading.compare_max_tokens))
 
         def check(parsed):
             want = {p["no"] for p in pending}
@@ -583,7 +724,9 @@ async def diagnose_stage(wrong_items: List[Dict[str, Any]], subject: str,
     max_tokens = settings.staged_grading.diagnose_max_tokens
 
     async def call(provider):
-        return await provider.complete_text(system, user, max_tokens=max_tokens)
+        return await provider.complete_text(
+            system, user,
+            max_tokens=_stage_max_tokens(getattr(provider, "cfg", None), max_tokens))
 
     def check(parsed):
         want = {str(i.get("no", "")) for i in wrong_items}
