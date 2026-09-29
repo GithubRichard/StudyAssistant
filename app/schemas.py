@@ -212,6 +212,9 @@ class QuestionReview(StrictModel):
     state: str = "not_applicable"
     note: str = ""
     basis: str = ""
+    # 转写二次确认结论：True=重读与转写一致，False=不符或无法重读，None=本次未做转写核对
+    transcript_ok: Optional[bool] = None
+    reread_answer: str = ""  # 对照原图重读到的学生作答（与转写一致时照抄转写）
 
     @model_validator(mode="after")
     def _check_state(self) -> "QuestionReview":
@@ -228,12 +231,18 @@ REVIEW_ITEM_STATES = ("agreed", "disagreed", "unverified")
 
 
 class ReviewItem(StrictModel):
-    """复查方对单道送审题的结论：无异议 / 有异议（须给依据）/ 无法核查。"""
+    """复查方对单道送审题的结论：无异议 / 有异议（须给依据）/ 无法核查。
+
+    附带转写二次确认结论：transcript_ok=false（重读与转写实质不符）时，
+    该题必须标 disagreed 并在 basis 写清转写差异。
+    """
 
     id: str
     state: str = "unverified"
     note: str = ""
     basis: str = ""
+    transcript_ok: Optional[bool] = None  # None=本次未做转写核对（纯文字复查）
+    reread_answer: str = ""
 
     @model_validator(mode="after")
     def _check(self) -> "ReviewItem":
@@ -383,6 +392,7 @@ class ReviewSummary(StrictModel):
     model_reported: str = ""       # 网关报告的模型；缺失时保持空串，不用请求值冒充
     model_identity: str = ""       # confirmed / mismatch / unknown（身份核验结论）
     coverage: str = ""             # 材料范围：transcript_only（纯转写核查，不读图）
+                                   #          reread（先对照原图做转写二次确认，再核查）
 
     @model_validator(mode="before")
     @classmethod

@@ -322,7 +322,8 @@ class TaskRunner:
                 # 复查不会有新的信息增益，跳过以省一次模型调用，如实标注
                 result = review.apply_skipped_after_staged(result)
             else:
-                result = await self._run_review(task, run, result, deadline, payload)
+                result = await self._run_review(task, run, result, deadline, payload,
+                                                assets)
 
         await self._finish(task, run, payload, result, output_dir, prev_result)
 
@@ -483,9 +484,12 @@ class TaskRunner:
 
     async def _run_review(self, task: Dict[str, Any], run: Dict[str, Any],
                           result: Dict[str, Any], deadline: float,
-                          first_payload: Dict[str, Any]) -> Dict[str, Any]:
+                          first_payload: Dict[str, Any],
+                          assets: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """服务端二次复查编排（第二模型）：每轮最多一次调用。
 
+        复查分两步（一次调用内完成）：先对照作业原图做转写二次确认
+        （重读学生作答，抓"卷面是 A、转写成 B"这类识别错误），再做逻辑核查。
         只写 review / review_summary 等服务端管理字段；调用失败、身份不可信、
         覆盖对账不过、合并校验失败都只影响复查字段（如实标注），不吞首轮成果。
         取消异常原样上抛（服务停止仍按既有「结果未确认」纪律处理）。
@@ -506,15 +510,23 @@ class TaskRunner:
             log.warning("复查未派发：任务预算已耗尽 task_id=%s", task_id)
             return review.apply_not_run(result, "任务时间预算已耗尽，复查未派发")
 
-        # 纯文字核查：只用提取转写（题干/学生作答）+ 首轮批改结论做对比，
-        # 不再读取原图发给复查模型（省 token，也避免复查方重复读题被带偏）。
-        coverage = "transcript_only"
+        # 转写二次确认：把作业原图附给复查模型，先重读学生作答核对转写，
+        # 再核查首轮结论；拿不到原图时退化为纯文字核查。
+        # 补充轮次复查覆盖全量候选题：取任务全部图片（不止本轮新增的）。
+        review_assets = assets or []
+        if run.get("kind") == "followup":
+            rows = await db.list_task_assets(s.db_path, task_id)
+            review_assets = [{**r, "data_url": workspace.load_asset_data_url(r)}
+                             for r in rows]
+        images = [a.get("data_url") for a in review_assets if a.get("data_url")]
+        coverage = "reread" if images else "transcript_only"
 
         timeout = min(h.review_timeout_seconds, remaining)
-        log.info("开始复查 task_id=%s run_no=%d 送审=%d 超限=%d timeout=%.0fs coverage=%s",
-                 task_id, run_no, len(targets), len(overflow), timeout, coverage)
+        log.info("开始复查 task_id=%s run_no=%d 送审=%d 超限=%d timeout=%.0fs coverage=%s images=%d",
+                 task_id, run_no, len(targets), len(overflow), timeout, coverage, len(images))
         try:
-            messages = hermes.build_review_messages(s, task, run, targets)
+            messages = hermes.build_review_messages(s, task, run, targets,
+                                                    images or None)
             payload = await asyncio.wait_for(
                 self.client.review_questions(
                     messages, f"review-{task_id}-{run_no}", timeout=timeout),

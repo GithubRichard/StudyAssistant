@@ -65,6 +65,7 @@ def _normalize(result: Dict[str, Any]) -> Dict[str, Any]:
         q["review"] = {
             "state": "unprocessed" if candidate else "not_applicable",
             "note": "", "basis": "",
+            "transcript_ok": None, "reread_answer": "",
         }
     data["review_summary"] = _empty_summary()
     return data
@@ -74,10 +75,12 @@ def _set_candidate_review(data: Dict[str, Any], state_by_id: Optional[Dict[str, 
                           default_state: str, note: str) -> None:
     for q in data.get("questions") or []:
         if not is_candidate(q):
-            q["review"] = {"state": "not_applicable", "note": "", "basis": ""}
+            q["review"] = {"state": "not_applicable", "note": "", "basis": "",
+                           "transcript_ok": None, "reread_answer": ""}
             continue
         state = (state_by_id or {}).get(q["id"], default_state)
-        q["review"] = {"state": state, "note": note, "basis": ""}
+        q["review"] = {"state": state, "note": note, "basis": "",
+                       "transcript_ok": None, "reread_answer": ""}
 
 
 def apply_not_required(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -240,7 +243,9 @@ def apply_review_result(result: Dict[str, Any], sent: List[Dict[str, Any]],
             continue  # 超限未送审：规范化时已是 unprocessed
         state = item.get("state", "unverified")
         q["review"] = {"state": state, "note": item.get("note", ""),
-                       "basis": item.get("basis", "")}
+                       "basis": item.get("basis", ""),
+                       "transcript_ok": item.get("transcript_ok"),
+                       "reread_answer": item.get("reread_answer", "") or ""}
         if state == "disagreed":
             disagreed += 1
             prev_basis = (q.get("final_decision_basis") or "").strip()
@@ -253,6 +258,8 @@ def apply_review_result(result: Dict[str, Any], sent: List[Dict[str, Any]],
 
     if coverage == "transcript_only":
         notes.append("复查仅依据文字转写（提取的题干/学生作答）与首轮结论核查，未读取原图")
+    elif coverage == "reread":
+        notes.append("复查先对照原图做转写二次确认（重读学生作答、核对转写），再核查首轮结论")
     if meta.get("model_identity") == IDENTITY_MODEL_ONLY:
         notes.append("网关未报告 provider，复查模型身份仅按模型名核对")
     if overflow:
@@ -332,5 +339,8 @@ def build_review_markdown(result: Dict[str, Any]) -> str:
         entry = f"- 第 {no} 题：{label}"
         if detail:
             entry += f"——{detail}"
+        if review.get("transcript_ok") is False:
+            reread = (review.get("reread_answer") or "").strip() or "无法辨认"
+            entry += f"；转写二次确认：与转写不符（原图重读作答「{reread}」）"
         lines.append(entry)
     return "\n".join(lines).strip()

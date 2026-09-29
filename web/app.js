@@ -647,7 +647,10 @@ function resultBodyHtml(task, questions, ledgerByUid) {
     const label = REVIEW_STATE_LABEL[r.state] || r.state;
     const detail = [r.basis, r.note].filter(Boolean).join("；");
     const tone = r.state === "agreed" ? "" : (r.state === "disagreed" ? "error-text" : "muted");
-    return `<div class="q-row"><span class="q-label">二次复查</span><div class="${tone}">${esc(label)}${detail ? `：${esc(detail)}` : ""}</div></div>`;
+    // 转写二次确认不符时明确标出（原图重读作答与转写不一致）
+    const transcript = r.transcript_ok === false
+      ? `；转写二次确认：与转写不符（原图重读作答「${r.reread_answer || "无法辨认"}」）` : "";
+    return `<div class="q-row"><span class="q-label">二次复查</span><div class="${tone}">${esc(label)}${detail ? `：${esc(detail)}` : ""}${esc(transcript)}</div></div>`;
   };
 
   const qCard = (q) => {

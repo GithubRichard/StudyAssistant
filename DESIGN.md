@@ -110,6 +110,7 @@
 | 维度 | 约定 |
 |---|---|
 | 候选范围 | `wrong` + `uncertain`；`unanswered` 不送；超限时判错题优先，未送审标 `unprocessed` |
+| 复查步骤 | 一次调用内分两步：**先转写二次确认**（复查模型对照作业原图逐题重读学生作答，核对提取转写；卷面是 A、转写成 B 即为对首轮结论的实质异议，该题标 `disagreed` 并在 `basis` 写清转写差异），**再逻辑核查**（核查首轮求解、比对与诊断是否自洽）。拿不到原图时退化为纯文字核查（`coverage=transcript_only`）；复查模型需要图片链路 |
 | 模型切换 | 请求体 `model`（`model_routes` 别名或底层 ID）+ `provider` + `model_options`；底层 ID 不带 `provider` 会被网关静默忽略 |
 | 身份核验 | 以网关**报告**的模型为准；报告缺失=身份未确认、与首轮同模型=路由不符、模型或 provider 与 `review_expected_*` 不符=不符；三者都不采纳为可信结论，请求值不得冒充实际值。**网关不回 `provider` 时按 `model_only` 采纳**（模型名已核对且不同于首轮模型，provider 只是次级旁证），并在 `review_summary.note` 如实写明核验范围 |
 | 覆盖对账 | 按送审 id 集合核对复查输出；空列表/漏题/未知 id/重复 id 整体拒绝，送审题标 `unverified` |

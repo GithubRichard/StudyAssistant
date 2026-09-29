@@ -633,7 +633,43 @@ class BuildReviewMessagesTest(unittest.TestCase):
         self.assertIn("【首轮批改结论】", text)
         self.assertIn("不提供任何图片", text)
         self.assertNotIn("secret-key", text)
-        # content 里只有文本块，没有图片附件
+    def test_review_message_with_images_adds_reread_step(self):
+        """附原图时：第一步先做转写二次确认（看图重读作答），再逻辑核查。"""
+        settings = self._settings()
+        task = {"id": "t1", "task_type": "grading", "subject": "数学", "grade_level": "七年级"}
+        run = {"run_no": 1, "kind": "initial"}
+        messages = build_review_messages(
+            settings, task, run, [self._question()],
+            images=["data:image/jpeg;base64,AAA", "data:image/jpeg;base64,BBB"])
+        text = messages[1]["content"][0]["text"]
+        # 第一步：转写二次确认
+        self.assertIn("转写二次确认", text)
+        self.assertIn("作业原图", text)
+        self.assertIn("卷面写的是 A、转写成了 B", text)
+        self.assertIn("transcript_ok", text)
+        self.assertIn("reread_answer", text)
+        self.assertIn("transcript_ok=false 的题必须标 disagreed", text)
+        # 第二步：逻辑核查仍在
+        self.assertIn("逻辑核查", text)
+        self.assertIn("不裁决、不改判", messages[0]["content"])
+        # 原图以 image_url 块附在文本之后
+        content = messages[1]["content"]
+        self.assertEqual(len(content), 3)
+        self.assertEqual(content[0]["type"], "text")
+        self.assertEqual(content[1]["type"], "image_url")
+        self.assertEqual(content[1]["image_url"]["url"], "data:image/jpeg;base64,AAA")
+        self.assertEqual(content[2]["image_url"]["url"], "data:image/jpeg;base64,BBB")
+        self.assertNotIn("secret-key", text)
+
+    def test_review_message_without_images_stays_text_only(self):
+        """不附图时退化为纯文字核查：不提供原图，输出契约无转写字段。"""
+        settings = self._settings()
+        task = {"id": "t1", "task_type": "grading", "subject": "数学", "grade_level": "七年级"}
+        run = {"run_no": 1, "kind": "initial"}
+        messages = build_review_messages(settings, task, run, [self._question()])
+        text = messages[1]["content"][0]["text"]
+        self.assertIn("不提供任何图片", text)
+        self.assertNotIn("转写二次确认", text)
         content = messages[1]["content"]
         self.assertEqual(len(content), 1)
         self.assertEqual(content[0]["type"], "text")

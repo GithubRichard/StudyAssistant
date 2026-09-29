@@ -9,7 +9,7 @@ from pathlib import Path
 
 from app import db, review, tasks
 from app.config import Settings
-from app.hermes import validate_result
+from app.hermes import validate_result, validate_review_response
 from tests.mock_hermes import LEARNING_RESULT
 from tests.test_tasks import seed_asset, seed_user
 
@@ -237,7 +237,54 @@ class ApplyReviewResultTest(unittest.TestCase):
         self.assertIn("未读取原图", summary["note"])
         validate_result(result)
 
-    def test_overflow_makes_partial(self):
+    def test_reread_coverage_note_and_transcript_fields_merged(self):
+        """coverage=reread 时如实备注转写二次确认；逐题合并 transcript_ok/reread_answer。"""
+        data = copy.deepcopy(LEARNING_RESULT)
+        sent = [data["questions"][0]]
+        by_id, _ = review.reconcile_reviews(sent, [{
+            "id": "sim-p12-q1", "transcript_ok": False, "reread_answer": "A",
+            "state": "disagreed", "note": "转写疑似有误",
+            "basis": "原图作答为 A，转写为 B，首轮基于错误转写判定"}])
+        result = review.apply_review_result(data, sent, by_id, [], {
+            "coverage": "reread", "model_identity": "confirmed",
+            "model_requested": "glm", "model_reported": "glm-5.3"})
+        summary = result["review_summary"]
+        self.assertEqual(summary["state"], "completed")
+        self.assertEqual(summary["coverage"], "reread")
+        self.assertIn("转写二次确认", summary["note"])
+        q = result["questions"][0]
+        self.assertEqual(q["review"]["state"], "disagreed")
+        self.assertIs(q["review"]["transcript_ok"], False)
+        self.assertEqual(q["review"]["reread_answer"], "A")
+        validate_result(result)
+        md = review.build_review_markdown(result)
+        self.assertIn("转写二次确认：与转写不符", md)
+        self.assertIn("原图重读作答「A」", md)
+
+    def test_transcript_ok_true_merges_cleanly(self):
+        """转写核对相符：transcript_ok=true 照常合并，附记不打扰。"""
+        data = copy.deepcopy(LEARNING_RESULT)
+        sent = [data["questions"][0]]
+        by_id, _ = review.reconcile_reviews(sent, [{
+            "id": "sim-p12-q1", "transcript_ok": True, "reread_answer": "x=5",
+            "state": "agreed", "note": "转写与原图一致，未发现异议", "basis": ""}])
+        result = review.apply_review_result(data, sent, by_id, [], {
+            "coverage": "reread", "model_identity": "confirmed",
+            "model_requested": "glm", "model_reported": "glm-5.3"})
+        q = result["questions"][0]
+        self.assertIs(q["review"]["transcript_ok"], True)
+        self.assertEqual(q["review"]["reread_answer"], "x=5")
+        validate_result(result)
+        md = review.build_review_markdown(result)
+        self.assertIn("转写二次确认", md)  # summary 注明材料范围
+        self.assertNotIn("与转写不符", md)  # 相符时不逐题打扰
+
+    def test_review_item_without_transcript_fields_still_valid(self):
+        """复查方旧式输出（无转写字段）：协议仍合法，transcript_ok=None=未核对。"""
+        resp = validate_review_response(
+            {"reviews": [{"id": "q1", "state": "agreed", "note": "", "basis": ""}]})
+        self.assertIsNone(resp.reviews[0].transcript_ok)
+        self.assertEqual(resp.reviews[0].reread_answer, "")
         data = copy.deepcopy(LEARNING_RESULT)
         data["questions"].append(_q("extra-1", "wrong"))
         sent, overflow = review.select_review_targets(data["questions"], 1)
@@ -345,7 +392,28 @@ class ReviewPipelineTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(q["review"]["state"], "agreed")
         self.assertEqual(q["status"], "wrong")
 
-    async def test_provider_unreported_still_completes_review(self):
+    async def test_review_attaches_original_images_for_reread(self):
+        """复查把作业原图附给复查模型做转写二次确认，coverage=reread。"""
+        created = await self._create()
+        client = ReviewFakeClient()
+        await self._run(client)
+
+        self.assertEqual(client.review_calls, 1)
+        messages = client.last_review_messages
+        self.assertIsNotNone(messages)
+        content = messages[1]["content"]
+        self.assertEqual(content[0]["type"], "text")
+        self.assertIn("转写二次确认", content[0]["text"])
+        image_blocks = [b for b in content[1:] if b.get("type") == "image_url"]
+        self.assertEqual(len(image_blocks), 1)
+        self.assertTrue(
+            image_blocks[0]["image_url"]["url"].startswith("data:image/"))
+
+        task = await db.get_task(self.settings.db_path, created["task_id"])
+        view = await tasks.build_task_view(self.settings, task)
+        summary = view["result"]["review_summary"]
+        self.assertEqual(summary["coverage"], "reread")
+        self.assertIn("转写二次确认", summary["note"])
         """网关不回 provider（如 tencent-tokenhub）：复查照常采纳，只标注核验范围。"""
         # 复用同一临时目录（路径不变），只改复查身份配置为不支持报告 provider 的部署
         self.settings = make_settings(self.tmp.name, **{
@@ -466,8 +534,8 @@ class ReviewPipelineTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("预算已耗尽", merged["review_summary"]["note"])
         self.assertEqual(merged["questions"][0]["review"]["state"], "unprocessed")
 
-    async def test_followup_reruns_review_without_images(self):
-        """补充材料后重新复查当前全部候选题；复查为纯文字核查，不再附带图片。"""
+    async def test_followup_reruns_review_with_all_images(self):
+        """补充材料后重新复查当前全部候选题；复查附带全部原图做转写二次确认。"""
         created = await self._create()
         client = ReviewFakeClient()
         await self._run(client)
@@ -482,10 +550,13 @@ class ReviewPipelineTest(unittest.IsolatedAsyncioTestCase):
         await self._run(client)
         self.assertEqual(client.run_calls, 2)
         self.assertEqual(client.review_calls, 2)
-        # 复查消息只含文字（提取转写 + 首轮结论），不带任何图片附件
+        # 复查消息：文字（含提取转写 + 首轮结论 + 转写二次确认步骤）+ 全部原图附件
         content = client.last_review_messages[1]["content"]
-        self.assertTrue(all(c["type"] == "text" for c in content))
+        self.assertEqual(content[0]["type"], "text")
         self.assertIn("【提取转写】", content[0]["text"])
+        self.assertIn("转写二次确认", content[0]["text"])
+        image_blocks = [c for c in content[1:] if c.get("type") == "image_url"]
+        self.assertEqual(len(image_blocks), 2)  # 首轮图 a1 + 补充图 a2
 
     async def test_disagreed_review_does_not_change_ledger(self):
         """复查异议只记录，不改台账判定与订正状态，也不产生复测事件。"""

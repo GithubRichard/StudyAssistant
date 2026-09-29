@@ -340,8 +340,125 @@ def build_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, Any],
 
 
 def build_review_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, Any],
-                          questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """构造发往复查模型的只读复查消息（纯文字核查，不读图）。
+                          questions: List[Dict[str, Any]],
+                          images: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """构造发往复查模型的复查消息：先做转写二次确认（对照原图），再做逻辑核查。
+
+    一次调用内分两步：
+    1. 转写二次确认——复查方拿到作业原图，逐题重读学生手写作答，与提取转写对比；
+       卷面是 A、转写成 B 这类识别错误即为对首轮结论的实质异议（首轮基于错误输入判定）。
+    2. 逻辑核查——基于转写与第一步的重读结论，核查首轮独立求解、比对与诊断是否自洽。
+
+    images 为空时退化为纯文字核查（不读图），coverage=transcript_only；
+    附图时 coverage=reread，复查模型需要图片链路。
+    复查方只做核查、只提异议：协议里没有也不接受任何改判字段。
+    """
+    if images:
+        return _build_review_messages_with_images(task, run, questions, images)
+    return _build_review_messages_text_only(task, run, questions)
+
+
+def _review_question_block(q: Dict[str, Any]) -> List[str]:
+    """单道送审题的文字材料块：提取转写 + 首轮批改结论（两步复查共用）。"""
+    lines: List[str] = []
+    parts = [f"- id={q['id']}"]
+    for key, label in (("no", "题号"), ("page", "页码")):
+        if (q.get(key) or "").strip():
+            parts.append(f"{label}={q[key]}")
+    lines.append(" ".join(parts))
+    lines.append("  【提取转写】（模型从原图读到的内容，只转写、未判定）")
+    for key, label in (("stem", "题干"), ("student_answer", "学生作答"),
+                       ("source_note", "转写备注")):
+        if (q.get(key) or "").strip():
+            lines.append(f"    {label}：{q[key]}")
+    lines.append("  【首轮批改结论】（另一模型给出，仅供核查）")
+    for key, label in (("status", "首轮判定"), ("correct_answer", "参考答案"),
+                       ("error_rule", "错因"), ("knowledge_point", "知识点"),
+                       ("evidence", "判定证据")):
+        if (q.get(key) or "").strip():
+            lines.append(f"    {label}：{q[key]}")
+    steps = q.get("steps") or []
+    if steps:
+        lines.append("    解题步骤：" + " → ".join(str(s) for s in steps))
+    lines.append("")
+    return lines
+
+
+def _build_review_messages_with_images(task: Dict[str, Any], run: Dict[str, Any],
+                                       questions: List[Dict[str, Any]],
+                                       images: List[str]) -> List[Dict[str, Any]]:
+    """附带作业原图的复查消息：第一步先做转写二次确认。"""
+    lines: List[str] = [
+        "你是独立的复查员。另一个模型已完成首轮批改，请你对下面列出的"
+        "「已判错题与存疑题」按顺序做两步复查：先转写二次确认，再逻辑核查。",
+        "",
+        "【你的材料（共三份）】",
+        "材料一【作业原图】：本次任务的原始作业照片，附在消息末尾；"
+        "第一步转写二次确认必须看图定位题号、重读学生手写答案。",
+        "材料二【提取转写】：提取阶段模型从作业原图读出的题干与学生作答，"
+        "只转写、未做任何判定；字迹存疑的题会在转写备注里说明。",
+        "材料三【首轮批改结论】：另一模型基于转写独立求解、比对后给出的判定、"
+        "参考答案与诊断，仅供你核查，不是标准答案。",
+        "",
+        "【第一步：转写二次确认（看图，必须先做）】",
+        "1. 对每道送审题，在原图中按题号找到对应位置，只重读「学生手写答案」部分；"
+        "不要被印刷题干、红笔批改痕迹干扰，也不要重新求解题目。",
+        "2. 把重读到的作答与【提取转写】里的学生作答逐项对比（只看实质内容，"
+        "忽略项序、空白等无关差异）。",
+        "3. 重读与转写实质不符（例如卷面写的是 A、转写成了 B）→ transcript_ok=false，"
+        "该题直接标 disagreed，basis 必须写清「原图作答为 X，转写为 Y，"
+        "首轮基于错误转写判定」；reread_answer 填你重读到的作答。",
+        "4. 字迹实在看不清、无法重读 → transcript_ok=false，reread_answer 写空串，"
+        "state=unverified，不要猜测。",
+        "5. 重读与转写一致 → transcript_ok=true，reread_answer 照抄转写，进入第二步。",
+        "",
+        "【第二步：逻辑核查（看文字）】",
+        "1. 只核查、只提异议：不裁决、不改判、不给学生重新定性，不输出「正确/错误」结论。",
+        "2. 对每道送审题逐项检查：转写（以第一步重读结论为准）与首轮结论是否自洽"
+        "（如学生作答明明与参考答案一致却被判错）、首轮求解步骤是否有计算或推理错误、"
+        "是否遗漏了转写中的条件、是否把合理答案误判为错、错因是否有文字证据支撑。",
+        "3. 无异议的题只标 agreed（未发现异议，不等于证明原判定必然正确）；"
+        "有异议的题标 disagreed 并必须给出可核验依据（basis）；"
+        "转写缺失、字迹存疑导致信息不足以核查的题标 unverified，不要猜测。",
+        "4. 存疑题（首轮标 uncertain）的 agreed 仅表示未发现对存疑判断的异议，"
+        "不代表题目已确认正确或疑点消除。",
+        "",
+        f"【本次任务上下文】任务号 {task['id']}（轮次 {run['run_no']}），"
+        f"学科：{task.get('subject') or '未指定'}，年级：{task.get('grade_level') or '未指定'}。",
+        "",
+        "【待复查题目】",
+    ]
+    for q in questions:
+        lines.extend(_review_question_block(q))
+
+    lines.append("【输出契约（最终回答包含且仅包含一个 ```json 代码块）】")
+    lines.append("```json")
+    lines.append('{"reviews": [{"id": "题目id", "transcript_ok": true,')
+    lines.append('  "reread_answer": "重读到的学生作答（与转写一致时照抄转写；看不清写空串）",')
+    lines.append('  "state": "agreed|disagreed|unverified",')
+    lines.append('  "note": "简短说明", "basis": "disagreed 时必填的可核验依据，其余可为空串"}]}')
+    lines.append("```")
+    lines.append("硬性规则：送审列表中的每一道题都必须返回一项，id 与送审列表完全一致；"
+                 "不得返回未送审的题；transcript_ok=false 的题必须标 disagreed 并给 basis；"
+                 "disagreed 必须给 basis；"
+                 "所有文本字段用字符串，没有内容写空字符串 \"\"，不要写 null。")
+
+    text = "\n".join(lines)
+    content: List[Dict[str, Any]] = [{"type": "text", "text": text}]
+    for url in images:
+        content.append({"type": "image_url", "image_url": {"url": url}})
+    return [
+        {"role": "system",
+         "content": "你是复查员：先对照原图做转写二次确认（重读学生作答、抓转写错误），"
+                    "再核查文字转录与首轮结论是否自洽、只提异议，"
+                    "不裁决、不改判、不使用工具，按约定 JSON 契约输出。"},
+        {"role": "user", "content": content},
+    ]
+
+
+def _build_review_messages_text_only(task: Dict[str, Any], run: Dict[str, Any],
+                                     questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """退化路径：拿不到原图时的纯文字核查（不读图）。
 
     复查方拿到的只有两份文字材料：
     1. 提取转写——提取阶段模型从作业原图读出的题干与学生作答（只转写、未判定）；
@@ -378,26 +495,7 @@ def build_review_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, An
         "【待复查题目】",
     ]
     for q in questions:
-        parts = [f"- id={q['id']}"]
-        for key, label in (("no", "题号"), ("page", "页码")):
-            if (q.get(key) or "").strip():
-                parts.append(f"{label}={q[key]}")
-        lines.append(" ".join(parts))
-        lines.append("  【提取转写】（模型从原图读到的内容，只转写、未判定）")
-        for key, label in (("stem", "题干"), ("student_answer", "学生作答"),
-                           ("source_note", "转写备注")):
-            if (q.get(key) or "").strip():
-                lines.append(f"    {label}：{q[key]}")
-        lines.append("  【首轮批改结论】（另一模型给出，仅供核查）")
-        for key, label in (("status", "首轮判定"), ("correct_answer", "参考答案"),
-                           ("error_rule", "错因"), ("knowledge_point", "知识点"),
-                           ("evidence", "判定证据")):
-            if (q.get(key) or "").strip():
-                lines.append(f"    {label}：{q[key]}")
-        steps = q.get("steps") or []
-        if steps:
-            lines.append("    解题步骤：" + " → ".join(str(s) for s in steps))
-        lines.append("")
+        lines.extend(_review_question_block(q))
 
     lines.append("【输出契约（最终回答包含且仅包含一个 ```json 代码块）】")
     lines.append("```json")
