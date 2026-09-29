@@ -1,8 +1,59 @@
-grader-1  | 2026-09-29 06:43:18,190 INFO app.tasks: 创建学习任务 task_id=74fe25509cde4c7c type=grading kind= scope=-~- assets=1
-grader-1  | 2026-09-29 06:43:19,980 INFO app.tasks: 开始执行 task_id=74fe25509cde4c7c run_no=1 budget=1200s assets=1
-grader-1  | 2026-09-29 06:43:19,980 INFO app.tasks: 分阶段批改 task_id=74fe25509cde4c7c run_no=1 images=1 followup=False
-grader-1  | 2026-09-29 06:43:53,184 WARNING app.providers: provider=ds 输出被截断（max_tokens=8000），不再重试
-grader-1  | 2026-09-29 06:43:53,184 WARNING app.staged: 分阶段批改[extract]切换备胎（输出截断）: provider=ds
-grader-1  | 2026-09-29 06:44:12,376 WARNING app.providers: provider=glm 输出被截断（max_tokens=1024），不再重试
-grader-1  | 2026-09-29 06:44:12,376 WARNING app.staged: 分阶段批改[extract]切换备胎（输出截断）: provider=glm
-grader-1  | 2026-09-29 06:44:12,415 ERROR app.tasks: 任务失败 task_id=74fe25509cde4c7c: 分阶段批改失败: 所有模型都失败了: ds: 输出被截断（finish_reason=length） | glm: 输出被截断（finish_reason=length）
+grader-1  | 2026-09-29 07:31:05,396 INFO app.tasks: 开始执行 task_id=2d1813a395bb4856 run_no=1 budget=1200s assets=1
+grader-1  | 2026-09-29 07:31:05,397 INFO app.tasks: 分阶段批改 task_id=2d1813a395bb4856 run_no=1 images=1 followup=False
+grader-1  | 2026-09-29 07:31:15,643 WARNING app.staged: 分阶段批改[extract]切换备胎（输出非法）: 6 validation errors for ExtractionResult
+grader-1  | questions.0.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type
+grader-1  | questions.1.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type
+grader-1  | questions.2.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type
+grader-1  | questions.3.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type
+grader-1  | questions.4.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type
+grader-1  | questions.5.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type
+grader-1  | 2026-09-29 07:31:29,067 WARNING app.staged: 分阶段批改[extract]切换备胎（输出非法）: Extra data: line 8 column 6 (char 263)
+grader-1  | 2026-09-29 07:31:29,092 ERROR app.tasks: 任务失败 task_id=2d1813a395bb4856: 分阶段批改失败: 所有模型都失败了: ds: 输出校验失败(6 validation errors for ExtractionResult
+grader-1  | questions.0.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type
+grader-1  | questions.1.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type
+grader-1  | questions.2.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type
+grader-1  | questions.3.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type
+grader-1  | questions.4.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type
+grader-1  | questions.5.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type) | glm: 输出校验失败(Extra data: line 8 column 6 (char 263))grader-1  | 2026-09-29 07:31:03,679 INFO app.tasks: 创建学习任务 task_id=2d1813a395bb4856 type=grading kind= scope=-~- assets=1
+grader-1  | 2026-09-29 07:31:05,396 INFO app.tasks: 开始执行 task_id=2d1813a395bb4856 run_no=1 budget=1200s assets=1
+grader-1  | 2026-09-29 07:31:05,397 INFO app.tasks: 分阶段批改 task_id=2d1813a395bb4856 run_no=1 images=1 followup=False
+grader-1  | 2026-09-29 07:31:15,643 WARNING app.staged: 分阶段批改[extract]切换备胎（输出非法）: 6 validation errors for ExtractionResult
+grader-1  | questions.0.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type
+grader-1  | questions.1.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type
+grader-1  | questions.2.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type
+grader-1  | questions.3.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type
+grader-1  | questions.4.page
+grader-1  |   Input should be a valid string [type=string_type, input_value=1, input_type=int]
+grader-1  |     For further information visit https://errors.pydantic.dev/2.13/v/string_type) | glm: 输出校验失败(Extra data: line 8 column 6 (char 263))rrors for ExtractionResult
