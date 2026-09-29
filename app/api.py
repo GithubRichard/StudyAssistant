@@ -286,6 +286,55 @@ async def get_task(task_id: str, ctx: dict = Session):
     return await tasks.build_task_view(s, task)
 
 
+@router.delete("/tasks/{task_id}")
+async def delete_task(task_id: str, ctx: dict = Session):
+    """删除任务：仅允许删除失败/中断的任务（成功任务关联错题台账，误删会丢数据）。
+
+    连带删除轮次、附件关联、错题、事件、成果索引、归档日志；
+    已无人引用的附件图片文件一并删除。
+    """
+    s = get_settings()
+    task = await db.get_task(s.db_path, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    try:
+        auth.ensure_owner(task["openid"], ctx)
+    except auth.AuthError as e:
+        raise HTTPException(e.status_code, e.message) from e
+    if task["status"] not in ("failed", "interrupted"):
+        raise HTTPException(400, "只有失败的任务可以删除")
+    orphan_paths = await db.delete_task(s.db_path, task_id)
+
+    # 兼容老任务的 image_path：没有其它任务引用才删文件
+    legacy = (task.get("image_path") or "").strip()
+    if legacy and not any(p == legacy for p in orphan_paths):
+        other = await db.list_tasks(s.db_path, task["openid"], limit=100)
+        if not any(t["id"] != task_id and (t.get("image_path") or "") == legacy
+                   for t in other):
+            orphan_paths.append(legacy)
+
+    data_dir = Path(s.data_dir).resolve()
+    removed_files = 0
+    for p in orphan_paths:
+        try:
+            fp = Path(p)
+            if not fp.is_absolute():
+                fp = data_dir / fp
+            fp = fp.resolve()
+            # 保险：只删数据目录内的文件
+            if data_dir not in fp.parents and fp != data_dir:
+                log.warning("删除任务：跳过数据目录外的文件 %s", p)
+                continue
+            if fp.is_file():
+                fp.unlink()
+                removed_files += 1
+        except OSError as e:
+            log.warning("删除任务：文件删除失败 %s: %s", p, e)
+    log.info("任务已删除: task_id=%s openid=%s 文件=%d", task_id, task["openid"],
+             removed_files)
+    return {"ok": True, "removed_files": removed_files}
+
+
 @router.get("/tasks")
 async def list_tasks(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),
                      ctx: dict = Session):

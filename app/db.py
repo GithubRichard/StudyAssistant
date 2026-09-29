@@ -417,6 +417,46 @@ async def list_tasks(db_path: str, openid: str, limit: int = 20,
             return [dict(r) for r in await cur.fetchall()]
 
 
+async def delete_task(db_path: str, task_id: str) -> List[str]:
+    """删除任务及其全部关联数据（轮次、附件关联、错题、事件、成果索引、归档日志）。
+
+    返回可删除的本地文件路径列表（已无人引用的附件文件）。
+    成果文件（artifacts 在 git 归档工作区内）只删索引不删文件。
+    调用方需先校验任务归属与状态（仅失败/中断任务允许删除）。
+    """
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT asset_id FROM task_assets WHERE task_id=?", (task_id,)) as cur:
+            asset_ids = [r["asset_id"] for r in await cur.fetchall()]
+
+        await db.execute("DELETE FROM task_assets WHERE task_id=?", (task_id,))
+        await db.execute("DELETE FROM task_runs WHERE task_id=?", (task_id,))
+        await db.execute("DELETE FROM artifacts WHERE task_id=?", (task_id,))
+        await db.execute("DELETE FROM mistakes WHERE task_id=?", (task_id,))
+        await db.execute("DELETE FROM question_events WHERE source_task_id=?",
+                         (task_id,))
+        await db.execute("DELETE FROM git_sync_log WHERE task_id=?", (task_id,))
+        await db.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+
+        # 附件按 sha256 去重存储：仅当没有其它任务引用时才删文件
+        orphan_paths: List[str] = []
+        for aid in dict.fromkeys(asset_ids):
+            async with db.execute(
+                "SELECT 1 FROM task_assets WHERE asset_id=? LIMIT 1",
+                (aid,)) as cur:
+                if await cur.fetchone():
+                    continue
+            async with db.execute("SELECT path FROM assets WHERE id=?",
+                                 (aid,)) as cur:
+                row = await cur.fetchone()
+            if row and row["path"]:
+                orphan_paths.append(row["path"])
+            await db.execute("DELETE FROM assets WHERE id=?", (aid,))
+        await db.commit()
+    return orphan_paths
+
+
 async def claim_next_task(db_path: str, owner: str, lease_seconds: int = 300) -> Optional[dict]:
     """认领一个待执行任务；只认领 pending，避免重复派发有副作用的调用。"""
     now = time.time()

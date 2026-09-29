@@ -1050,19 +1050,36 @@ async function pageHistory(app, r, alive) {
       const link = done
         ? `#/${t.task_type === "training" ? "practice" : "result"}/${t.id}`
         : `#/task/${t.id}`;
+      const deletable = t.status === "failed" || t.status === "interrupted";
       return `
-      <a class="ledger-item" href="${link}">
-        <div class="ledger-top">
-          <span class="tag">${esc(t.subject || "")}</span>
-          <span class="tag">${esc(TASK_TYPE_LABEL[t.task_type] || t.task_type || "")}</span>
-          <span class="ledger-state">${esc(statusLabel[t.status] || t.status)}</span>
-        </div>
-        ${t.summary ? `<div class="ledger-stem">${esc(t.summary.slice(0, 80))}</div>` : ""}
-        <div class="ledger-meta muted small">${fmtDT(t.created_at)}${t.missing_info_count ? ` · 缺${t.missing_info_count}项信息` : ""}</div>
-      </a>`;
+      <div class="ledger-item">
+        <a href="${link}" style="text-decoration:none;color:inherit;display:block">
+          <div class="ledger-top">
+            <span class="tag">${esc(t.subject || "")}</span>
+            <span class="tag">${esc(TASK_TYPE_LABEL[t.task_type] || t.task_type || "")}</span>
+            <span class="ledger-state">${esc(statusLabel[t.status] || t.status)}</span>
+          </div>
+          ${t.summary ? `<div class="ledger-stem">${esc(t.summary.slice(0, 80))}</div>` : ""}
+          <div class="ledger-meta muted small">${fmtDT(t.created_at)}${t.missing_info_count ? ` · 缺${t.missing_info_count}项信息` : ""}</div>
+        </a>
+        ${deletable ? `<div style="margin-top:8px;text-align:right"><button class="btn ghost small del-task" data-id="${esc(t.id)}">删除</button></div>` : ""}
+      </div>`;
     }).join("")}</div>` : `<div class="card center"><p>还没有任务，去「学习」提交第一份作业吧</p>
       <a class="btn primary" href="#/learn">去提交</a></div>`}
   </div>`);
+  app.querySelectorAll(".del-task").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("确定删除这条失败记录吗？相关图片也会一起删除。")) return;
+      btn.disabled = true;
+      try {
+        await S.api(`/tasks/${encodeURIComponent(btn.dataset.id)}`, { method: "DELETE" });
+        btn.closest(".ledger-item").remove();
+      } catch (e) {
+        alert("删除失败：" + (e && e.message || "未知错误"));
+        btn.disabled = false;
+      }
+    });
+  });
 }
 
 /* ---------------- 我的：账号与设置 ---------------- */
