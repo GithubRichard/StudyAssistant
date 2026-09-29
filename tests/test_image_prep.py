@@ -21,7 +21,7 @@ def _size(b: bytes):
 
 class PrepareTest(unittest.TestCase):
     def test_upscale_to_min_long_side(self):
-        out, mime = image_prep.prepare_extract_image(
+        out, mime, info = image_prep.prepare_extract_image(
             _jpeg(400, 300), "image/jpeg", min_long_side=2048, max_long_side=4096)
         self.assertEqual(mime, "image/jpeg")
         w, h = _size(out)
@@ -30,30 +30,51 @@ class PrepareTest(unittest.TestCase):
         self.assertAlmostEqual(w / h, 400 / 300, places=2)
 
     def test_downscale_over_max(self):
-        out, _ = image_prep.prepare_extract_image(
+        out, _, _info = image_prep.prepare_extract_image(
             _jpeg(5000, 4000), "image/jpeg", min_long_side=2048, max_long_side=4096)
         w, h = _size(out)
         self.assertEqual(max(w, h), 4096)
 
     def test_no_change_when_in_range(self):
-        out, _ = image_prep.prepare_extract_image(
+        out, _, _info = image_prep.prepare_extract_image(
             _jpeg(3000, 2000), "image/jpeg", min_long_side=2048, max_long_side=4096)
         self.assertEqual(_size(out), (3000, 2000))
 
     def test_min_zero_disables_upscale(self):
-        out, _ = image_prep.prepare_extract_image(
+        out, _, _info = image_prep.prepare_extract_image(
             _jpeg(400, 300), "image/jpeg", min_long_side=0, max_long_side=0)
         self.assertEqual(_size(out), (400, 300))
 
     def test_fail_open_on_garbage(self):
         bad = b"not-an-image"
-        out, mime = image_prep.prepare_extract_image(bad, "image/jpeg")
+        out, mime, info = image_prep.prepare_extract_image(bad, "image/jpeg")
         self.assertEqual(out, bad)
         self.assertEqual(mime, "image/jpeg")
 
     def test_fail_open_on_empty(self):
-        out, mime = image_prep.prepare_extract_image(b"", "image/jpeg")
+        out, mime, info = image_prep.prepare_extract_image(b"", "image/jpeg")
         self.assertEqual(out, b"")
+
+    def test_info_reports_final_size_and_no_exif_rotation(self):
+        out, mime, info = image_prep.prepare_extract_image(
+            _jpeg(400, 300), "image/jpeg", min_long_side=2048, max_long_side=4096)
+        self.assertEqual((info["width"], info["height"]), _size(out))
+        self.assertIsNone(info["exif_orientation"])
+        self.assertFalse(info["exif_rotated"])
+
+    def test_info_reports_exif_rotation(self):
+        # EXIF orientation=6：需顺时针转 90 度
+        img = Image.new("RGB", (400, 300), (200, 200, 200))
+        exif = img.getexif()
+        exif[0x0112] = 6
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", exif=exif)
+        out, mime, info = image_prep.prepare_extract_image(
+            buf.getvalue(), "image/jpeg", min_long_side=0, max_long_side=0)
+        self.assertEqual(info["exif_orientation"], 6)
+        self.assertTrue(info["exif_rotated"])
+        # 转正后宽高互换
+        self.assertEqual((info["width"], info["height"]), (300, 400))
 
 
 class TilesTest(unittest.TestCase):
