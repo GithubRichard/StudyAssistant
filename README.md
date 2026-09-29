@@ -345,6 +345,8 @@ cd /opt/study-assistant && scripts/update-and-logs.sh
 | 复查显示「模型已核对（网关未报告 provider）」 | 网关只回 `model` 不回 `provider`（常见于腾讯 tokenhub 等部署），复查照常采纳，只是 provider 这一层没核对；如需完全核验，让网关在响应里返回 `provider`，或忽略该提示 |
 | 分阶段批改报 `max_tokens参数非法：限制数值范围[1,1024]` | 该 provider 的输出上限比阶段上限小（如 `glm-4v-flash` 只有 1024）：在 `llm.providers.<名>` 下配 `max_output_tokens`，或换用支持更大输出的模型。不配的话备胎一调用就被 400 拒绝，实际等于没有备胎 |
 | 分阶段批改报「复核返回了未要求的题号」 | 已修：放大复核回传的题号（如「题1」）现在做有限映射；仍不匹配时只忽略该条并在提取阶段记录 `zoom_note`，不再让整单失败 |
+| 分阶段批改报 `questions.N.page Input should be a valid string` | 已修：题号/页码等文本字段现在容错模型写成数字（`"page": 1`）；`steps`/`explanation` 写成单字符串也会包装成数组。旧版本这会让整阶段失败并切备胎 |
+| 分阶段批改报 `Extra data: line 8 column 6` | 已修：模型在结果 JSON 后面又输出了一段 JSON/说明，现在按 `raw_decode` 取第一个完整对象，不再整体解析失败 |
 
 ## 10. 目录结构
 

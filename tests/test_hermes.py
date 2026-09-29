@@ -183,6 +183,16 @@ class ResultContractTest(unittest.TestCase):
         with self.assertRaises(HermesResultInvalid):
             extract_result_json("没有 JSON")
 
+    def test_extract_with_trailing_extra_json(self):
+        """结果对象后面又跟了一段 JSON（真实事故：整体解析报 Extra data）。"""
+        text = '{"schema_version": 3, "questions": []}\n{"note": "题外话"}'
+        self.assertEqual(extract_result_json(text),
+                         {"schema_version": 3, "questions": []})
+
+    def test_extract_with_trailing_prose(self):
+        text = '好的，结果如下：\n```json\n{"schema_version": 3}\n```\n以上。'
+        self.assertEqual(extract_result_json(text), {"schema_version": 3})
+
     def test_duplicate_question_ids_rejected(self):
         broken = dict(LEARNING_RESULT)
         broken["questions"] = [dict(LEARNING_RESULT["questions"][0]),

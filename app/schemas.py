@@ -137,6 +137,52 @@ def coerce_int(value: Any) -> Any:
 LooseInt = Annotated[int, BeforeValidator(coerce_int)]
 
 
+def coerce_str(value: Any) -> str:
+    """把模型写成数字/布尔的文本字段容错成字符串。
+
+    真实事故：提取阶段的 `page`（图片序号）本就该是文本，模型写 `"page": 1`，
+    严格模式下 12 个字段报错、整个提取阶段失败并切备胎（备胎同样写法就整单失败）。
+
+    容错口径：字符串原样保留（不 strip，避免改变内容语义）；None 落空串；
+    整数写成不带小数的文本；整数浮点（1.0）同样写 "1"，避免出现 "1.0" 这种题号；
+    其余类型用 str() 兜底，不抛异常——类型对的字段不受影响。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(int(value)) if float(value).is_integer() else repr(value)
+    return str(value)
+
+
+# 文本类字段的宽松类型：容错模型把题号/页码等文本写成数字
+LooseStr = Annotated[str, BeforeValidator(coerce_str)]
+
+
+def coerce_str_list(value: Any) -> List[str]:
+    """把模型写成单个字符串的列表字段容错成字符串列表。
+
+    真实模型经常把 `steps`/`explanation` 写成一句字符串而不是数组；
+    这里包装成单元素列表，语义由后续阶段校验，不因形状差异废掉整阶段。
+    """
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return [coerce_str(v) for v in value]
+    return [coerce_str(value)]
+
+
+# 文本列表的宽松类型：容错模型把数组写成单字符串或混合类型
+LooseStrList = Annotated[List[str], BeforeValidator(coerce_str_list)]
+
+
 class ScopeInfo(StrictModel):
     start_date: str = ""
     end_date: str = ""

@@ -34,7 +34,7 @@ from .config import Settings, provider_chain
 from .grading import extract_json
 from .hermes import validate_result
 from .providers import ProviderError
-from .schemas import _VAGUE_ERROR_RULES
+from .schemas import LooseStr, LooseStrList, _VAGUE_ERROR_RULES
 
 log = logging.getLogger(__name__)
 
@@ -53,40 +53,41 @@ class StageError(Exception):
 # --------------------------------------------------------------------------
 
 class ExtractedQuestion(BaseModel):
-    no: str
-    stem: str = ""
-    student_answer: str = ""
-    page: str = ""
+    # 文本字段一律用 LooseStr：模型把题号/页码写成数字（"page": 1）不该废掉整阶段
+    no: LooseStr
+    stem: LooseStr = ""
+    student_answer: LooseStr = ""
+    page: LooseStr = ""
     handwriting_uncertain: bool = False
-    uncertain_note: str = ""
+    uncertain_note: LooseStr = ""
     # 答案归属存疑（服务端去重检测填入）：该题答案疑似与另一题为同一组作答
-    attribution_note: str = ""
+    attribution_note: LooseStr = ""
 
 
 class ExtractionResult(BaseModel):
     questions: List[ExtractedQuestion] = Field(default_factory=list)
     # 放大复核的服务端说明（复核失败/题号对不上时写入，随阶段记录落库，供人工核对）
-    zoom_note: str = ""
+    zoom_note: LooseStr = ""
 
 
 class FollowupRevision(BaseModel):
-    prev_no: str
-    student_answer: str = ""
-    note: str = ""
+    prev_no: LooseStr
+    student_answer: LooseStr = ""
+    note: LooseStr = ""
 
 
 class FollowupExtraction(BaseModel):
     new_questions: List[ExtractedQuestion] = Field(default_factory=list)
     revisions: List[FollowupRevision] = Field(default_factory=list)
-    zoom_note: str = ""
+    zoom_note: LooseStr = ""
 
 
 class ZoomRereadItem(BaseModel):
     """局部放大复核单题结果。"""
-    no: str
-    student_answer: str = ""
+    no: LooseStr
+    student_answer: LooseStr = ""
     handwriting_uncertain: bool = False
-    uncertain_note: str = ""
+    uncertain_note: LooseStr = ""
 
 
 class ZoomRereadResult(BaseModel):
@@ -138,9 +139,9 @@ def format_extraction_log(data: Dict[str, Any]) -> str:
 
 
 class SolutionItem(BaseModel):
-    no: str
-    correct_answer: str = ""
-    steps: List[str] = Field(default_factory=list)
+    no: LooseStr
+    correct_answer: LooseStr = ""
+    steps: LooseStrList = Field(default_factory=list)
     # 题干缺失/信息不足无法求解时为 True，此时 correct_answer 为空，不进入比对
     undeterminable: bool = False
 
@@ -150,7 +151,7 @@ class SolutionResult(BaseModel):
 
 
 class JudgmentItem(BaseModel):
-    no: str
+    no: LooseStr
     equivalent: bool
 
 
@@ -159,11 +160,11 @@ class CompareResult(BaseModel):
 
 
 class DiagnosisItem(BaseModel):
-    no: str
-    error_rule: str = ""
-    knowledge_point: str = ""
-    explanation: List[str] = Field(default_factory=list)
-    correct_answer: str = ""
+    no: LooseStr
+    error_rule: LooseStr = ""
+    knowledge_point: LooseStr = ""
+    explanation: LooseStrList = Field(default_factory=list)
+    correct_answer: LooseStr = ""
 
 
 class DiagnosisResult(BaseModel):

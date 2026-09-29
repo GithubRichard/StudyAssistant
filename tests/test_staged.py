@@ -174,6 +174,74 @@ class InitialPipelineTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(outcome.cost, 0)
 
 
+class LenientStageOutputTest(unittest.IsolatedAsyncioTestCase):
+    """模型把阶段输出字段写歪形状（页码写成数字、steps 写成单字符串）不该废掉整阶段。
+
+    真实事故：extract 阶段 12 道题的 "page" 全部返回整数 1，
+    严格模式报 12 个 validation errors，首轮失败并切备胎、备胎同样写法则整单失败。
+    """
+
+    def test_int_no_and_page_accepted(self):
+        q = staged.ExtractedQuestion.model_validate(
+            {"no": 1, "stem": "解方程", "student_answer": "x=4", "page": 1})
+        self.assertEqual(q.no, "1")
+        self.assertEqual(q.page, "1")
+
+    def test_float_page_without_decimal_point(self):
+        q = staged.ExtractedQuestion.model_validate({"no": "1", "page": 2.0})
+        self.assertEqual(q.page, "2")   # 不能变成 "2.0"
+
+    def test_string_steps_wrapped_into_list(self):
+        item = staged.SolutionItem.model_validate({"no": 1, "steps": "2x=8；x=4"})
+        self.assertEqual(item.no, "1")
+        self.assertEqual(item.steps, ["2x=8；x=4"])
+
+    def test_diagnosis_explanation_accepts_single_string(self):
+        item = staged.DiagnosisItem.model_validate(
+            {"no": 2, "error_rule": "混淆形容词与副词", "explanation": "technology 是名词"})
+        self.assertEqual(item.explanation, ["technology 是名词"])
+
+    def test_extract_json_tolerates_second_object(self):
+        """结果对象后面又跟了一段 JSON：旧实现报 Extra data，整阶段失败。"""
+        from app.grading import extract_json
+
+        text = '{"questions": [{"no": "1"}]}\n{"note": "题外话"}'
+        self.assertEqual(extract_json(text)["questions"][0]["no"], "1")
+
+    def test_extract_json_tolerates_trailing_prose_in_fence(self):
+        from app.grading import extract_json
+
+        text = '转写结果：\n```json\n{"questions": []}\n```\n以上。'
+        self.assertEqual(extract_json(text), {"questions": []})
+
+    def test_extract_json_without_object_raises(self):
+        from app.grading import extract_json
+
+        with self.assertRaises(ValueError):
+            extract_json("这里没有任何 JSON")
+
+    async def test_int_page_extract_completes_pipeline(self):
+        """页码写成数字的转写结果可以走完流水线，不必回落备胎。"""
+        calls = []
+        extract = json.dumps({"questions": [
+            {"no": 1, "stem": "解方程 2x+1=9", "student_answer": "x=4", "page": 1},
+        ]}, ensure_ascii=False)
+        solve = json.dumps({"solutions": [
+            {"no": 1, "correct_answer": "x=4", "steps": "2x=8；x=4"}]},
+            ensure_ascii=False)
+        scripts = {"fake": {"extract": [extract], "solve": [solve],
+                            "compare": [], "diagnose": []}}
+        outcome = await staged.grade_staged(
+            [(b"img", "image/jpeg")], "数学", "七年级", "", make_settings("fake"),
+            provider_factory=factory_for(scripts, calls))
+        q = outcome.result["questions"][0]
+        # 类型写歪也能走完流水线（没有类型容错时这里会抛 StageError）
+        self.assertEqual(q["no"], "1")
+        self.assertEqual(q["status"], "correct")
+        self.assertEqual(q["steps"], ["2x=8；x=4"])
+        self.assertEqual([c["stage"] for c in calls].count("extract"), 1)
+
+
 class CompareEquivalenceTest(unittest.IsolatedAsyncioTestCase):
     async def test_math_reordered_terms_judged_equivalent(self):
         calls = []

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -25,12 +24,11 @@ import httpx
 from pydantic import ValidationError
 
 from .config import HermesConfig, Settings
+from .grading import extract_json
 from .schemas import ReviewResponse, StudyResult, drop_nulls
 from . import scope, thinking, workspace
 
 log = logging.getLogger(__name__)
-
-_JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.S)
 
 
 class HermesError(Exception):
@@ -128,16 +126,16 @@ class HermesReadiness:
 
 
 def extract_result_json(text: str) -> Dict[str, Any]:
-    """从 Agent 输出中提取结果 JSON；兼容 ```json 包裹与裸 JSON。"""
+    """从 Agent 输出中提取结果 JSON；兼容 ```json 包裹与裸 JSON。
+
+    实际解析交给 grading.extract_json（与分阶段批改同一实现）：它用 raw_decode
+    找第一个完整对象，容忍结果后面还跟着说明文字或另一段 JSON
+    （旧的「首个 { 到最后一个 }」整体解析会报 Extra data）。
+    """
     if not text or not text.strip():
         raise HermesResultInvalid("Hermes 返回内容为空")
-    match = _JSON_BLOCK_RE.search(text)
-    candidate = match.group(1) if match else text
-    start, end = candidate.find("{"), candidate.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise HermesResultInvalid("Hermes 输出中没有找到结果 JSON")
     try:
-        return json.loads(candidate[start:end + 1])
+        return extract_json(text)
     except ValueError as e:
         raise HermesResultInvalid(f"结果 JSON 解析失败: {e}") from e
 

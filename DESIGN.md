@@ -252,6 +252,9 @@ v0.1 的「单图 + 多模型直连」路径保留，用于显式回退：
 实现要点（`app/staged.py`）：
 
 - 每阶段独立走 provider 链 + JSON 强校验 + 语义检查，失败换备胎；全部失败抛 `StageError`
+- 阶段产出的**形状**宽松、**语义**严格：文本字段（题号/页码）用 `LooseStr` 容错模型写成数字，
+  `steps`/`explanation` 单字符串会包装成数组；JSON 提取按 `raw_decode` 取第一个完整对象，
+  容忍结果后面又跟一段 JSON/说明（旧实现整体解析会报 `Extra data` 而废掉整阶段）
 - 每阶段产出经 `on_stage` 回调写入 `task_runs.stage / stages_json`（migration v4），
   支持断点观察与按阶段重试；阶段失败退款（`certain_not_executed=True`）
 - 组装阶段把产出合并为 v3 结果并过 `validate_result` 严格校验，再进原有 `_finish`

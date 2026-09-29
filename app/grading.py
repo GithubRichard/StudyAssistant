@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from typing import Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -30,14 +31,40 @@ class GradingResult(BaseModel):
     summary: str = ""
 
 
+_JSON_DECODER = json.JSONDecoder()
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.+?)```", re.S)
+
+
+def first_json_object(text: str) -> Optional[dict]:
+    """在文本里找第一个能完整解析的 JSON 对象（允许后面还有多余内容）。
+
+    真实事故：模型在结果对象后面又输出了一段 JSON（或说明），
+    旧的「第一个 { 到最后一个 }」整体解析会报 `Extra data`，整阶段被判失败并切备胎。
+    这里改为逐位置 raw_decode：解析到第一个完整对象就返回，后面是说明文字、
+    还是多出来的对象都不影响；前面的花括号（如示例占位 `{}`）解析不了会自动跳过。
+    """
+    for idx, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            value, _ = _JSON_DECODER.raw_decode(text, idx)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return None
+
+
 def extract_json(text: str) -> dict:
-    """从模型输出里抠出 JSON（兼容 ```json 包裹和裸 JSON）。"""
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
-    cand = m.group(1) if m else text
-    start, end = cand.find("{"), cand.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("模型输出中没有找到 JSON")
-    return json.loads(cand[start:end + 1])
+    """从模型输出里抠出 JSON（兼容 ```json 包裹、裸 JSON、JSON 后跟多余内容）。"""
+    body = text or ""
+    candidates = [m.group(1) for m in _FENCE_RE.finditer(body)]
+    candidates.append(body)
+    for cand in candidates:
+        value = first_json_object(cand)
+        if value is not None:
+            return value
+    raise ValueError("模型输出中没有找到 JSON")
 
 
 async def grade_image(image_bytes: bytes, mime: str, subject: str,
