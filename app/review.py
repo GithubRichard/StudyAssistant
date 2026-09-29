@@ -244,15 +244,15 @@ def apply_review_result(result: Dict[str, Any], sent: List[Dict[str, Any]],
         elif state == "unverified":
             unverified += 1
 
-    if coverage == "text_only":
-        notes.append("本次未随附原图，复查范围仅限文字转录的逻辑与计算")
+    if coverage == "transcript_only":
+        notes.append("复查仅依据文字转写（提取的题干/学生作答）与首轮结论核查，未读取原图")
     if overflow:
         notes.append(f"{len(overflow)} 道题超过单次复查上限未送审")
     if unverified:
         notes.append(f"{unverified} 道题复查方无法核查")
 
     state = "completed"
-    if unverified or overflow or coverage == "text_only":
+    if unverified or overflow:
         state = "partial"
 
     sent_ids = {q["id"] for q in sent}

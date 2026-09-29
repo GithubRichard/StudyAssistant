@@ -619,7 +619,7 @@ class BuildReviewMessagesTest(unittest.TestCase):
         settings = self._settings()
         task = {"id": "t1", "task_type": "grading", "subject": "数学", "grade_level": "七年级"}
         run = {"run_no": 1, "kind": "initial"}
-        messages = build_review_messages(settings, task, run, [self._question()], [])
+        messages = build_review_messages(settings, task, run, [self._question()])
         text = messages[1]["content"][0]["text"]
         self.assertIn("sim-p12-q1", text)
         self.assertIn("移项时忘记变号", text)
@@ -627,21 +627,16 @@ class BuildReviewMessagesTest(unittest.TestCase):
         # 只核查、只提异议的纪律必须出现在提示词里
         self.assertIn("不裁决、不改判", messages[0]["content"])
         self.assertIn("存疑题", text)
-        # 无图片时必须声明只能做文字转录核查
+        # 纯文字核查：材料分提取转写与首轮结论两节，不提供原图
         self.assertIn("文字转录", text)
+        self.assertIn("【提取转写】", text)
+        self.assertIn("【首轮批改结论】", text)
+        self.assertIn("不提供任何图片", text)
         self.assertNotIn("secret-key", text)
-
-    def test_review_message_inlines_images(self):
-        settings = self._settings()
-        task = {"id": "t1", "task_type": "grading", "subject": "数学"}
-        run = {"run_no": 1, "kind": "initial"}
-        messages = build_review_messages(
-            settings, task, run, [self._question()],
-            [{"id": "a1", "data_url": "data:image/jpeg;base64,AAAA"}])
+        # content 里只有文本块，没有图片附件
         content = messages[1]["content"]
-        self.assertEqual(content[1]["type"], "image_url")
-        self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/jpeg"))
-        self.assertIn("1 张图片", content[0]["text"])
+        self.assertEqual(len(content), 1)
+        self.assertEqual(content[0]["type"], "text")
 
 
 if __name__ == "__main__":

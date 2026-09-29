@@ -340,48 +340,63 @@ def build_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, Any],
 
 
 def build_review_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, Any],
-                          questions: List[Dict[str, Any]],
-                          assets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """构造发往复查模型的只读复查消息。
+                          questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """构造发往复查模型的只读复查消息（纯文字核查，不读图）。
 
-    只传待复查题的首轮结论与随任务图片；不传工作区路径、不传密钥、不传其他任务数据。
+    复查方拿到的只有两份文字材料：
+    1. 提取转写——提取阶段模型从作业原图读出的题干与学生作答（只转写、未判定）；
+    2. 首轮批改结论——另一模型基于转写独立求解、比对后给出的判定与诊断。
+    不传图片、不传工作区路径、不传密钥、不传其他任务数据。
     复查方只做核查、只提异议：协议里没有也不接受任何改判字段。
     """
     lines: List[str] = [
         "你是独立的复查员。另一个模型已完成首轮批改，请你只对下面列出的"
         "「已判错题与存疑题」做只读核查。",
         "",
+        "【你的材料（仅此两份文字，没有原图）】",
+        "材料一【提取转写】：提取阶段模型从作业原图读出的题干与学生作答，"
+        "只转写、未做任何判定；字迹存疑的题会在转写备注里说明。",
+        "材料二【首轮批改结论】：另一模型基于转写独立求解、比对后给出的判定、"
+        "参考答案与诊断，仅供你核查，不是标准答案。",
+        "",
         "【复查纪律（必须遵守）】",
         "1. 只核查、只提异议：不裁决、不改判、不给学生重新定性，不输出「正确/错误」结论。",
-        "2. 不使用任何工具：不执行命令、不读文件、不搜索目录；图片已作为附件随本消息提供。",
-        "3. 对每道送审题逐项检查：是否误读原题或作答、是否遗漏条件、计算或推理是否有误、"
-        "是否把合理答案误判为错、错因是否缺乏证据。",
+        "2. 不读图：本次不提供任何图片，不要试图查看、还原或猜测原图内容；"
+        "只能依据上面的文字转录核查逻辑与计算。",
+        "3. 对每道送审题逐项检查：转写与首轮结论是否自洽"
+        "（如学生作答明明与参考答案一致却被判错）、首轮求解步骤是否有计算或推理错误、"
+        "是否遗漏了转写中的条件、是否把合理答案误判为错、错因是否有文字证据支撑。",
         "4. 无异议的题只标 agreed（未发现异议，不等于证明原判定必然正确）；"
         "有异议的题标 disagreed 并必须给出可核验依据（basis）；"
-        "图片不清、信息不足以核查的题标 unverified，不要猜测。",
+        "转写缺失、字迹存疑导致信息不足以核查的题标 unverified，不要猜测。",
         "5. 存疑题（首轮标 uncertain）的 agreed 仅表示未发现对存疑判断的异议，"
         "不代表题目已确认正确或疑点消除。",
         "",
         f"【本次任务上下文】任务号 {task['id']}（轮次 {run['run_no']}），"
         f"学科：{task.get('subject') or '未指定'}，年级：{task.get('grade_level') or '未指定'}。",
         "",
-        "【待复查题目】（首轮结论由另一模型给出，仅供你核查，不是标准答案）",
+        "【待复查题目】",
     ]
     for q in questions:
         parts = [f"- id={q['id']}"]
-        for key, label in (("no", "题号"), ("source", "来源"), ("page", "页码")):
+        for key, label in (("no", "题号"), ("page", "页码")):
             if (q.get(key) or "").strip():
                 parts.append(f"{label}={q[key]}")
         lines.append(" ".join(parts))
-        for key, label in (("stem", "题干"), ("student_answer", "学生原作答"),
-                           ("status", "首轮判定"), ("correct_answer", "参考答案"),
+        lines.append("  【提取转写】（模型从原图读到的内容，只转写、未判定）")
+        for key, label in (("stem", "题干"), ("student_answer", "学生作答"),
+                           ("source_note", "转写备注")):
+            if (q.get(key) or "").strip():
+                lines.append(f"    {label}：{q[key]}")
+        lines.append("  【首轮批改结论】（另一模型给出，仅供核查）")
+        for key, label in (("status", "首轮判定"), ("correct_answer", "参考答案"),
                            ("error_rule", "错因"), ("knowledge_point", "知识点"),
                            ("evidence", "判定证据")):
             if (q.get(key) or "").strip():
-                lines.append(f"  {label}：{q[key]}")
+                lines.append(f"    {label}：{q[key]}")
         steps = q.get("steps") or []
         if steps:
-            lines.append("  解题步骤：" + " → ".join(str(s) for s in steps))
+            lines.append("    解题步骤：" + " → ".join(str(s) for s in steps))
         lines.append("")
 
     lines.append("【输出契约（最终回答包含且仅包含一个 ```json 代码块）】")
@@ -393,24 +408,12 @@ def build_review_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, An
                  "不得返回未送审的题；disagreed 必须给 basis；"
                  "所有文本字段用字符串，没有内容写空字符串 \"\"，不要写 null。")
 
-    if assets:
-        lines.append(f"\n随附 {len(assets)} 张图片（该任务的作业原图，按提交顺序排列，"
-                     "部分题可能跨页或不在图片中）。")
-    else:
-        lines.append("\n本次未随附图片：只能依据上面的文字转录核查逻辑与计算，"
-                     "无法核对原图，请在相应题的 note 中说明范围仅限转录内容。")
-
-    content: List[Dict[str, Any]] = [{"type": "text", "text": "\n".join(lines)}]
-    for asset in assets:
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": asset["data_url"]},
-        })
+    text = "\n".join(lines)
     return [
         {"role": "system",
-         "content": "你是只读复查员：只核查、只提异议，不裁决、不改判、不使用工具，"
-                    "按约定 JSON 契约输出。"},
-        {"role": "user", "content": content},
+         "content": "你是只读复查员：只核查文字转录与首轮结论是否自洽、只提异议，"
+                    "不裁决、不改判、不读图、不使用工具，按约定 JSON 契约输出。"},
+        {"role": "user", "content": [{"type": "text", "text": text}]},
     ]
 
 

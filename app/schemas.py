@@ -382,7 +382,7 @@ class ReviewSummary(StrictModel):
     model_requested: str = ""      # 请求路由（别名或底层模型 ID + provider），仅记录意图
     model_reported: str = ""       # 网关报告的模型；缺失时保持空串，不用请求值冒充
     model_identity: str = ""       # confirmed / mismatch / unknown（身份核验结论）
-    coverage: str = ""             # 材料范围说明：full_images / partial_images / text_only / none
+    coverage: str = ""             # 材料范围：transcript_only（纯转写核查，不读图）
 
     @model_validator(mode="before")
     @classmethod

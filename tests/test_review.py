@@ -213,7 +213,21 @@ class ApplyReviewResultTest(unittest.TestCase):
         self.assertEqual(summary["scope"], 1)
         validate_result(result)
 
-    def test_overflow_and_text_only_make_partial(self):
+    def test_transcript_only_stays_completed(self):
+        """纯转写核查是设计如此：不降级为 partial，如实说明未读图。"""
+        data = copy.deepcopy(LEARNING_RESULT)
+        sent = [data["questions"][0]]
+        by_id, _ = review.reconcile_reviews(
+            sent, [{"id": "sim-p12-q1", "state": "agreed"}])
+        result = review.apply_review_result(data, sent, by_id, [], {
+            "coverage": "transcript_only", "model_identity": "confirmed",
+            "model_requested": "glm", "model_reported": "glm-5.3"})
+        summary = result["review_summary"]
+        self.assertEqual(summary["state"], "completed")
+        self.assertIn("未读取原图", summary["note"])
+        validate_result(result)
+
+    def test_overflow_makes_partial(self):
         data = copy.deepcopy(LEARNING_RESULT)
         data["questions"].append(_q("extra-1", "wrong"))
         sent, overflow = review.select_review_targets(data["questions"], 1)
@@ -221,12 +235,12 @@ class ApplyReviewResultTest(unittest.TestCase):
         by_id, _ = review.reconcile_reviews(
             sent, [{"id": sent[0]["id"], "state": "agreed"}])
         result = review.apply_review_result(data, sent, by_id, overflow, {
-            "coverage": "text_only", "model_identity": "confirmed",
+            "coverage": "transcript_only", "model_identity": "confirmed",
             "model_requested": "glm", "model_reported": "glm-5.3"})
         summary = result["review_summary"]
         self.assertEqual(summary["state"], "partial")
         self.assertEqual(summary["unprocessed"], 1)
-        self.assertIn("未随附原图", summary["note"])
+        self.assertIn("未读取原图", summary["note"])
         validate_result(result)
 
     def test_failed_marks_sent_unverified(self):
@@ -419,8 +433,8 @@ class ReviewPipelineTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("预算已耗尽", merged["review_summary"]["note"])
         self.assertEqual(merged["questions"][0]["review"]["state"], "unprocessed")
 
-    async def test_followup_with_new_image_reruns_review(self):
-        """补充图片后重新复查当前全部候选题（首版不做跨轮复用）。"""
+    async def test_followup_reruns_review_without_images(self):
+        """补充材料后重新复查当前全部候选题；复查为纯文字核查，不再附带图片。"""
         created = await self._create()
         client = ReviewFakeClient()
         await self._run(client)
@@ -435,9 +449,10 @@ class ReviewPipelineTest(unittest.IsolatedAsyncioTestCase):
         await self._run(client)
         self.assertEqual(client.run_calls, 2)
         self.assertEqual(client.review_calls, 2)
-        # 复查消息带了完整材料（首轮 + 补充），不能只有本轮新增图片
+        # 复查消息只含文字（提取转写 + 首轮结论），不带任何图片附件
         content = client.last_review_messages[1]["content"]
-        self.assertEqual(len([c for c in content if c["type"] == "image_url"]), 2)
+        self.assertTrue(all(c["type"] == "text" for c in content))
+        self.assertIn("【提取转写】", content[0]["text"])
 
     async def test_disagreed_review_does_not_change_ledger(self):
         """复查异议只记录，不改台账判定与订正状态，也不产生复测事件。"""

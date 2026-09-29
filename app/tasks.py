@@ -481,24 +481,6 @@ class TaskRunner:
                       "completion_tokens": outcome.output_tokens},
         }
 
-    async def _collect_review_assets(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """复查用完整材料：本任务全部附件按提交顺序、按 id 去重（含首轮与补充轮次）。
-
-        复查需要完整作业材料做核查，不能只带当前轮次新增的图片。
-        """
-        rows = await db.list_task_assets(self.settings.db_path, task["id"])
-        if not rows and task.get("image_path"):
-            rows = [{"id": "legacy", "path": task["image_path"],
-                     "mime": "image/jpeg", "bytes": 0}]
-        assets: List[Dict[str, Any]] = []
-        seen: set = set()
-        for row in rows:
-            if row["id"] in seen:
-                continue
-            seen.add(row["id"])
-            assets.append({**row, "data_url": workspace.load_asset_data_url(row)})
-        return assets
-
     async def _run_review(self, task: Dict[str, Any], run: Dict[str, Any],
                           result: Dict[str, Any], deadline: float,
                           first_payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -524,19 +506,15 @@ class TaskRunner:
             log.warning("复查未派发：任务预算已耗尽 task_id=%s", task_id)
             return review.apply_not_run(result, "任务时间预算已耗尽，复查未派发")
 
-        try:
-            assets = await self._collect_review_assets(task)
-        except workspace.WorkspaceError as e:
-            # 附件缺失：降级为文字核查并如实标注，不让材料读取失败毁掉复查
-            log.warning("复查材料读取失败，按无图核查 task_id=%s: %s", task_id, e)
-            assets = []
-        coverage = "full_images" if assets else "text_only"
+        # 纯文字核查：只用提取转写（题干/学生作答）+ 首轮批改结论做对比，
+        # 不再读取原图发给复查模型（省 token，也避免复查方重复读题被带偏）。
+        coverage = "transcript_only"
 
         timeout = min(h.review_timeout_seconds, remaining)
         log.info("开始复查 task_id=%s run_no=%d 送审=%d 超限=%d timeout=%.0fs coverage=%s",
                  task_id, run_no, len(targets), len(overflow), timeout, coverage)
         try:
-            messages = hermes.build_review_messages(s, task, run, targets, assets)
+            messages = hermes.build_review_messages(s, task, run, targets)
             payload = await asyncio.wait_for(
                 self.client.review_questions(
                     messages, f"review-{task_id}-{run_no}", timeout=timeout),
