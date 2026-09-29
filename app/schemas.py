@@ -48,7 +48,7 @@ REMEDIATION_LABELS = {
     "not_applicable": "不适用",
 }
 RETEST_RESULTS = ("retest_passed", "retest_failed", "corrected")
-# 台账事件口径：复测/订正/异议标记。网页版“我觉得判错了”写入 disputed（只标记异议，不改变台账状态）。
+# 台账事件口径：复测/订正/异议标记。网页版“我觉得判错了”写入 disputed（记异议事件，并把条目置为 withdrawn 从台账撤回）。
 LEDGER_EVENT_RESULTS = ("corrected", "retest_passed", "retest_failed", "disputed")
 
 # 归档子目录与任务类型的对应关系（防止周报写进错题解析这类错位）
@@ -928,7 +928,7 @@ class ManualLedgerCreate(StrictModel):
 
 
 class LedgerEventCreate(StrictModel):
-    """人工登记一次订正/复测结果（真实作答后才登记）。disputed 仅标记“我觉得判错了”，不改变台账状态。"""
+    """人工登记一次订正/复测结果（真实作答后才登记）。disputed 为网页版“我觉得判错了”：记异议事件，条目置为 withdrawn 从台账撤回。"""
 
     result: str
     occurred_date: str = ""

@@ -790,6 +790,9 @@ async def list_ledger(db_path: str, openid: str, subject: str = "",
         placeholders = ",".join("?" for _ in state_list)
         sql += f" AND remediation_state IN ({placeholders})"
         args.extend(state_list)
+    else:
+        # 默认视图不含已撤回条目（用户点"我觉得判错了"的题）
+        sql += " AND remediation_state<>'withdrawn'"
     sql += " ORDER BY COALESCE(NULLIF(last_event_at, 0), created_at) DESC LIMIT ? OFFSET ?"
     args.extend([limit, max(0, offset)])
     async with aiosqlite.connect(db_path) as db:
@@ -799,11 +802,12 @@ async def list_ledger(db_path: str, openid: str, subject: str = "",
 
 
 async def ledger_counts(db_path: str, openid: str) -> Dict[str, int]:
-    """按订正状态统计台账条目数（用于复习页概览）；不含人工收藏条目。"""
+    """按订正状态统计台账条目数（用于复习页概览）；不含人工收藏条目、不含已撤回条目。"""
     async with aiosqlite.connect(db_path) as db:
         async with db.execute(
             """SELECT remediation_state, COUNT(*) FROM mistakes
-               WHERE openid=? AND question_uid<>'' GROUP BY remediation_state""",
+               WHERE openid=? AND question_uid<>'' AND remediation_state<>'withdrawn'
+               GROUP BY remediation_state""",
             (openid,),
         ) as cur:
             return {str(row[0] or "unknown"): int(row[1]) for row in await cur.fetchall()}

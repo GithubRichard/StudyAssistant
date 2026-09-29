@@ -130,3 +130,53 @@ class RetestNoteTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DisputeWithdrawTest(unittest.IsolatedAsyncioTestCase):
+    """用户点"我觉得判错了"：记异议事件，条目从台账撤回（不再计入默认视图与统计）。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.settings = make_settings(self.tmp.name)
+        self.db_path = self.settings.db_path
+        await db.init_db(self.db_path)
+        await db.get_or_create_user(self.db_path, "u1", 5)
+
+    async def asyncTearDown(self):
+        self.tmp.cleanup()
+
+    def test_disputed_maps_to_withdrawn(self):
+        from app.api import _LEDGER_STATE_BY_RESULT
+        self.assertEqual(_LEDGER_STATE_BY_RESULT["disputed"], "withdrawn")
+
+    async def test_withdrawn_excluded_from_default_list_but_queryable(self):
+        saved = await db.upsert_ledger_question(self.db_path, "u1", entry("q-1"))
+        await db.upsert_ledger_question(self.db_path, "u1", entry("q-2"))
+        await db.update_ledger_state(self.db_path, "u1", saved["id"],
+                                     remediation_state="withdrawn")
+        default = await db.list_ledger(self.db_path, "u1")
+        self.assertEqual([r["question_uid"] for r in default], ["q-2"])
+        explicit = await db.list_ledger(self.db_path, "u1", states=["withdrawn"])
+        self.assertEqual([r["question_uid"] for r in explicit], ["q-1"])
+
+    async def test_withdrawn_excluded_from_counts(self):
+        await db.upsert_ledger_question(self.db_path, "u1", entry("q-1"))
+        saved = await db.upsert_ledger_question(self.db_path, "u1", entry("q-2"))
+        await db.update_ledger_state(self.db_path, "u1", saved["id"],
+                                     remediation_state="withdrawn")
+        counts = await db.ledger_counts(self.db_path, "u1")
+        self.assertEqual(counts.get("pending_correction"), 1)
+        self.assertNotIn("withdrawn", counts)
+
+    async def test_dispute_event_history_kept(self):
+        saved = await db.upsert_ledger_question(self.db_path, "u1", entry("q-1"))
+        await db.add_question_event(self.db_path, "u1", {
+            "question_uid": "q-1", "subject": "数学", "event_type": "retest",
+            "result": "disputed", "occurred_date": "2026-09-29",
+            "student_answer": "", "note": "学生认为判分有误", "archive_path": "",
+        })
+        await db.update_ledger_state(self.db_path, "u1", saved["id"],
+                                     remediation_state="withdrawn")
+        events = await db.list_question_events(self.db_path, "u1", "q-1")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["result"], "disputed")

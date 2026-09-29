@@ -223,7 +223,8 @@ class WebV1Test(unittest.IsolatedAsyncioTestCase):
 
     # ---------- 异议标记 ----------
 
-    async def test_disputed_event_keeps_state(self):
+    async def test_disputed_event_withdraws_from_ledger(self):
+        """用户点"我觉得判错了"：记异议事件，条目置为 withdrawn 从台账撤回。"""
         h = await self.authed()
         openid = web_openid("kid1")
         mid = await seed_mistake(self.settings.db_path, openid, "dq1", time.time())
@@ -231,8 +232,12 @@ class WebV1Test(unittest.IsolatedAsyncioTestCase):
             "result": "disputed", "note": "学生认为判分有误"})
         self.assertEqual(res.status_code, 201)
         self.assertEqual(res.json()["result"], "disputed")
+        self.assertEqual(res.json()["remediation_state"], "withdrawn")
         row = await db.get_ledger_entry(self.settings.db_path, openid, mid)
-        self.assertEqual(row["remediation_state"], "pending_correction")
+        self.assertEqual(row["remediation_state"], "withdrawn")
+        # 默认台账视图不再含该条目
+        rows = await db.list_ledger(self.settings.db_path, openid)
+        self.assertEqual(rows, [])
 
     # ---------- 两年保留（只清错题，不动任务/附件） ----------
 

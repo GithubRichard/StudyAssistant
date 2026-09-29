@@ -667,9 +667,11 @@ function resultBodyHtml(task, questions, ledgerByUid) {
       ${reviewRow(q)}
       ${q.status === "wrong" || q.status === "uncertain" ? `
       <div class="q-actions">
-        ${entry
-          ? `<button class="btn ghost small" data-dispute="${entry.id}">我觉得判错了</button>`
-          : `<span class="muted small">该题未记入台账</span>`}
+        ${entry && entry.remediation_state === "withdrawn"
+          ? `<span class="muted small">已从台账撤回（你标记了异议）</span>`
+          : entry
+            ? `<button class="btn ghost small" data-dispute="${entry.id}">我觉得判错了</button>`
+            : `<span class="muted small">该题未记入台账</span>`}
       </div>` : ""}
     </div>`;
   };
@@ -759,7 +761,7 @@ function bindDisputeActions(app) {
     btn.onclick = async () => {
       const entryId = btn.getAttribute("data-dispute");
       const ok = await confirmDialog("标记异议",
-        "<p>这条判分你觉得有问题？点确定后会记一笔「异议」事件，方便之后核对。<b>台账状态不会改变</b>，该订正还是要订正。</p>");
+        "<p>这条判分你觉得有问题？点确定后会记一笔「异议」事件，<b>并将该题从复习台账中撤回</b>（不再计入待订正/待复测）。</p>");
       if (!ok) return;
       btn.disabled = true;
       try {
@@ -767,8 +769,8 @@ function bindDisputeActions(app) {
           method: "POST",
           body: { result: "disputed", note: "学生认为判分有误" },
         });
-        toast("已记录你的异议");
-        btn.textContent = "已标记异议";
+        toast("已记录异议，该题已从台账撤回");
+        btn.textContent = "已从台账撤回";
       } catch (e) {
         toast(e.message || "标记失败");
         btn.disabled = false;

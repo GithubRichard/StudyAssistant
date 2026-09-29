@@ -531,6 +531,8 @@ _LEDGER_STATE_BY_RESULT = {
     "retest_passed": "retest_passed",
     "retest_failed": "retest_failed",
     "corrected": "corrected_pending_retest",
+    # 用户点"我觉得判错了"：记异议事件的同时把条目从台账撤回（不再计入待订正/待复测）
+    "disputed": "withdrawn",
 }
 
 
@@ -618,7 +620,11 @@ async def get_ledger_entry(entry_id: int, ctx: dict = Session):
 
 @router.post("/ledger/{entry_id}/events", status_code=201)
 async def create_ledger_event(entry_id: int, payload: LedgerEventCreate, ctx: dict = Session):
-    """登记一次真实发生的订正/复测：追加事件、更新台账状态并追加到关联归档文件。"""
+    """登记一次真实发生的订正/复测：追加事件、更新台账状态并追加到关联归档文件。
+
+    result=disputed（用户点"我觉得判错了"）时：追加异议事件，并把条目状态置为
+    withdrawn，从复习台账默认视图撤回（不再计入待订正/待复测）。
+    """
     s = get_settings()
     row = await db.get_ledger_entry(s.db_path, ctx["openid"], entry_id)
     if not row:
