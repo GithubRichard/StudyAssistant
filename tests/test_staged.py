@@ -954,6 +954,76 @@ class StageProviderCapTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome.provider, "backup")
         self.assertEqual(len(parsed.questions), 3)
 
+    async def test_truncation_retries_same_provider_with_boost_first(self):
+        """截断后先在同一模型放大额度重试一次，而不是直接切备胎。"""
+        settings = make_settings("fake", "backup")
+        truncated = GradeOutcome(text="{", input_tokens=5, output_tokens=8000,
+                                 provider="fake", model="fake-fake",
+                                 finish_reason="length")
+        scripts = {"fake": {"extract": [truncated, EXTRACT_OK]},
+                   "backup": {"extract": [EXTRACT_OK]}}
+
+        async def call(provider, max_tokens_want=0):
+            return await provider.grade_multi(
+                [(b"x", "image/jpeg")], "s", "u",
+                max_tokens=max_tokens_want or 8000)
+
+        parsed, outcome, cost = await staged._run_stage(
+            "extract", staged.ExtractionResult, ["fake", "backup"], settings,
+            call, None, factory_for(scripts, self.calls),
+            base_max_tokens=8000)
+        self.assertEqual(outcome.provider, "fake")
+        self.assertEqual(len(parsed.questions), 3)
+        fake_calls = [c for c in self.calls if c["provider"] == "fake"]
+        self.assertEqual(len(fake_calls), 2)
+        self.assertEqual(fake_calls[0]["max_tokens"], 8000)
+        self.assertEqual(fake_calls[1]["max_tokens"], 16000)  # 2.0 倍
+        self.assertFalse([c for c in self.calls if c["provider"] == "backup"])
+
+    async def test_truncation_retry_still_truncated_switches_backup(self):
+        """放大重试后依然截断：才切备胎，且同一模型只重试一次。"""
+        settings = make_settings("fake", "backup")
+        truncated = GradeOutcome(text="{", input_tokens=5, output_tokens=8000,
+                                 provider="fake", model="fake-fake",
+                                 finish_reason="length")
+        scripts = {"fake": {"extract": [truncated, truncated]},
+                   "backup": {"extract": [EXTRACT_OK]}}
+
+        async def call(provider, max_tokens_want=0):
+            return await provider.grade_multi(
+                [(b"x", "image/jpeg")], "s", "u",
+                max_tokens=max_tokens_want or 8000)
+
+        parsed, outcome, cost = await staged._run_stage(
+            "extract", staged.ExtractionResult, ["fake", "backup"], settings,
+            call, None, factory_for(scripts, self.calls),
+            base_max_tokens=8000)
+        self.assertEqual(outcome.provider, "backup")
+        fake_calls = [c for c in self.calls if c["provider"] == "fake"]
+        self.assertEqual(len(fake_calls), 2)  # 首试 + 一次放大重试，不多试
+
+    async def test_truncation_retry_disabled_falls_back_directly(self):
+        """truncation_retry_multiplier<=1 时关闭放大重试，保持旧行为。"""
+        settings = make_settings("fake", "backup")
+        settings.staged_grading.truncation_retry_multiplier = 0.0
+        truncated = GradeOutcome(text="{", input_tokens=5, output_tokens=8000,
+                                 provider="fake", model="fake-fake",
+                                 finish_reason="length")
+        scripts = {"fake": {"extract": [truncated, EXTRACT_OK]},
+                   "backup": {"extract": [EXTRACT_OK]}}
+
+        async def call(provider, max_tokens_want=0):
+            return await provider.grade_multi(
+                [(b"x", "image/jpeg")], "s", "u",
+                max_tokens=max_tokens_want or 8000)
+
+        parsed, outcome, cost = await staged._run_stage(
+            "extract", staged.ExtractionResult, ["fake", "backup"], settings,
+            call, None, factory_for(scripts, self.calls),
+            base_max_tokens=8000)
+        self.assertEqual(outcome.provider, "backup")
+        self.assertEqual(len([c for c in self.calls if c["provider"] == "fake"]), 1)
+
 
 class BlankSplitTest(unittest.TestCase):
     def test_split_numbered_with_separator(self):

@@ -61,10 +61,14 @@ class StagedGradingConfig(BaseModel):
     各 *_prompt 为空时用 app/staged.py 内置默认值；填了则整体替换该阶段 system prompt。
     """
     enabled: bool = True
-    extract_max_tokens: int = 8000
+    extract_max_tokens: int = 16000
     solve_max_tokens: int = 6000
     compare_max_tokens: int = 4000
     diagnose_max_tokens: int = 6000
+    # 输出被 max_tokens 截断（finish_reason=length）时，同一模型放大该倍数
+    # 重试一次再切备胎；<=1 时关闭，直接切备胎。注意部分厂商把思考过程
+    # 也计入输出额度，难读图片（旋转/潦草手写）容易烧光额度后 JSON 还没出来。
+    truncation_retry_multiplier: float = 2.0
     extract_prompt: str = ""
     solve_prompt: str = ""
     diagnose_prompt: str = ""

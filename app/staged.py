@@ -184,7 +184,7 @@ class StagedOutcome(BaseModel):
 # 各阶段 prompt（默认值；可在配置里按阶段覆盖 system prompt）
 # --------------------------------------------------------------------------
 
-EXTRACT_SYSTEM = """你是试卷内容转写员。你的唯一任务是把图片中的题目和学生的手写答案逐题转写成文本。
+EXTRACT_SYSTEM = """你是试卷内容转写员。你的唯一任务是把图片中的题目和学生的手写答案逐题转写成文本。思考过程尽量简洁，直出转写结果。
 铁律：
 1. 只转写，不判断对错，不批改，不补全题目，不猜测。
 2. 每道题输出：no（题号，原样照抄）、stem（题干文字，含选项与填空横线位置，尽量完整）、student_answer（学生手写答案，原样转写；该题未作答写空字符串）、page（图片序号，从1开始）。
@@ -256,10 +256,18 @@ def _stage_max_tokens(cfg: Any, want: int) -> int:
 
 async def _run_stage(stage: str, model_cls, chain: List[str], settings: Settings,
                      call: Callable, semantic_check: Optional[Callable] = None,
-                     provider_factory: Optional[Callable] = None):
-    """跑一个阶段：按 provider 链逐个尝试，输出 JSON 强校验，失败换备胎。"""
+                     provider_factory: Optional[Callable] = None,
+                     base_max_tokens: int = 0):
+    """跑一个阶段：按 provider 链逐个尝试，输出 JSON 强校验，失败换备胎。
+
+    输出被 max_tokens 截断时，先在同一 provider 按 truncation_retry_multiplier
+    放大额度重试一次，再不行才切备胎——截断是额度不够，不是模型不行，
+    直接切到上限更小的备胎必死。base_max_tokens=0 时保持旧行为（直接切备胎）。
+    call 的签名为 call(provider, max_tokens_want=0)，0 表示用阶段默认值。
+    """
     factory = provider_factory or providers.make_provider
     errors: List[str] = []
+    boost = float(getattr(settings.staged_grading, "truncation_retry_multiplier", 2.0) or 0)
     for name in chain:
         cfg = settings.llm.providers[name]
         provider = factory(name, cfg)
@@ -269,6 +277,17 @@ async def _run_stage(stage: str, model_cls, chain: List[str], settings: Settings
             errors.append(f"{name}: {e}")
             log.warning("分阶段批改[%s]切换备胎（调用失败）: %s", stage, e)
             continue
+        if getattr(outcome, "finish_reason", "") == "length" and boost > 1 and base_max_tokens > 0:
+            # 输出被 max_tokens 截断：同一 provider 放大额度重试一次
+            retry_want = int(base_max_tokens * boost)
+            log.warning("分阶段批改[%s]输出截断，同一模型放大额度重试: provider=%s %d->%d",
+                        stage, name, base_max_tokens, retry_want)
+            try:
+                outcome = await call(provider, retry_want)
+            except ProviderError as e:
+                errors.append(f"{name}: {e}（截断重试失败）")
+                log.warning("分阶段批改[%s]切换备胎（截断重试失败）: %s", stage, e)
+                continue
         if getattr(outcome, "finish_reason", "") == "length":
             # 输出被 max_tokens 截断：JSON 多半不完整，不能因为 HTTP 200 就当成功
             errors.append(f"{name}: 输出被截断（finish_reason=length）")
@@ -511,15 +530,17 @@ async def _zoom_reread(questions: List[ExtractedQuestion],
     user = _zoom_user(targets, image_desc)
     max_tokens = cfg.extract_max_tokens
 
-    async def call(provider):
+    async def call(provider, max_tokens_want: int = 0):
         return await provider.grade_multi(
             zoom_images, system, user,
-            max_tokens=_stage_max_tokens(getattr(provider, "cfg", None), max_tokens))
+            max_tokens=_stage_max_tokens(getattr(provider, "cfg", None),
+                                         max_tokens_want or max_tokens))
 
     try:
         parsed, outcome, cost = await _run_stage("extract_zoom", ZoomRereadResult,
                                                  chain, settings, call, None,
-                                                 provider_factory)
+                                                 provider_factory,
+                                                 base_max_tokens=max_tokens)
     except StageError as e:
         reason = (e.message or "").strip()[:120]
         affected = _mark_unresolved_blank(targets, reason)
@@ -575,10 +596,11 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
         model_cls = ExtractionResult
     max_tokens = cfg.extract_max_tokens
 
-    async def call(provider):
+    async def call(provider, max_tokens_want: int = 0):
         return await provider.grade_multi(
             prepped, system, user,
-            max_tokens=_stage_max_tokens(getattr(provider, "cfg", None), max_tokens))
+            max_tokens=_stage_max_tokens(getattr(provider, "cfg", None),
+                                         max_tokens_want or max_tokens))
 
     def check(parsed):
         qs = parsed.questions if not is_followup else parsed.new_questions
@@ -591,7 +613,8 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
                     raise ValueError(f"revision 指向不存在的上一轮题号: {rev.prev_no}")
 
     parsed, outcome, cost = await _run_stage("extract", model_cls, chain, settings,
-                                             call, check, provider_factory)
+                                             call, check, provider_factory,
+                                             base_max_tokens=max_tokens)
     calls = [(outcome, cost)]
 
     # 局部放大复核：只针对字迹存疑/判空的题（失败即降级，不阻断主流程）
@@ -634,10 +657,11 @@ async def solve_stage(items: List[Dict[str, str]], subject: str, grade_level: st
     user = _solve_user(safe_items, subject, grade_level)
     max_tokens = settings.staged_grading.solve_max_tokens
 
-    async def call(provider):
+    async def call(provider, max_tokens_want: int = 0):
         return await provider.complete_text(
             system, user,
-            max_tokens=_stage_max_tokens(getattr(provider, "cfg", None), max_tokens))
+            max_tokens=_stage_max_tokens(getattr(provider, "cfg", None),
+                                         max_tokens_want or max_tokens))
 
     def check(parsed):
         want = {i["no"] for i in safe_items}
@@ -647,7 +671,8 @@ async def solve_stage(items: List[Dict[str, str]], subject: str, grade_level: st
             raise ValueError(f"求解缺题：{sorted(missing)}")
 
     return await _run_stage("solve", SolutionResult, chain, settings,
-                            call, check, provider_factory)
+                            call, check, provider_factory,
+                            base_max_tokens=max_tokens)
 
 
 # --------------------------------------------------------------------------
@@ -884,12 +909,12 @@ async def compare_stage(extracted: List[ExtractedQuestion], solutions: Dict[str,
                 f"{json.dumps(pending, ensure_ascii=False)}\n```\n"
                 '输出 JSON：{"judgments": [{"no": "小题编号", "equivalent": true}]}')
 
-        async def call(provider):
+        async def call(provider, max_tokens_want: int = 0):
             return await provider.complete_text(
                 COMPARE_SYSTEM, user,
                 max_tokens=_stage_max_tokens(
                     getattr(provider, "cfg", None),
-                    settings.staged_grading.compare_max_tokens))
+                    max_tokens_want or settings.staged_grading.compare_max_tokens))
 
         def check(parsed):
             want = {p["no"] for p in pending}
@@ -898,7 +923,8 @@ async def compare_stage(extracted: List[ExtractedQuestion], solutions: Dict[str,
                 raise ValueError(f"等价裁决缺题：{sorted(want - got)}")
 
         parsed, outcome, cost = await _run_stage(
-            "compare", CompareResult, chain, settings, call, check, provider_factory)
+            "compare", CompareResult, chain, settings, call, check, provider_factory,
+            base_max_tokens=settings.staged_grading.compare_max_tokens)
         for j in parsed.judgments:
             statuses[j.no] = "correct" if j.equivalent else "wrong"
         return statuses, subs, outcome, cost
@@ -922,10 +948,11 @@ async def diagnose_stage(wrong_items: List[Dict[str, Any]], subject: str,
             '"knowledge_point": "知识点", "explanation": ["步骤化讲解"], "correct_answer": "标准答案"}]}')
     max_tokens = settings.staged_grading.diagnose_max_tokens
 
-    async def call(provider):
+    async def call(provider, max_tokens_want: int = 0):
         return await provider.complete_text(
             system, user,
-            max_tokens=_stage_max_tokens(getattr(provider, "cfg", None), max_tokens))
+            max_tokens=_stage_max_tokens(getattr(provider, "cfg", None),
+                                         max_tokens_want or max_tokens))
 
     def check(parsed):
         want = {str(i.get("no", "")) for i in wrong_items}
@@ -940,7 +967,8 @@ async def diagnose_stage(wrong_items: List[Dict[str, Any]], subject: str,
                 raise ValueError(f"题 {d.no}: error_rule 不能笼统写作「{rule}」")
 
     return await _run_stage("diagnose", DiagnosisResult, chain, settings,
-                            call, check, provider_factory)
+                            call, check, provider_factory,
+                            base_max_tokens=max_tokens)
 
 
 # --------------------------------------------------------------------------
