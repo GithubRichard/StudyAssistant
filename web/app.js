@@ -1085,6 +1085,29 @@ function _weekLabel(weekStart) {
   return `${d.getMonth() + 1}.${d.getDate()}–${e.getMonth() + 1}.${e.getDate()}`;
 }
 
+function _aiAnalysisBlock(s) {
+  const ai = s.ai_analysis;
+  if (!ai) return "";
+  if (ai.error) {
+    return `<p class="muted small">🤖 AI 归类分析暂不可用（${esc(ai.error).slice(0, 60)}）</p>`;
+  }
+  const cats = (ai.categories || []).map((c) => `
+    <div style="margin:6px 0;padding:8px 10px;background:#f6f8ff;border-radius:8px">
+      <div style="font-weight:700;font-size:14px">${esc(c.name)}
+        <span class="muted small">第${(c.question_nos || []).map((n) => esc(n)).join("、")}题</span></div>
+      ${c.pattern ? `<div class="small" style="margin-top:2px">共性：${esc(c.pattern)}</div>` : ""}
+      ${c.advice ? `<div class="small" style="margin-top:2px;color:#1a7f37">建议：${esc(c.advice)}</div>` : ""}
+    </div>`).join("");
+  const focus = (ai.focus_next_week || []).map((f) => `<li>${esc(f)}</li>`).join("");
+  if (!cats && !ai.knowledge_summary && !focus) return "";
+  return `
+    <div class="q-label" style="margin:8px 0 4px">🤖 AI 归类分析
+      <span class="muted small">${esc(ai.model || "")} · 分析了 ${ai.analyzed_mistakes || 0} 道错题</span></div>
+    ${ai.knowledge_summary ? `<p style="font-size:14px;line-height:1.6;margin:4px 0">${esc(ai.knowledge_summary)}</p>` : ""}
+    ${cats}
+    ${focus ? `<div class="q-label" style="margin:8px 0 4px">下周重点</div><ul class="event-list">${focus}</ul>` : ""}`;
+}
+
 async function pageWeekly(app, r, alive) {
   document.title = "周总结";
   app.innerHTML = shell("mine", "周总结", `<div class="page"><div class="loading">加载中…</div></div>`);
@@ -1148,6 +1171,7 @@ async function pageWeekly(app, r, alive) {
       <div class="q-row"><span class="q-label">新增错题</span><div>${s.new_mistakes || 0} 题</div></div>
       <div class="q-row"><span class="q-label">订正 / 复测</span><div>${s.corrections || 0} / ${s.retests || 0}</div></div>
       <div class="q-row"><span class="q-label">待办</span><div>待订正 ${s.pending_correction || 0} · 待复测 ${s.pending_retest || 0}</div></div>
+      ${_aiAnalysisBlock(s)}
       ${causes ? `<div class="q-label" style="margin:8px 0 4px">高频错因</div><ul class="event-list">${causes}</ul>` : ""}
       ${points ? `<div class="q-label" style="margin:8px 0 4px">薄弱知识点</div><ul class="event-list">${points}</ul>` : ""}
       ${(!causes && !points) ? `<p class="muted small">本周没有新增错题，继续保持 👍</p>` : ""}

@@ -163,7 +163,7 @@ async def _weekly_summary_loop(settings: "Settings") -> None:
     from . import weekly
     try:
         # 启动时先补一次：覆盖"服务器整个周日都宕机"的情况
-        generated = await weekly.generate_missing(settings.db_path)
+        generated = await weekly.generate_missing(settings.db_path, settings=settings)
         for openid, n in generated.items():
             log.info("周总结补生成: %s 补了 %d 周", openid, n)
     except asyncio.CancelledError:
@@ -173,7 +173,7 @@ async def _weekly_summary_loop(settings: "Settings") -> None:
     while True:
         try:
             await asyncio.sleep(3600)
-            generated = await weekly.generate_missing(settings.db_path)
+            generated = await weekly.generate_missing(settings.db_path, settings=settings)
             for openid, n in generated.items():
                 log.info("周总结已生成: %s 生成 %d 周", openid, n)
         except asyncio.CancelledError:

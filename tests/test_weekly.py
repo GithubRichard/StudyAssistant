@@ -249,5 +249,158 @@ class WeeklyApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.json()["subjects"], [])
 
 
+# ---------- AI 错题归类分析 ----------
+
+from app.providers import GradeOutcome  # noqa: E402
+
+
+class FakeAnalysisProvider:
+    def __init__(self, name, script, calls, cfg=None):
+        self.name = name
+        self.cfg = cfg
+        self._script = script
+        self.calls = calls
+
+    async def complete_text(self, system, user, max_tokens=4000):
+        self.calls.append({"system": system, "user": user,
+                           "max_tokens": max_tokens, "provider": self.name})
+        queue = self._script.get(self.name, [])
+        assert queue, f"fake provider {self.name} 没有剧本"
+        item = queue.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        if isinstance(item, GradeOutcome):
+            return item
+        return GradeOutcome(text=item, input_tokens=100, output_tokens=200,
+                            provider=self.name, model=f"fake-{self.name}")
+
+
+def analysis_factory(scripts: dict, calls: list):
+    def factory(name, cfg):
+        return FakeAnalysisProvider(name, scripts, calls, cfg)
+    return factory
+
+
+ANALYSIS_OK = json.dumps({
+    "categories": [
+        {"name": "计算失误", "question_nos": ["3", "5"],
+         "pattern": "移项时忘记变号", "advice": "做完后代入验算"},
+        {"name": "概念不清", "question_nos": ["7"],
+         "pattern": "一元一次方程定义记混", "advice": "重看课本定义"},
+    ],
+    "knowledge_summary": "本周薄弱点集中在一元一次方程的移项与求解，建议重点复习。",
+    "focus_next_week": ["移项变号专项练习", "方程应用题"],
+}, ensure_ascii=False)
+
+
+def make_ai_settings(tmp: str):
+    from app.config import ProviderConfig
+    s = make_settings(tmp)
+    s.llm.providers["p1"] = ProviderConfig(
+        base_url="http://fake1", api_key="k1", model="m1", enabled=True)
+    s.llm.providers["p2"] = ProviderConfig(
+        base_url="http://fake2", api_key="k2", model="m2", enabled=True)
+    s.llm.default_provider = "p1"
+    s.llm.fallback_order = ["p2"]
+    return s
+
+
+class WeeklyAiAnalysisTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.settings = make_ai_settings(self.tmp.name)
+        await db.init_db(self.settings.db_path)
+        self.db_path = self.settings.db_path
+        self.openid = web_openid("kid1")
+
+    async def asyncTearDown(self):
+        self.tmp.cleanup()
+
+    async def _seed_week_mistakes(self):
+        tue = datetime(2026, 9, 22, 10, 0, tzinfo=SH)
+        await seed_mistake(self.db_path, self.openid, "u1", "数学", tue)
+        await seed_mistake(self.db_path, self.openid, "u2", "数学", tue,
+                           question_no="5", knowledge_point="因式分解",
+                           error_rule="符号错误")
+
+    async def test_analyze_success(self):
+        await self._seed_week_mistakes()
+        mistakes = await db.list_week_mistakes(
+            self.db_path, self.openid, "数学", *_ts_range(), limit=30)
+        self.assertEqual(len(mistakes), 2)
+        calls = []
+        out = await weekly._analyze_mistakes(
+            self.settings, "数学", mistakes,
+            provider_factory=analysis_factory({"p1": [ANALYSIS_OK], "p2": []}, calls))
+        self.assertEqual(len(out["categories"]), 2)
+        self.assertEqual(out["categories"][0]["name"], "计算失误")
+        self.assertEqual(out["categories"][0]["question_nos"], ["3", "5"])
+        self.assertIn("移项", out["knowledge_summary"])
+        self.assertEqual(len(out["focus_next_week"]), 2)
+        self.assertEqual(out["analyzed_mistakes"], 2)
+        self.assertTrue(out["model"].startswith("p1/"))
+        self.assertEqual(len(calls), 1)
+
+    async def test_analyze_fallback(self):
+        mistakes = [{"question_no": "3", "stem": "解方程", "student_answer": "x=5",
+                     "correct_answer": "x=4", "error_rule": "", "knowledge_point": ""}]
+        calls = []
+        out = await weekly._analyze_mistakes(
+            self.settings, "数学", mistakes,
+            provider_factory=analysis_factory(
+                {"p1": [RuntimeError("boom")], "p2": [ANALYSIS_OK]}, calls))
+        self.assertEqual(len(out["categories"]), 2)
+        self.assertTrue(out["model"].startswith("p2/"))
+        self.assertEqual(len(calls), 2)
+
+    async def test_analyze_all_fail_keeps_stats(self):
+        await self._seed_week_mistakes()
+        scripts = {"p1": [RuntimeError("boom1")], "p2": [RuntimeError("boom2")]}
+        subjects = await weekly.generate_for_user(
+            self.db_path, self.openid, WEEK, settings=self.settings,
+            provider_factory=analysis_factory(scripts, []))
+        self.assertEqual(subjects, ["数学"])
+        rows = await db.get_weekly_summaries(self.db_path, self.openid, "2026-09-21")
+        summary = rows[0]["summary"]
+        # 统计部分照常落库
+        self.assertEqual(summary["new_mistakes"], 2)
+        # AI 部分记 error，不阻断
+        self.assertIn("error", summary["ai_analysis"])
+        self.assertIn("boom1", summary["ai_analysis"]["error"])
+
+    async def test_no_settings_skips_ai(self):
+        await self._seed_week_mistakes()
+        await weekly.generate_for_user(self.db_path, self.openid, WEEK)
+        rows = await db.get_weekly_summaries(self.db_path, self.openid, "2026-09-21")
+        self.assertIsNone(rows[0]["summary"]["ai_analysis"])
+
+    async def test_ai_disabled_by_config(self):
+        self.settings.weekly_summary.ai_analysis = False
+        await self._seed_week_mistakes()
+        await weekly.generate_for_user(
+            self.db_path, self.openid, WEEK, settings=self.settings,
+            provider_factory=analysis_factory({"p1": [ANALYSIS_OK], "p2": []}, []))
+        rows = await db.get_weekly_summaries(self.db_path, self.openid, "2026-09-21")
+        self.assertIsNone(rows[0]["summary"]["ai_analysis"])
+
+    async def test_no_mistakes_no_analysis_call(self):
+        mon = datetime(2026, 9, 21, 10, 0, tzinfo=SH)
+        await seed_grading_task(self.db_path, self.openid, "t1", "数学", mon,
+                                ["correct"])
+        calls = []
+        await weekly.generate_for_user(
+            self.db_path, self.openid, WEEK, settings=self.settings,
+            provider_factory=analysis_factory({"p1": [ANALYSIS_OK], "p2": []}, calls))
+        # 没有错题就不调模型
+        self.assertEqual(calls, [])
+        rows = await db.get_weekly_summaries(self.db_path, self.openid, "2026-09-21")
+        self.assertIsNone(rows[0]["summary"]["ai_analysis"])
+
+
+def _ts_range():
+    start, end = weekly.week_bounds(WEEK)
+    return start, end
+
+
 if __name__ == "__main__":
     unittest.main()

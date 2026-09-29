@@ -1002,6 +1002,42 @@ async def weekly_pending_by_subject(db_path: str, openid: str) -> Dict[str, dict
     return stats
 
 
+async def list_week_mistakes(db_path: str, openid: str, subject: str,
+                           start_ts: float, end_ts: float,
+                           limit: int = 30) -> List[dict]:
+    """指定时间窗内某科目新增错题的详情（供 AI 归类分析用）。
+
+    subject 为归一化后的科目名（空科目记「未分类」）；不含已撤回条目；
+    按创建时间排序，取前 limit 条。
+    """
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT subject, question_no, stem, student_answer, correct_answer,
+                      error_rule, knowledge_point FROM mistakes
+               WHERE openid=? AND question_uid<>''
+                 AND remediation_state<>'withdrawn'
+                 AND created_at>=? AND created_at<?
+               ORDER BY created_at LIMIT ?""",
+            (openid, start_ts, end_ts, max(1, limit) * 2),
+        ) as cur:
+            rows = await cur.fetchall()
+    out = []
+    for r in rows:
+        if normalize_subject(str(r[0] or "")) != subject:
+            continue
+        out.append({
+            "question_no": str(r[1] or ""),
+            "stem": str(r[2] or ""),
+            "student_answer": str(r[3] or ""),
+            "correct_answer": str(r[4] or ""),
+            "error_rule": str(r[5] or ""),
+            "knowledge_point": str(r[6] or ""),
+        })
+        if len(out) >= max(1, limit):
+            break
+    return out
+
+
 async def week_has_data(db_path: str, openid: str,
                         start_ts: float, end_ts: float) -> bool:
     """该周是否有可总结的数据：有已完成的批改任务或新增台账条目。"""

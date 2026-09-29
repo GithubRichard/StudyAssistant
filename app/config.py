@@ -87,6 +87,16 @@ class StagedGradingConfig(BaseModel):
     extract_zoom_max_items: int = 15
 
 
+class WeeklySummaryConfig(BaseModel):
+    """周总结配置：每周日凌晨按账号×科目生成上一周学习总结。"""
+    # 是否用大模型做错题归类分析与知识点总结；关闭后周总结只有统计部分
+    ai_analysis: bool = True
+    # 送分析的最大错题数（超出按创建时间取最早的；题干过长会被截断）
+    analysis_max_mistakes: int = 30
+    # 分析输出上限（tokens）
+    analysis_max_tokens: int = 4000
+
+
 class LlmConfig(BaseModel):
     default_provider: str = "qwen"
     fallback_order: List[str] = Field(default_factory=list)
@@ -338,6 +348,7 @@ class Settings(BaseModel):
     system_prompt: str = ""
     user_prompt_template: str = "请批改这张{subject}作业照片（{grade_level}）。严格按系统指令要求的 JSON 格式输出。"
     staged_grading: StagedGradingConfig = Field(default_factory=StagedGradingConfig)
+    weekly_summary: WeeklySummaryConfig = Field(default_factory=WeeklySummaryConfig)
 
     @property
     def db_path(self) -> str:

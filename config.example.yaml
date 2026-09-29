@@ -185,3 +185,8 @@ staged_grading:
   extract_zoom_grid: 2               # 每页切 2x2=4 张重叠局部图
   extract_zoom_max_images: 2         # 图片超过该张数跳过复核
   extract_zoom_max_items: 15         # 存疑题超过该数跳过复核
+
+weekly_summary:
+  ai_analysis: true          # 是否用大模型做错题归类分析与知识点总结；false 则周总结只有统计部分
+  analysis_max_mistakes: 30  # 送分析的最大错题数
+  analysis_max_tokens: 4000  # 分析输出上限

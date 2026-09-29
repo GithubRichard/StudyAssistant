@@ -544,7 +544,8 @@ async def weekly_summary_generate(payload: dict, ctx: dict = Session):
               if week_start else weekly.last_complete_week_monday())
     except ValueError:
         raise HTTPException(400, "week_start 格式应为 YYYY-MM-DD（周一日期）")
-    subjects = await weekly.generate_for_user(s.db_path, ctx["openid"], ws)
+    subjects = await weekly.generate_for_user(s.db_path, ctx["openid"], ws,
+                                              settings=s)
     return {"week_start": ws.isoformat(), "subjects": subjects}
 
 
