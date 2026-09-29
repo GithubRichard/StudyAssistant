@@ -170,3 +170,10 @@ staged_grading:
   # extract_prompt: ""
   # solve_prompt: ""
   # diagnose_prompt: ""
+  # 提取阶段"眼睛"：图片预处理 + 字迹存疑时局部放大复核
+  extract_image_min_long_side: 2048  # 转写前长边放大到该值；0=关闭
+  extract_image_max_long_side: 4096  # 超过则缩小；0=不限制
+  extract_zoom_reread: true          # 首轮转写后对存疑题做局部放大复核
+  extract_zoom_grid: 2               # 每页切 2x2=4 张重叠局部图
+  extract_zoom_max_images: 2         # 图片超过该张数跳过复核
+  extract_zoom_max_items: 15         # 存疑题超过该数跳过复核

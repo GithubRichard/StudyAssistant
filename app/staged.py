@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field, ValidationError
 
 from . import providers, thinking
+from . import image_prep
 from .config import Settings, provider_chain
 from .grading import extract_json
 from .hermes import validate_result
@@ -72,6 +73,18 @@ class FollowupRevision(BaseModel):
 class FollowupExtraction(BaseModel):
     new_questions: List[ExtractedQuestion] = Field(default_factory=list)
     revisions: List[FollowupRevision] = Field(default_factory=list)
+
+
+class ZoomRereadItem(BaseModel):
+    """局部放大复核单题结果。"""
+    no: str
+    student_answer: str = ""
+    handwriting_uncertain: bool = False
+    uncertain_note: str = ""
+
+
+class ZoomRereadResult(BaseModel):
+    reread: List[ZoomRereadItem] = Field(default_factory=list)
 
 
 def format_extraction_log(data: Dict[str, Any]) -> str:
@@ -170,6 +183,14 @@ EXTRACT_SYSTEM = """你是试卷内容转写员。你的唯一任务是把图片
 3. 字迹无法辨认时：handwriting_uncertain 写 true，student_answer 写空字符串，在 uncertain_note 里说明（如"第2问笔迹潦草无法辨认"）——绝不猜一个答案填进去。
 4. 数学公式尽量保留原样字符（如 x²、分数写成 a/b 形式）。
 5. 最终回答必须包含且仅包含一个 ```json 代码块，不要输出其他文字。"""
+
+EXTRACT_ZOOM_SYSTEM = """你是试卷手写答案复核员。你会看到：每页原图 + 每页的局部放大图（已按行列命名，有重叠）。
+你的唯一任务：只复核下面列出的题号的学生手写答案（student_answer）。
+1. 先在原图上定位到该题，再看对应的局部放大图辨认字迹。
+2. 能辨认：handwriting_uncertain 写 false，student_answer 原样转写。
+3. 仍无法辨认：handwriting_uncertain 写 true，student_answer 写空字符串，uncertain_note 说明原因。
+4. 绝不猜测；不要输出列表之外的题号；不要判定对错。
+最终回答必须包含且仅包含一个 ```json 代码块，不要输出其他文字。"""
 
 SOLVE_SYSTEM = """你是{subject}解题专家。你的唯一任务是根据题干独立求解，给出标准答案和关键步骤。
 铁律：
@@ -284,25 +305,141 @@ def _extract_user_followup(n_images: int, run_text: str, followup_no: int,
     )
 
 
+def _zoom_user(items: List[ExtractedQuestion], image_desc: List[str]) -> str:
+    """局部放大复核的 user prompt：只列待复核题号 + 图片顺序说明。"""
+    lines = ["请复核以下题号的学生手写答案（首轮转写时字迹存疑或疑似漏读）："]
+    for q in items:
+        stem = (q.stem or "").replace("\n", " ")
+        if len(stem) > 60:
+            stem = stem[:60] + "…"
+        ref = q.uncertain_note or ("（首轮判空，疑似漏读）" if not q.student_answer else "")
+        lines.append(f"- 题{q.no}（图{q.page}）：题干：{stem}"
+                     + (f"｜首轮备注：{ref}" if ref else ""))
+    lines.append("图片顺序：" + "；".join(image_desc) + "。只输出上述题号，"
+                 "JSON 格式：{\"reread\": [{\"no\": \"题号\", \"student_answer\": \"转写\", "
+                 "\"handwriting_uncertain\": false, \"uncertain_note\": \"\"}]}")
+    return "\n".join(lines)
+
+
+def _needs_zoom(questions: List[ExtractedQuestion]) -> List[ExtractedQuestion]:
+    """需要放大复核的题：字迹存疑，或首轮判空（可能漏读）。"""
+    return [q for q in questions
+            if q.handwriting_uncertain or not (q.student_answer or "").strip()]
+
+
+def _merge_zoom(questions: List[ExtractedQuestion],
+                reread: List[ZoomRereadItem]) -> int:
+    """把复核结果合并回转写：按题号匹配，只更新有变化的题。返回更新题数。"""
+    by_no = {str(q.no): q for q in questions}
+    updated = 0
+    for r in reread:
+        q = by_no.get(str(r.no))
+        if q is None:
+            continue
+        new_ans = (r.student_answer or "").strip()
+        if r.handwriting_uncertain:
+            if not q.handwriting_uncertain or q.student_answer:
+                q.handwriting_uncertain = True
+                q.student_answer = ""
+                q.uncertain_note = r.uncertain_note or q.uncertain_note
+                updated += 1
+        elif new_ans != (q.student_answer or "").strip() or q.handwriting_uncertain:
+            # 复核辨认出答案（含"首轮判空→复核找到字迹"、"存疑→确认答案"、
+            # "存疑→复核确认空白"三种），以复核为准
+            q.student_answer = r.student_answer
+            q.handwriting_uncertain = False
+            q.uncertain_note = ""
+            updated += 1
+    return updated
+
+
+async def _zoom_reread(questions: List[ExtractedQuestion],
+                       prepped: List[Tuple[bytes, str]],
+                       settings: Settings, chain: List[str],
+                       provider_factory: Optional[Callable] = None):
+    """对字迹存疑题做局部放大复核。返回 (更新题数, outcome, cost)，无需复核返回 None。"""
+    cfg = settings.staged_grading
+    if not cfg.extract_zoom_reread:
+        return None
+    targets = _needs_zoom(questions)
+    if not targets:
+        return None
+    if len(prepped) > cfg.extract_zoom_max_images:
+        log.info("分阶段批改[extract] 跳过放大复核：图片 %d 张超过上限 %d",
+                 len(prepped), cfg.extract_zoom_max_images)
+        return None
+    if len(targets) > cfg.extract_zoom_max_items:
+        log.info("分阶段批改[extract] 跳过放大复核：存疑 %d 题超过上限 %d",
+                 len(targets), cfg.extract_zoom_max_items)
+        return None
+
+    zoom_images: List[Tuple[bytes, str]] = []
+    image_desc: List[str] = []
+    grid = max(2, cfg.extract_zoom_grid)
+    for i, (b, m) in enumerate(prepped, start=1):
+        zoom_images.append((b, m))
+        image_desc.append(f"第{len(zoom_images)}张=图{i}原图")
+        for tb, tm, label in image_prep.make_zoom_tiles(b, m, page=i, grid=grid):
+            zoom_images.append((tb, tm))
+            image_desc.append(f"第{len(zoom_images)}张={label}")
+    if len(zoom_images) <= len(prepped):
+        # 局部图一张没切出来，复核无意义
+        return None
+
+    system = EXTRACT_ZOOM_SYSTEM
+    user = _zoom_user(targets, image_desc)
+    need_nos = {str(q.no) for q in targets}
+    max_tokens = cfg.extract_max_tokens
+
+    async def call(provider):
+        return await provider.grade_multi(zoom_images, system, user,
+                                          max_tokens=max_tokens)
+
+    def check(parsed):
+        for r in parsed.reread:
+            if str(r.no) not in need_nos:
+                raise ValueError(f"复核返回了未要求的题号: {r.no}")
+
+    parsed, outcome, cost = await _run_stage("extract_zoom", ZoomRereadResult,
+                                             chain, settings, call, check,
+                                             provider_factory)
+    updated = _merge_zoom(questions, parsed.reread)
+    log.info("分阶段批改[extract] 放大复核完成：%d 题待复核，%d 题转写被更新",
+             len(targets), updated)
+    return updated, outcome, cost
+
+
 async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_level: str,
                         input_text: str, settings: Settings, chain: List[str],
                         provider_factory: Optional[Callable] = None,
                         prev_result: Optional[Dict[str, Any]] = None,
                         followup_no: int = 0):
-    """Stage 1：多模态转写。followup 时输出增量结构并携带上一轮精简结果。"""
+    """Stage 1：多模态转写。followup 时输出增量结构并携带上一轮精简结果。
+
+    返回 (parsed, calls, total_cost)，calls 为 [(outcome, cost)]，
+    含首轮转写调用，触发放大复核时多一条复核调用。
+    """
+    cfg = settings.staged_grading
+    # 转写前预处理：自动旋转 / 放大到最小长边 / 轻度锐化
+    prepped = [image_prep.prepare_extract_image(
+        b, m,
+        min_long_side=cfg.extract_image_min_long_side,
+        max_long_side=cfg.extract_image_max_long_side)
+        for b, m in images]
+
     system = _stage_system(settings, "extract", EXTRACT_SYSTEM)
     is_followup = prev_result is not None and followup_no > 0
     if is_followup:
-        user = _extract_user_followup(len(images), input_text, followup_no,
+        user = _extract_user_followup(len(prepped), input_text, followup_no,
                                       _compact_prev_for_extract(prev_result))
         model_cls: Any = FollowupExtraction
     else:
-        user = _extract_user_initial(subject, grade_level, len(images), input_text)
+        user = _extract_user_initial(subject, grade_level, len(prepped), input_text)
         model_cls = ExtractionResult
-    max_tokens = settings.staged_grading.extract_max_tokens
+    max_tokens = cfg.extract_max_tokens
 
     async def call(provider):
-        return await provider.grade_multi(images, system, user, max_tokens=max_tokens)
+        return await provider.grade_multi(prepped, system, user, max_tokens=max_tokens)
 
     def check(parsed):
         qs = parsed.questions if not is_followup else parsed.new_questions
@@ -316,7 +453,18 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
 
     parsed, outcome, cost = await _run_stage("extract", model_cls, chain, settings,
                                              call, check, provider_factory)
-    return parsed, outcome, cost
+    calls = [(outcome, cost)]
+
+    # 局部放大复核：只针对字迹存疑/判空的题
+    zoom_targets = parsed.questions if not is_followup else parsed.new_questions
+    zoomed = await _zoom_reread(zoom_targets, prepped, settings, chain,
+                                provider_factory)
+    if zoomed:
+        _updated, z_outcome, z_cost = zoomed
+        calls.append((z_outcome, z_cost))
+
+    total_cost = round(sum(c for _, c in calls), 4)
+    return parsed, calls, total_cost
 
 
 # --------------------------------------------------------------------------
@@ -687,12 +835,13 @@ async def grade_staged(images: List[Tuple[bytes, str]],
         if on_stage:
             await on_stage(name, data)
 
-    # ---- Stage 1：提取 ----
-    parsed, outcome, cost = await extract_stage(
+    # ---- Stage 1：提取（含图片预处理；字迹存疑时自动做局部放大复核） ----
+    parsed, extract_calls, _ = await extract_stage(
         images, subject, grade_level, input_text, settings, chain,
         provider_factory, prev_result if is_followup else None,
         followup_no if is_followup else 0)
-    track(outcome, cost)
+    for outcome, c in extract_calls:
+        track(outcome, c)
     await emit("extract", parsed.model_dump())
 
     if is_followup:

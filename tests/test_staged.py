@@ -34,15 +34,21 @@ class FakeProvider:
                            "n_images": n_images, "provider": self.name})
         queue = self._script.get(stage, [])
         if not queue:
-            raise AssertionError(f"fake provider {self.name} 没有 {stage} 的剧本")
-        item = queue.pop(0)
+            if stage == "extract_zoom":
+                # 没有专门剧本时：复核无新发现（保持首轮转写不变）
+                item = json.dumps({"reread": []}, ensure_ascii=False)
+            else:
+                raise AssertionError(f"fake provider {self.name} 没有 {stage} 的剧本")
+        else:
+            item = queue.pop(0)
         if isinstance(item, Exception):
             raise item
         return GradeOutcome(text=item, input_tokens=10, output_tokens=20,
                             provider=self.name, model=f"fake-{self.name}")
 
     async def grade_multi(self, images, system, user, max_tokens=8000):
-        return self._respond("extract", system, user, len(images))
+        stage = "extract_zoom" if "复核员" in system else "extract"
+        return self._respond(stage, system, user, len(images))
 
     async def complete_text(self, system, user, max_tokens=4000):
         if "解题专家" in system:
@@ -727,3 +733,97 @@ class StagedStagesViewTest(unittest.IsolatedAsyncioTestCase):
         extract = run_view["stages"]["extract"]
         self.assertEqual(extract["questions"][0]["student_answer"], "5")
         self.assertEqual(extract["questions"][0]["stem"], "2x=8，x=?")
+
+
+def _tiny_jpeg(w=400, h=300, color=(255, 255, 255)) -> bytes:
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), color).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+ZOOM_REREAD_FOUND = json.dumps({"reread": [
+    {"no": "3", "student_answer": "a²+2ab+b²",
+     "handwriting_uncertain": False, "uncertain_note": ""},
+]}, ensure_ascii=False)
+
+
+class ExtractZoomTest(unittest.IsolatedAsyncioTestCase):
+    """提取阶段局部放大复核：触发条件、合并逻辑、跳过条件。"""
+
+    def setUp(self):
+        self.calls = []
+        self.img = [(_tiny_jpeg(), "image/jpeg")]
+
+    def _settings(self, **over):
+        s = make_settings("fake")
+        for k, v in over.items():
+            setattr(s.staged_grading, k, v)
+        return s
+
+    def _scripts(self, **over):
+        scripts = {"fake": {"extract": [EXTRACT_OK]}}
+        scripts["fake"].update(over)
+        return scripts
+
+    async def _extract(self, scripts, settings):
+        return await staged.extract_stage(
+            self.img, "数学", "七年级", "", settings, ["fake"],
+            provider_factory=factory_for(scripts, self.calls))
+
+    async def test_zoom_merges_reread_into_transcript(self):
+        # EXTRACT_OK 的第 3 题字迹存疑 → 复核找回答案 → 合并后不再存疑
+        scripts = self._scripts(extract_zoom=[ZOOM_REREAD_FOUND])
+        parsed, calls, _ = await self._extract(scripts, self._settings())
+        stages = [c["stage"] for c in self.calls]
+        self.assertIn("extract_zoom", stages)
+        q3 = {q.no: q for q in parsed.questions}["3"]
+        self.assertEqual(q3.student_answer, "a²+2ab+b²")
+        self.assertFalse(q3.handwriting_uncertain)
+        # 复核调用确实带了局部图（原图 1 张 + 2x2=4 张局部）
+        zoom_call = [c for c in self.calls if c["stage"] == "extract_zoom"][0]
+        self.assertEqual(zoom_call["n_images"], 5)
+
+    async def test_zoom_skipped_when_disabled(self):
+        scripts = self._scripts()
+        parsed, calls, _ = await self._extract(
+            scripts, self._settings(extract_zoom_reread=False))
+        stages = [c["stage"] for c in self.calls]
+        self.assertNotIn("extract_zoom", stages)
+        # 未复核：第 3 题保持存疑原样
+        q3 = {q.no: q for q in parsed.questions}["3"]
+        self.assertTrue(q3.handwriting_uncertain)
+
+    async def test_zoom_skipped_when_nothing_uncertain(self):
+        certain = json.dumps({"questions": [
+            {"no": "1", "stem": "1+1=?", "student_answer": "2",
+             "page": "1", "handwriting_uncertain": False, "uncertain_note": ""},
+        ]}, ensure_ascii=False)
+        scripts = self._scripts(extract=[certain])
+        await self._extract(scripts, self._settings())
+        stages = [c["stage"] for c in self.calls]
+        self.assertNotIn("extract_zoom", stages)
+
+    async def test_zoom_skipped_when_too_many_images(self):
+        scripts = self._scripts()
+        imgs = self.img * 3
+        await staged.extract_stage(
+            imgs, "数学", "七年级", "", self._settings(), ["fake"],
+            provider_factory=factory_for(scripts, self.calls))
+        stages = [c["stage"] for c in self.calls]
+        self.assertNotIn("extract_zoom", stages)
+
+    async def test_zoom_keeps_uncertain_when_still_illegible(self):
+        # 复核依然看不清 → 保持存疑，不编答案
+        scripts = self._scripts()  # 默认空 reread
+        parsed, calls, _ = await self._extract(scripts, self._settings())
+        q3 = {q.no: q for q in parsed.questions}["3"]
+        self.assertTrue(q3.handwriting_uncertain)
+        self.assertEqual(q3.student_answer, "")
+
+    async def test_preprocessed_image_sent_to_model(self):
+        # 预处理不改变题数；图片仍是有效 JPEG（fail-open 不阻断）
+        scripts = self._scripts()
+        parsed, calls, _ = await self._extract(scripts, self._settings())
+        self.assertEqual(len(parsed.questions), 3)

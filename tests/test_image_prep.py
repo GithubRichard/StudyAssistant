@@ -1,0 +1,83 @@
+"""图片预处理模块测试：放大/缩小/切分/异常兜底。"""
+from __future__ import annotations
+
+import io
+import unittest
+
+from PIL import Image
+
+from app import image_prep
+
+
+def _jpeg(w, h, color=(200, 200, 200)) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), color).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+def _size(b: bytes):
+    return Image.open(io.BytesIO(b)).size
+
+
+class PrepareTest(unittest.TestCase):
+    def test_upscale_to_min_long_side(self):
+        out, mime = image_prep.prepare_extract_image(
+            _jpeg(400, 300), "image/jpeg", min_long_side=2048, max_long_side=4096)
+        self.assertEqual(mime, "image/jpeg")
+        w, h = _size(out)
+        self.assertEqual(max(w, h), 2048)
+        # 宽高比保持
+        self.assertAlmostEqual(w / h, 400 / 300, places=2)
+
+    def test_downscale_over_max(self):
+        out, _ = image_prep.prepare_extract_image(
+            _jpeg(5000, 4000), "image/jpeg", min_long_side=2048, max_long_side=4096)
+        w, h = _size(out)
+        self.assertEqual(max(w, h), 4096)
+
+    def test_no_change_when_in_range(self):
+        out, _ = image_prep.prepare_extract_image(
+            _jpeg(3000, 2000), "image/jpeg", min_long_side=2048, max_long_side=4096)
+        self.assertEqual(_size(out), (3000, 2000))
+
+    def test_min_zero_disables_upscale(self):
+        out, _ = image_prep.prepare_extract_image(
+            _jpeg(400, 300), "image/jpeg", min_long_side=0, max_long_side=0)
+        self.assertEqual(_size(out), (400, 300))
+
+    def test_fail_open_on_garbage(self):
+        bad = b"not-an-image"
+        out, mime = image_prep.prepare_extract_image(bad, "image/jpeg")
+        self.assertEqual(out, bad)
+        self.assertEqual(mime, "image/jpeg")
+
+    def test_fail_open_on_empty(self):
+        out, mime = image_prep.prepare_extract_image(b"", "image/jpeg")
+        self.assertEqual(out, b"")
+
+
+class TilesTest(unittest.TestCase):
+    def test_grid_2x2(self):
+        tiles = image_prep.make_zoom_tiles(_jpeg(800, 600), "image/jpeg", page=1,
+                                           grid=2, tile_min_long_side=1600)
+        self.assertEqual(len(tiles), 4)
+        labels = [t[2] for t in tiles]
+        self.assertEqual(labels, ["图1-局部(第1行第1列)", "图1-局部(第1行第2列)",
+                                  "图1-局部(第2行第1列)", "图1-局部(第2行第2列)"])
+        for b, mime, _ in tiles:
+            self.assertEqual(mime, "image/jpeg")
+            w, h = _size(b)
+            self.assertGreaterEqual(max(w, h), 1600)
+
+    def test_grid_3(self):
+        tiles = image_prep.make_zoom_tiles(_jpeg(900, 900), "image/jpeg", page=2,
+                                           grid=3, tile_min_long_side=0)
+        self.assertEqual(len(tiles), 9)
+        self.assertEqual(tiles[0][2], "图2-局部(第1行第1列)")
+
+    def test_fail_open_on_garbage(self):
+        self.assertEqual(image_prep.make_zoom_tiles(b"xx", "image/jpeg", page=1), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

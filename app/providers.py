@@ -65,7 +65,8 @@ class OpenAICompatibleProvider(BaseProvider):
             {"role": "user", "content": [
                 {"type": "text", "text": user_prompt},
                 {"type": "image_url",
-                 "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                 "image_url": {"url": f"data:{mime};base64,{b64}",
+                               "detail": "high"}},
             ]},
         ]
         return await self._chat(messages, max_tokens=4000)
@@ -84,7 +85,8 @@ class OpenAICompatibleProvider(BaseProvider):
         for image_bytes, mime in images:
             b64 = base64.b64encode(image_bytes).decode("ascii")
             parts.append({"type": "image_url",
-                          "image_url": {"url": f"data:{mime};base64,{b64}"}})
+                          "image_url": {"url": f"data:{mime};base64,{b64}",
+                                        "detail": "high"}})
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": parts},
