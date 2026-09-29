@@ -26,7 +26,7 @@ from pydantic import ValidationError
 
 from .config import HermesConfig, Settings
 from .schemas import ReviewResponse, StudyResult, drop_nulls
-from . import scope, workspace
+from . import scope, thinking, workspace
 
 log = logging.getLogger(__name__)
 
@@ -600,16 +600,27 @@ class HermesClient:
             raise HermesResultInvalid("响应缺少 choices")
         message = choices[0].get("message") or {}
         text = message.get("content") or ""
+        reasoning = thinking.extract_reasoning(message)
+        thinking.log_thinking(
+            f"hermes主流程 session={session_id} model={data.get('model') or self.cfg.agent_model}",
+            reasoning)
         raw = extract_result_json(text)
         result = validate_result(raw)
+        usage = data.get("usage") or {}
+        elapsed = time.time() - started
+        log.info("Hermes 完成 session=%s model=%s tokens=%s/%s 耗时=%.1fs",
+                 session_id, data.get("model") or self.cfg.agent_model,
+                 usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"),
+                 elapsed)
         return {
             "result": result,
             "model": data.get("model") or self.cfg.agent_model,
             # 网关报告的原始身份（不回填请求值；缺失保持空串，由编排层判「身份未知」）
             "reported_model": str(data.get("model") or "").strip(),
             "reported_provider": str(data.get("provider") or "").strip(),
-            "usage": data.get("usage") or {},
+            "usage": usage,
             "raw_excerpt": text[:2000],
+            "reasoning_content": reasoning,
         }
 
     async def review_questions(self, messages: List[Dict[str, Any]],
@@ -663,18 +674,24 @@ class HermesClient:
             raise HermesResultInvalid("复查响应缺少 choices")
         message = choices[0].get("message") or {}
         text = message.get("content") or ""
+        reasoning = thinking.extract_reasoning(message)
+        thinking.log_thinking(
+            f"hermes复查 session={session_id} model={review_model}", reasoning)
         raw = extract_result_json(text)
         response = validate_review_response(raw)
         reported_model = str(data.get("model") or "").strip()
-        log.info("复查完成 session=%s 题数=%d 网关报告模型=%s",
-                 session_id, len(response.reviews), reported_model or "（未报告）")
+        usage = data.get("usage") or {}
+        log.info("复查完成 session=%s 题数=%d 网关报告模型=%s tokens=%s/%s",
+                 session_id, len(response.reviews), reported_model or "（未报告）",
+                 usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"))
         return {
             "reviews": [r.model_dump() for r in response.reviews],
             "model_requested": requested,
             "reported_model": reported_model,
             "reported_provider": str(data.get("provider") or "").strip(),
-            "usage": data.get("usage") or {},
+            "usage": usage,
             "raw_excerpt": text[:2000],
+            "reasoning_content": reasoning,
         }
 
 

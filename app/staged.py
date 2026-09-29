@@ -27,7 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field, ValidationError
 
-from . import providers
+from . import providers, thinking
 from .config import Settings, provider_chain
 from .grading import extract_json
 from .hermes import validate_result
@@ -239,6 +239,8 @@ async def _run_stage(stage: str, model_cls, chain: List[str], settings: Settings
         cost = _stage_cost(outcome, cfg)
         log.info("分阶段批改[%s]成功 provider=%s tokens=%d/%d cost≈%.4f元",
                  stage, name, outcome.input_tokens, outcome.output_tokens, cost)
+        thinking.log_thinking(
+            f"stage={stage} provider={name} model={outcome.model}", outcome.thinking)
         return parsed, outcome, cost
     raise StageError(stage, "所有模型都失败了: " + " | ".join(errors))
 

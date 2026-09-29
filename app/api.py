@@ -26,7 +26,9 @@ from .schemas import (FamilySettingsUpdate, FollowupCreate, LedgerEventCreate,
 from .tasks import TaskError
 
 log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# 格式带 logger 名（如 app.hermes），docker 日志里才能一眼认出 Hermes 相关行。
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 router = APIRouter(prefix="/api")
 

@@ -13,6 +13,8 @@ from abc import ABC, abstractmethod
 import httpx
 from pydantic import BaseModel
 
+from . import thinking
+
 log = logging.getLogger(__name__)
 
 
@@ -26,6 +28,7 @@ class GradeOutcome(BaseModel):
     output_tokens: int = 0
     provider: str
     model: str
+    thinking: str = ""   # 模型思考过程（reasoning_content），为空表示网关没返回
 
 
 class BaseProvider(ABC):
@@ -106,7 +109,8 @@ class OpenAICompatibleProvider(BaseProvider):
                 if resp.status_code != 200:
                     raise ProviderError(f"HTTP {resp.status_code}: {resp.text[:300]}")
                 data = resp.json()
-                content = data["choices"][0]["message"]["content"] or ""
+                message = data["choices"][0]["message"] or {}
+                content = message.get("content") or ""
                 usage = data.get("usage", {}) or {}
                 return GradeOutcome(
                     text=content,
@@ -114,6 +118,7 @@ class OpenAICompatibleProvider(BaseProvider):
                     output_tokens=int(usage.get("completion_tokens", 0)),
                     provider=self.name,
                     model=self.cfg.model,
+                    thinking=thinking.extract_reasoning(message),
                 )
             except Exception as e:  # noqa: BLE001 - 统一重试
                 last_err = e

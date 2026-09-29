@@ -7,7 +7,7 @@ import re
 
 from pydantic import BaseModel, Field, ValidationError
 
-from . import providers
+from . import providers, thinking
 from .config import Settings, provider_chain
 from .providers import ProviderError
 
@@ -78,6 +78,8 @@ async def grade_image(image_bytes: bytes, mime: str, subject: str,
         cost = round(cost, 4)
         log.info("批改成功 provider=%s tokens=%d/%d cost≈%.4f元",
                  name, outcome.input_tokens, outcome.output_tokens, cost)
+        thinking.log_thinking(
+            f"provider={name} model={outcome.model}（整体批改）", outcome.thinking)
         return result, name, outcome.model, outcome.input_tokens, outcome.output_tokens, cost
 
     raise ProviderError("所有模型都失败了: " + " | ".join(errors))

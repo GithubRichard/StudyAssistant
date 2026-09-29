@@ -42,3 +42,65 @@ class LoggingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConfigureLoggingTest(unittest.TestCase):
+    def test_adds_stdout_handler_once(self):
+        """_configure_logging 给 root 加 stdout handler，重复调用不翻倍。"""
+        import os
+        from unittest import mock
+
+        from app.main import _configure_logging
+
+        root = logging.getLogger()
+        old_handlers = list(root.handlers)
+        old_level = root.level
+        for h in old_handlers:
+            root.removeHandler(h)
+        try:
+            with mock.patch.dict(os.environ, {"LOG_LEVEL": "INFO"}):
+                _configure_logging()
+                first = [h for h in root.handlers
+                         if isinstance(h, logging.StreamHandler)]
+                self.assertEqual(len(first), 1)
+                _configure_logging()
+                second = [h for h in root.handlers
+                          if isinstance(h, logging.StreamHandler)]
+                self.assertEqual(len(second), 1)
+            self.assertEqual(root.level, logging.INFO)
+        finally:
+            for h in list(root.handlers):
+                root.removeHandler(h)
+            for h in old_handlers:
+                root.addHandler(h)
+            root.setLevel(old_level)
+
+    def test_info_records_pass_root(self):
+        """配好后 app.* 的 INFO 能到达 root handler（之前会被静默丢弃）。"""
+        import io
+        import os
+        from unittest import mock
+
+        from app.main import _configure_logging
+
+        root = logging.getLogger()
+        old_handlers = list(root.handlers)
+        old_level = root.level
+        for h in old_handlers:
+            root.removeHandler(h)
+        buf = io.StringIO()
+        try:
+            with mock.patch.dict(os.environ, {"LOG_LEVEL": "INFO"}):
+                _configure_logging()
+                # 把 handler 的输出重定向到内存，验证 INFO 确实被放行
+                for h in root.handlers:
+                    if isinstance(h, logging.StreamHandler):
+                        h.setStream(buf)
+                logging.getLogger("app.hermes").info("调用 Hermes 技能测试")
+            self.assertIn("调用 Hermes 技能测试", buf.getvalue())
+        finally:
+            for h in list(root.handlers):
+                root.removeHandler(h)
+            for h in old_handlers:
+                root.addHandler(h)
+            root.setLevel(old_level)

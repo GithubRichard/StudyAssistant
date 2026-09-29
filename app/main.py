@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -26,6 +28,29 @@ from .hermes import HermesClient
 from .tasks import TaskRunner
 
 log = logging.getLogger(__name__)
+
+
+def _configure_logging() -> None:
+    """应用级日志收尾配置（docker logs 可见）。
+
+    现状：app.api 在 import 时已调 basicConfig，给 root 加了 stderr
+    handler（INFO 级），所以「调用 Hermes 技能」这类 INFO 日志本来就进
+    docker 日志。这里只做两件事：
+    1. 日志级别改由环境变量 LOG_LEVEL 控制（默认 INFO），想看 DEBUG 时
+       不用改代码；
+    2. 兜底：如果 root 意外没有 handler（比如将来 basicConfig 被移走），
+       补一个 stdout handler，避免日志被静默丢弃。
+    Dockerfile 已设 PYTHONUNBUFFERED=1，stdout/stderr 都不缓冲。
+    """
+    level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(),
+                    logging.INFO)
+    root = logging.getLogger()
+    if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s", "%m-%d %H:%M:%S"))
+        root.addHandler(handler)
+    root.setLevel(level)
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -46,6 +71,7 @@ class NoCacheStaticFiles(StaticFiles):
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    _configure_logging()
     settings = settings or load_settings()
     api.settings = settings
 
