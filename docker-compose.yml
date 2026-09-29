@@ -16,6 +16,7 @@ services:
       APP_PORT: "${APP_PORT:-8000}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"                  # 业务日志级别：DEBUG/INFO/WARNING
       SA_DEBUG_THINKING: "${SA_DEBUG_THINKING:-0}"    # 临时记录模型思考过程：1=开，0=关
+      TZ: "Asia/Shanghai"                           # 容器时区：日志按天轮转按北京时间算
     env_file:
       - .env
     volumes:

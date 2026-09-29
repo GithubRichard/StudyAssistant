@@ -9,6 +9,10 @@ WORKDIR /srv/app
 COPY requirements.txt .
 RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
+# tzdata：让 TZ=Asia/Shanghai 生效（日志按天轮转按北京时间算）
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 # 应用代码 + 技能包（技能包需要同步安装到 Hermes 的 profile，见 README）
 COPY app ./app
 COPY hermes ./hermes

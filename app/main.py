@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import api, db, workspace
+from . import api, db, thinking, workspace
 from .config import Settings, load_settings, resolve_web_dir
 from .hermes import HermesClient
 from .tasks import TaskRunner
@@ -74,6 +74,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     _configure_logging()
     settings = settings or load_settings()
     api.settings = settings
+
+    # 思考过程调试：SA_DEBUG_THINKING=1 时写入按天轮转的日志文件（保留 5 天）
+    if thinking.is_enabled():
+        thinking_path = thinking.setup_file_logging(settings.data_dir)
+        if thinking_path:
+            log.info("思考过程日志 → %s（按天轮转，保留5天；不再进 docker 日志）",
+                     thinking_path)
+        else:
+            log.warning("思考过程日志文件初始化失败，保持输出到 docker 日志")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

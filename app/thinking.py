@@ -4,10 +4,12 @@
 在宿主机 `.env` 里加一行即可，改完重建容器）。
 
 开启后，凡是返回了思考过程的模型调用（分阶段各阶段 / 整体批改 /
-Hermes 主流程 / 复查模型），其思考内容会打到 ``studyassistant.thinking``
-日志（即 docker 日志），首尾有明确分隔标记，方便 grep 分析：
+Hermes 主流程 / 复查模型），其思考内容会写入
+``<data_dir>/logs/thinking.log``（当天），按天轮转，
+历史文件 ``thinking.log.YYYY-MM-DD``，最多保留 5 天（含今天）；
+不再进 docker 日志。查看：
 
-    docker logs <容器名> | grep -A 200 模型思考过程
+    tail -f data/logs/thinking.log
 
 默认关闭。分析完把环境变量删掉或设为 0 并重建容器即可关闭，
 不产生任何持久化副作用（不进数据库、不进批改结果）。
@@ -17,11 +19,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("studyassistant.thinking")
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+
+#: 保留天数（含今天）：thinking.log + 4 个历史文件
+RETAIN_DAYS = 5
 
 
 def is_enabled() -> bool:
@@ -74,3 +81,38 @@ def log_thinking(context: str, reasoning: str) -> None:
     if not text:
         return
     log.info("【模型思考过程】%s\n%s\n【思考过程结束】", context, text)
+
+
+def setup_file_logging(data_dir: str) -> str:
+    """给 studyassistant.thinking 配置按天轮转的日志文件。
+
+    路径：``<data_dir>/logs/thinking.log``（当天）；轮转后
+    ``thinking.log.YYYY-MM-DD``，最多保留 5 天（含今天）。
+    思考过程动辄上万 token，只写文件，不再进 docker 日志。
+
+    返回当天日志文件路径；初始化失败返回空字符串（此时保持
+    输出到 docker 日志的旧行为）。
+    """
+    for h in log.handlers:
+        if isinstance(h, TimedRotatingFileHandler):
+            return str(Path(data_dir) / "logs" / "thinking.log")
+    log_dir = Path(data_dir) / "logs"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = TimedRotatingFileHandler(
+            str(log_dir / "thinking.log"),
+            when="midnight", interval=1,
+            backupCount=RETAIN_DAYS - 1,
+            encoding="utf-8", delay=True,
+        )
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+        log.addHandler(handler)
+        log.setLevel(logging.INFO)
+        # 只写文件：不再进 docker 日志
+        log.propagate = False
+        return str(log_dir / "thinking.log")
+    except OSError as e:
+        logging.getLogger(__name__).warning(
+            "思考过程日志文件初始化失败，保持输出到 docker 日志: %s", e)
+        return ""
