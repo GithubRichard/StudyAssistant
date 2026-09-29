@@ -32,6 +32,8 @@ class FakeProvider:
         self.cfg = cfg
         self._script = script
         self.calls = calls
+        # 上一次 extract 实际返回的题号：number_verify 无剧本时默认"复核与转写一致"
+        self._last_extract_numbers: list = []
 
     def _respond(self, stage, system, user, n_images=0, max_tokens=0):
         self.calls.append({"stage": stage, "system": system, "user": user,
@@ -42,6 +44,10 @@ class FakeProvider:
             if stage == "extract_zoom":
                 # 没有专门剧本时：复核无新发现（保持首轮转写不变）
                 item = json.dumps({"reread": []}, ensure_ascii=False)
+            elif stage == "number_verify":
+                # 没有专门剧本时：复核与转写一致
+                item = json.dumps({"numbers": self._last_extract_numbers},
+                                  ensure_ascii=False)
             else:
                 raise AssertionError(f"fake provider {self.name} 没有 {stage} 的剧本")
         else:
@@ -51,11 +57,25 @@ class FakeProvider:
         if isinstance(item, GradeOutcome):
             # 允许剧本直接给出 outcome（例如 finish_reason=length 的截断响应）
             return item
+        if stage == "extract":
+            try:
+                data = json.loads(item)
+                qs = data.get("questions") or data.get("new_questions") or []
+                self._last_extract_numbers = [str(q.get("no", "")) for q in qs]
+            except Exception:
+                pass
         return GradeOutcome(text=item, input_tokens=10, output_tokens=20,
                             provider=self.name, model=f"fake-{self.name}")
 
     async def grade_multi(self, images, system, user, max_tokens=8000):
-        stage = "extract_zoom" if "复核员" in system else "extract"
+        if "单题复核员" in system:
+            stage = "per_question_verify"
+        elif "题号核对员" in system:
+            stage = "number_verify"
+        elif "复核员" in system:
+            stage = "extract_zoom"
+        else:
+            stage = "extract"
         return self._respond(stage, system, user, len(images), max_tokens)
 
     async def complete_text(self, system, user, max_tokens=4000):
@@ -71,8 +91,14 @@ class FakeProvider:
 
 
 def factory_for(scripts: dict, calls: list):
+    instances = {}
+
     def factory(name, cfg):
-        return FakeProvider(name, scripts[name], calls, cfg)
+        # 同一 provider 复用实例：number_verify 的默认 echo 需要读到
+        # 同一 fake 在 extract 阶段实际返回的题号
+        if name not in instances:
+            instances[name] = FakeProvider(name, scripts[name], calls, cfg)
+        return instances[name]
     return factory
 
 
@@ -168,9 +194,10 @@ class InitialPipelineTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_usage_and_cost_tracked(self):
         outcome = await self._grade()
-        # 4 个阶段各 10/20 tokens
-        self.assertEqual(outcome.input_tokens, 40)
-        self.assertEqual(outcome.output_tokens, 80)
+        # 5 次调用各 10/20 tokens：extract + 题号复核 + solve + compare + diagnose
+        #（extract_zoom 在测试里因图片非法被跳过）
+        self.assertEqual(outcome.input_tokens, 50)
+        self.assertEqual(outcome.output_tokens, 100)
         self.assertGreater(outcome.cost, 0)
 
 
@@ -268,6 +295,7 @@ class ProviderFallbackTest(unittest.IsolatedAsyncioTestCase):
         calls = []
         scripts = {
             "p1": {"extract": [ProviderError("boom")],
+                   "number_verify": [ProviderError("boom")],
                    "solve": [ProviderError("boom")],
                    "compare": [ProviderError("boom")],
                    "diagnose": [ProviderError("boom")]},
@@ -918,7 +946,7 @@ class ExtractZoomTest(unittest.IsolatedAsyncioTestCase):
                 q3 = {q.no: q for q in parsed.questions}["3"]
                 self.assertEqual(q3.student_answer, "a²+2ab+b²")
                 self.assertFalse(q3.handwriting_uncertain)
-                self.assertEqual(parsed.zoom_note, "")
+                self.assertNotIn("放大复核", parsed.zoom_note)
 
     async def test_zoom_ignores_unknown_no_without_failing(self):
         """复核返回未送审的题号：忽略并记录，不阻断首轮结果。"""
@@ -969,7 +997,9 @@ class ExtractZoomTest(unittest.IsolatedAsyncioTestCase):
         # 阶段记录里如实说明，不只留一行服务器日志
         self.assertIn("放大复核未完成", parsed.zoom_note)
         # 复核没有成功产出：不产生可计费的阶段调用记录
-        self.assertEqual([c["stage"] for c in self.calls], ["extract", "extract_zoom"])
+        #（题号复核在 extract 与 zoom 之间，默认 echo 与转写一致）
+        self.assertEqual([c["stage"] for c in self.calls],
+                         ["extract", "number_verify", "extract_zoom"])
 
 
 class StageProviderCapTest(unittest.IsolatedAsyncioTestCase):

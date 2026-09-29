@@ -185,6 +185,9 @@ staged_grading:
   extract_zoom_grid: 2               # 每页切 2x2=4 张重叠局部图
   extract_zoom_max_images: 2         # 图片超过该张数跳过复核
   extract_zoom_max_items: 15         # 存疑题超过该数跳过复核
+  number_verify: true               # 题号序列复核：extract 后重读题号序列，diff 不一致标存疑
+  per_question_verify: false   # 逐题复核（每题一次聚焦调用，只核对题号+括号原词）；默认关闭
+  per_question_verify_max_items: 10   # 逐题复核的题数上限（超过整批跳过）
 
 weekly_summary:
   ai_analysis: true          # 是否用大模型做错题归类分析与知识点总结；false 则周总结只有统计部分

@@ -63,6 +63,10 @@ class ExtractedQuestion(BaseModel):
     # 题干转写存疑（服务端不信任该题 stem，不送独立求解，直接标存疑）
     stem_uncertain: bool = False
     stem_note: LooseStr = ""
+    # 题号/括号原词/人名/选项配对转写存疑（服务端不信任该题的题号归属，
+    # 不送独立求解，直接标存疑；题号错一位整题就废了，与 stem_uncertain 同级处理）
+    number_uncertain: bool = False
+    number_note: LooseStr = ""
     # 答案归属存疑（服务端去重检测填入）：该题答案疑似与另一题为同一组作答
     attribution_note: LooseStr = ""
 
@@ -97,6 +101,20 @@ class ZoomRereadResult(BaseModel):
     reread: List[ZoomRereadItem] = Field(default_factory=list)
 
 
+class NumberVerifyResult(BaseModel):
+    """题号序列复核单次结果：只列题号，不做别的。"""
+    numbers: List[LooseStr] = Field(default_factory=list)
+
+
+NUMBER_VERIFY_SYSTEM = """你是试卷题号核对员。你会看到作业原图（已做预处理）。
+你的唯一任务：只看印刷题号，按从上到下、从左到右的顺序，列出图中所有题目的题号。
+1. 只输出题号本身（如 "18"），原样照抄印刷数字，不要加"题"字、括号或任何其它字符。
+2. 版块标题行（如"四、……"）不是题目，不要为它编号。
+3. 一道题只列一次；看不清的题号写空字符串 ""，不要猜。
+4. 其它什么都不要输出：不要转写题干，不要读学生答案。
+最终回答必须包含且仅包含一个 ```json 代码块，不要输出其他文字。"""
+
+
 def format_extraction_log(data: Dict[str, Any]) -> str:
     """把提取阶段产出渲染成人类可读的转写日志。
 
@@ -112,17 +130,21 @@ def format_extraction_log(data: Dict[str, Any]) -> str:
             no = q.get("no", "?")
             flag = "【字迹存疑】" if q.get("handwriting_uncertain") else ""
             sflag = "【题干存疑】" if q.get("stem_uncertain") else ""
+            nflag = "【题号存疑】" if q.get("number_uncertain") else ""
             note = q.get("uncertain_note", "") or ""
             snote = q.get("stem_note", "") or ""
+            nnote = q.get("number_note", "") or ""
             stem = (q.get("stem", "") or "").replace("\n", " ")
             if len(stem) > 45:
                 stem = stem[:45] + "…"
             ans = q.get("student_answer", "") or "（未作答/空白）"
-            line = f"  题{no}{flag}{sflag}｜题干：{stem}｜学生答案：{ans}"
+            line = f"  题{no}{flag}{sflag}{nflag}｜题干：{stem}｜学生答案：{ans}"
             if note:
                 line += f"｜备注：{note}"
             if snote:
                 line += f"｜题干备注：{snote}"
+            if nnote:
+                line += f"｜题号备注：{nnote}"
             lines.append(line)
         return "\n".join(lines)
     # 补充轮次：只转写受影响题
@@ -201,7 +223,10 @@ EXTRACT_SYSTEM = """你是试卷内容转写员。你的唯一任务是把图片
 5. 题干防幻觉：stem 必须逐字照抄图片中的印刷文字，图片上没有的文字一个字也不许写；禁止按"常见题型"推测题干、补全选项、编造题号或题型。题干拿不准时 stem 留空、stem_uncertain 写 true 并在 stem_note 说明原因——绝不编造题干。
 6. 先看方向再转写：转写前先在思考中用一句话说明图片方向（如"图片正向"或"图片横向，已在心里摆正"），再逐题转写；若文字是横向或倒置且摆不正、读不出的题，stem_uncertain 写 true，在 stem_note 注明"图片旋转无法辨认"。
 7. 红笔字迹一律视为批改痕迹：不转写为学生答案，不抄入 stem；红笔遮挡导致无法辨认的，在 uncertain_note 说明。
-8. 最终回答必须包含且仅包含一个 ```json 代码块，不要输出其他文字。"""
+8. 括号原词逐字照抄：给词填空括号里的英文原词（如 (difficulty)、(easy)）必须逐字照抄，一个字母都不许改——它是求解的依据，抄错整个题就废了；括号词拿不准时 stem_uncertain 写 true。
+9. 题号、人名、选项字母与内容的配对拿不准时：number_uncertain 写 true，在 number_note 说明（如"题号18/19难辨"）——绝不猜题号；题号错一位整题归属就错了。
+10. 版块标题行（如"四、按要求填写单词，补全对话（每题2分，共10分）"）不是题目：不要为它建一道题，直接跳过。
+11. 最终回答必须包含且仅包含一个 ```json 代码块，不要输出其他文字。"""
 
 EXTRACT_ZOOM_SYSTEM = """你是试卷手写答案复核员。你会看到：每页原图 + 每页的局部放大图（已按行列命名，有重叠）。
 你的唯一任务：只复核下面列出的题号的学生手写答案（student_answer）。
@@ -334,7 +359,8 @@ def _extract_user_initial(subject: str, grade_level: str, n_images: int,
     text += ('输出 JSON 格式：{"questions": [{"no": "题号", "stem": "题干", '
              '"student_answer": "学生手写答案", "page": "图片序号", '
              '"handwriting_uncertain": false, "uncertain_note": "", '
-             '"stem_uncertain": false, "stem_note": ""}]}')
+             '"stem_uncertain": false, "stem_note": "", '
+             '"number_uncertain": false, "number_note": ""}]}')
     return text
 
 
@@ -579,6 +605,184 @@ async def _zoom_reread(questions: List[ExtractedQuestion],
     return ZoomOutcome(updated=stats.updated, outcome=outcome, cost=cost, note=note)
 
 
+class SingleQuestionVerifyResult(BaseModel):
+    """逐题复核单题结果：只核对题号与括号原词，不碰学生答案。"""
+    no: LooseStr = ""
+    base_word: LooseStr = ""
+
+
+SINGLE_QUESTION_VERIFY_SYSTEM = """你是试卷单题复核员。你会看到作业原图（已做预处理）。
+你的唯一任务：只看指定题号的那一道题，报告它的印刷题号与给词填空括号里的英文原词。
+1. 按用户给出的题号在图中找到对应位置；找不到则 no 照抄用户给的题号、base_word 写空串。
+2. no：该题印刷题号原样照抄，不要加"题"字、括号或任何其它字符。
+3. base_word：题干中给词填空括号里的英文原词（如 (difficulty) 就写 difficulty）；没有括号原词写空字符串。
+4. 其它什么都不要输出：不要转写题干，不要读学生答案，不要判定对错。
+最终回答必须包含且仅包含一个 ```json 代码块，不要输出其他文字。"""
+
+
+def _norm_no(s: Any) -> str:
+    return unicodedata.normalize("NFKC", str(s or "")).strip()
+
+
+def _number_verify_user() -> str:
+    return ('只看印刷题号，按从上到下、从左到右列出所有题目的题号。\n'
+            '输出 JSON：{"numbers": ["题号1", "题号2", "..."]}')
+
+
+async def _verify_question_numbers(
+        questions: List[ExtractedQuestion],
+        prepped: List[Tuple[bytes, str]],
+        settings: Settings, chain: List[str],
+        provider_factory: Optional[Callable] = None) -> Tuple[str, List[tuple]]:
+    """题号序列复核：extract 后用一次聚焦调用重读题号序列，diff 不一致的题标存疑。
+
+    防的是"题号错位/跳号/漏题"这类转写错误（如把 18 读成 19 导致后面整体顺延）。
+    fail-closed：复核对不上 → 相关题 number_uncertain=true，不送求解、不猜。
+    复核本身失败 → 降级：保留首轮转写，只记 note，不阻断主流程。
+    返回 (说明文字, [(outcome, cost)])。
+    """
+    cfg = settings.staged_grading
+    if not getattr(cfg, "number_verify", True):
+        return "", []
+    if not questions:
+        return "", []
+    if len(prepped) > cfg.extract_zoom_max_images:
+        return (f"题号复核跳过：图片 {len(prepped)} 张超过上限 "
+                f"{cfg.extract_zoom_max_images}"), []
+
+    async def call(provider, max_tokens_want: int = 0):
+        return await provider.grade_multi(
+            prepped, NUMBER_VERIFY_SYSTEM, _number_verify_user(),
+            max_tokens=_stage_max_tokens(getattr(provider, "cfg", None),
+                                         max_tokens_want or 2000))
+
+    try:
+        parsed, outcome, cost = await _run_stage(
+            "number_verify", NumberVerifyResult, chain, settings, call, None,
+            provider_factory, base_max_tokens=2000)
+    except StageError as e:
+        reason = (e.message or "").strip()[:120]
+        log.warning("分阶段批改[extract] 题号复核未完成，已保留首轮转写：%s", e.message)
+        return f"题号复核未完成（{reason}），已保留首轮转写", []
+
+    expected = [_norm_no(q.no) for q in questions]
+    got = [_norm_no(n) for n in parsed.numbers]
+    if len(got) != len(expected):
+        note = (f"题号复核数量不一致（转写 {len(expected)} 题，复核 {len(got)} 题）"
+                f"，{len(questions)} 题题号标存疑")
+        for q in questions:
+            q.number_uncertain = True
+            q.number_note = ((q.number_note + "；" if q.number_note else "")
+                             + f"题号复核数量不一致（转写{len(expected)}题/复核{len(got)}题）")
+        log.warning("分阶段批改[extract] %s", note)
+        return note, [(outcome, cost)]
+
+    flagged: List[str] = []
+    unreadable: List[str] = []
+    for q, exp, g in zip(questions, expected, got):
+        if not g:
+            unreadable.append(exp)
+            continue
+        if exp != g:
+            q.number_uncertain = True
+            add = f"题号复核不一致（转写「{exp}」，复核「{g}」）"
+            q.number_note = (q.number_note + "；" + add) if q.number_note else add
+            flagged.append(f"「{exp}」→复核为「{g}」")
+    parts = []
+    if flagged:
+        parts.append(f"{len(flagged)} 题题号不一致已标存疑（{'；'.join(flagged[:5])}）")
+    if unreadable:
+        parts.append(f"{len(unreadable)} 题复核未能辨认题号（{'、'.join(unreadable[:5])}）")
+    note = "题号复核完成：" + ("；".join(parts) if parts else "题号序列一致") + "。"
+    log.info("分阶段批改[extract] %s", note)
+    return note, [(outcome, cost)]
+
+
+_BASE_WORD_RE = re.compile(r"\(([A-Za-z][A-Za-z\- ]{0,20})\)")
+
+
+def _stem_base_words(stem: str) -> set:
+    """题干中给词填空括号里的英文原词集合（如 (difficulty)、(easy)），小写。
+
+    只认半角括号 + 纯英文内容；(we, how, …) 这类含逗号的词表、中文分值说明不会命中。
+    """
+    return {m.group(1).strip().lower()
+            for m in _BASE_WORD_RE.finditer(stem or "")}
+
+
+def _single_question_verify_user(no: str) -> str:
+    return (f"只看印刷题号为「{no}」的这道题。\n"
+            f"输出 JSON：{{\"no\": \"题号\", \"base_word\": \"括号原词或空字符串\"}}")
+
+
+async def _per_question_verify(
+        questions: List[ExtractedQuestion],
+        prepped: List[Tuple[bytes, str]],
+        settings: Settings, chain: List[str],
+        provider_factory: Optional[Callable] = None) -> Tuple[str, List[tuple]]:
+    """逐题转写复核（默认关闭）：每题一次聚焦调用，只核对题号 + 括号原词。
+
+    注意：这里发的是整张预处理图 + 聚焦 prompt（"只看题号为 X 的这道题"），
+    并没有真正裁出该题的局部放大图——做不到逐题定位裁图，所以不叫 zoom。
+    真正的局部放大复核是 zoom_reread（extract_zoom 阶段），职责是重读手写答案；
+    这里只核对题号与括号原词，不碰学生答案，避免两处打架。
+    题数超限时整批跳过（部分复核会造成虚假信心）；失败即降级，不阻断主流程。
+    返回 (说明文字, [(outcome, cost), ...])。
+    """
+    cfg = settings.staged_grading
+    if not getattr(cfg, "per_question_verify", False):
+        return "", []
+    if not questions:
+        return "", []
+    max_items = int(getattr(cfg, "per_question_verify_max_items", 10) or 0)
+    if max_items and len(questions) > max_items:
+        return (f"逐题复核跳过：{len(questions)} 题超过上限 {max_items}"), []
+    if len(prepped) > cfg.extract_zoom_max_images:
+        return (f"逐题复核跳过：图片 {len(prepped)} 张超过上限 "
+                f"{cfg.extract_zoom_max_images}"), []
+
+    calls: List[tuple] = []
+    flagged = 0
+    failed = 0
+    for q in questions:
+        user = _single_question_verify_user(q.no)
+
+        async def call(provider, max_tokens_want: int = 0, _user: str = user):
+            return await provider.grade_multi(
+                prepped, SINGLE_QUESTION_VERIFY_SYSTEM, _user,
+                max_tokens=_stage_max_tokens(getattr(provider, "cfg", None),
+                                             max_tokens_want or 1500))
+
+        try:
+            parsed, outcome, cost = await _run_stage(
+                "per_question_verify", SingleQuestionVerifyResult, chain,
+                settings, call, None, provider_factory, base_max_tokens=1500)
+        except StageError as e:
+            failed += 1
+            log.warning("分阶段批改[extract] 逐题复核「%s」未完成：%s", q.no, e.message)
+            continue
+        calls.append((outcome, cost))
+        problems: List[str] = []
+        if _norm_no(parsed.no) != _norm_no(q.no):
+            problems.append(f"题号对不上（转写「{q.no}」，复核「{parsed.no}」）")
+        want_words = _stem_base_words(q.stem)
+        got_word = (parsed.base_word or "").strip().lower()
+        if want_words and got_word not in want_words:
+            problems.append(
+                f"括号原词对不上（转写{sorted(want_words)}，复核「{got_word or '空'}」）")
+        elif not want_words and got_word:
+            problems.append(f"复核发现括号原词「{got_word}」，转写缺失")
+        if problems:
+            flagged += 1
+            add = "逐题复核：" + "；".join(problems)
+            q.number_uncertain = True
+            q.number_note = (q.number_note + "；" + add) if q.number_note else add
+    note = (f"逐题复核完成：{len(questions)} 题中 {flagged} 题标存疑"
+            + (f"，{failed} 题复核未完成" if failed else "") + "。")
+    log.info("分阶段批改[extract] %s", note)
+    return note, calls
+
+
 async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_level: str,
                         input_text: str, settings: Settings, chain: List[str],
                         provider_factory: Optional[Callable] = None,
@@ -634,10 +838,36 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
                                              call, check, provider_factory,
                                              base_max_tokens=max_tokens)
     calls = [(outcome, cost)]
+    qs = parsed.questions if not is_followup else parsed.new_questions
+    stage_notes: List[str] = []
+
+    # 版块标题过滤：标题行不是题，不能送求解（否则浪费调用并污染题号序列）
+    qs, dropped = _drop_section_headers(qs)
+    if dropped:
+        if is_followup:
+            parsed.new_questions = qs
+        else:
+            parsed.questions = qs
+        msg = f"过滤版块标题 {len(dropped)} 行：{'；'.join(dropped[:5])}"
+        log.warning("分阶段批改[extract] %s", msg)
+        stage_notes.append(msg)
+
+    # 题号序列复核：一次聚焦调用重读题号序列，diff 不一致的题标 number_uncertain
+    v_note, v_calls = await _verify_question_numbers(
+        qs, prepped, settings, chain, provider_factory)
+    calls.extend(v_calls)
+    if v_note:
+        stage_notes.append(v_note)
+
+    # 逐题转写复核（默认关闭）：每题一次聚焦调用，只核对题号 + 括号原词
+    pq_note, pq_calls = await _per_question_verify(
+        qs, prepped, settings, chain, provider_factory)
+    calls.extend(pq_calls)
+    if pq_note:
+        stage_notes.append(pq_note)
 
     # 局部放大复核：只针对字迹存疑/判空的题（失败即降级，不阻断主流程）
-    zoom_targets = parsed.questions if not is_followup else parsed.new_questions
-    zoomed = await _zoom_reread(zoom_targets, prepped, settings, chain,
+    zoomed = await _zoom_reread(qs, prepped, settings, chain,
                                 provider_factory)
     if zoomed:
         if zoomed.outcome is not None:
@@ -645,6 +875,9 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
         if zoomed.note:
             # 随提取阶段记录落库（runs[].stages.extract.zoom_note），不只留一行日志
             parsed.zoom_note = zoomed.note
+    if stage_notes:
+        extra = "；".join(stage_notes)
+        parsed.zoom_note = f"{parsed.zoom_note}；{extra}" if parsed.zoom_note else extra
 
     total_cost = round(sum(c for _, c in calls), 4)
     return parsed, calls, total_cost
@@ -776,6 +1009,43 @@ def _stem_missing(stem: str) -> bool:
     return not s or any(m in s for m in _STEM_MISSING_MARKERS)
 
 
+_SECTION_HEADER_SCORE_RE = re.compile(r"每题\s*\d+\s*分|共\s*\d+\s*分")
+_SECTION_HEADER_NO_RE = re.compile(r"^[一二三四五六七八九十百]+\s*[、.]")
+
+
+def _is_section_header(q: ExtractedQuestion) -> bool:
+    """版块标题行（如"四、按要求填写单词，补全对话（每题2分，共10分）"）不是题目。
+
+    extract 偶尔会把它当成一道题转写出来；这类"题"题干是分值说明、没有学生作答，
+    必须过滤掉，不能送独立求解（否则浪费一次调用，还会污染题号序列）。
+    """
+    stem = (q.stem or "").strip()
+    if not stem:
+        return False
+    if _SECTION_HEADER_SCORE_RE.search(stem):
+        return True
+    # "五、阅读理解（共20分）"这类：中文数字编号开头 + 含分值说明，且无作答
+    if (_SECTION_HEADER_NO_RE.match(stem) and "分" in stem
+            and not (q.student_answer or "").strip()):
+        return True
+    return False
+
+
+def _drop_section_headers(
+        questions: List[ExtractedQuestion]) -> Tuple[List[ExtractedQuestion], List[str]]:
+    """丢弃版块标题行，返回 (保留的题, 被丢弃标题的描述列表)。"""
+    kept: List[ExtractedQuestion] = []
+    dropped: List[str] = []
+    for q in questions:
+        if _is_section_header(q):
+            stem = (q.stem or "").replace("\n", " ")
+            shown = stem[:30] + "…" if len(stem) > 30 else stem
+            dropped.append(f"「{q.no}」{shown}")
+        else:
+            kept.append(q)
+    return kept, dropped
+
+
 def dedupe_answer_attribution(questions: List[ExtractedQuestion]) -> List[str]:
     """同一组答案不许归属到两个题号。
 
@@ -811,6 +1081,7 @@ class SubItem:
 
     单空题 sub_id == no；多空题 sub_id 为 f"{no}-{blank}"。
     uncertain_kind: handwriting（字迹存疑）| unsolvable（题干缺失无法求解）
+                    | number（题号/括号原词转写存疑）
                     | attribution（答案归属存疑）| ""（无）
     """
     sub_id: str
@@ -880,6 +1151,13 @@ async def compare_stage(extracted: List[ExtractedQuestion], solutions: Dict[str,
                  "uncertain")
             continue
         sa = (q.student_answer or "").strip()
+        if q.number_uncertain:
+            # 题号/括号原词转写不可靠：题号错一位整题归属就错了，
+            # 括号原词抄错则求解地基就是错的——不送求解，直接标存疑
+            _add_uncertain_group(no, q.stem, q.page, "number",
+                                 (q.number_note or "").strip() or "题号转写存疑，未独立求解",
+                                 pair_blanks(sa, ""))
+            continue
         if q.stem_uncertain:
             # 题干转写不可靠：提取阶段已声明 stem 不可信，不送求解、不进入判定，直接标存疑
             _add_uncertain_group(no, q.stem, q.page, "unsolvable",
@@ -1052,13 +1330,17 @@ def _overview_summary(statuses: Dict[str, str], kinds: Dict[str, str]) -> str:
                  if s == "uncertain" and kinds.get(sid) == "unsolvable")
         at = sum(1 for sid, s in statuses.items()
                  if s == "uncertain" and kinds.get(sid) == "attribution")
+        nb = sum(1 for sid, s in statuses.items()
+                 if s == "uncertain" and kinds.get(sid) == "number")
         if hw:
             detail.append(f"字迹无法辨认 {hw} 题")
         if us:
             detail.append(f"题干缺失未判定 {us} 题")
         if at:
             detail.append(f"答案归属存疑 {at} 题")
-        other = uc - hw - us - at
+        if nb:
+            detail.append(f"题号转写存疑 {nb} 题")
+        other = uc - hw - us - at - nb
         if other:
             detail.append(f"其他存疑 {other} 题")
         parts.append("存疑 " + str(uc) + " 题" + (f"（{'；'.join(detail)}）" if detail else ""))
@@ -1081,6 +1363,10 @@ def _missing_info_for_subs(subs: List[SubItem]) -> List[str]:
         elif sub.uncertain_kind == "attribution":
             missing.append(
                 f"「{sub.no}」{note or '答案归属存疑'}，未计入判定；请核对原图确认答案归属。")
+        elif sub.uncertain_kind == "number":
+            missing.append(
+                f"「{sub.no}」{note or '题号/括号原词转写存疑'}，本次未批改；"
+                f"如需批改请补充该题的清晰照片。")
         elif sub.uncertain_kind == "handwriting":
             missing.append(
                 f"「{sub.no}」字迹无法辨认（{note or '—'}）；建议补充正面清晰照片复核。")
@@ -1307,13 +1593,14 @@ async def grade_staged(images: List[Tuple[bytes, str]],
             extracted_for_compare.append(ExtractedQuestion(
                 no=str(r.prev_no), stem=stem, student_answer=sa))
         for q in new_qs:
-            # 题干转写存疑：不送独立求解（比对阶段直接标存疑），避免在编造的题干上浪费调用
-            if not q.stem_uncertain:
+            # 题干/题号转写存疑：不送独立求解（比对阶段直接标存疑），
+            # 避免在编造的题干或错位的题号上浪费调用
+            if not q.stem_uncertain and not q.number_uncertain:
                 solve_items.append({"no": q.no, "stem": q.stem})
             extracted_for_compare.append(q)
     else:
         solve_items = [{"no": q.no, "stem": q.stem} for q in parsed.questions
-                       if not q.stem_uncertain]
+                       if not q.stem_uncertain and not q.number_uncertain]
         extracted_for_compare = list(parsed.questions)
 
     # ---- Stage 2：独立求解 ----

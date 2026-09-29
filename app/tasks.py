@@ -529,7 +529,8 @@ class TaskRunner:
                                                     images or None)
             payload = await asyncio.wait_for(
                 self.client.review_questions(
-                    messages, f"review-{task_id}-{run_no}", timeout=timeout),
+                    messages, f"review-{task_id}-{run_no}", timeout=timeout,
+                    coverage=coverage),
                 timeout=timeout)
         except asyncio.CancelledError:
             raise

@@ -154,8 +154,52 @@ def validate_result(raw: Dict[str, Any]) -> Dict[str, Any]:
         raise HermesResultInvalid(f"结果不符合协议约束: {loc} {first.get('msg', '')}".strip()) from e
 
 
-def validate_review_response(raw: Dict[str, Any]) -> ReviewResponse:
-    """校验复查输出协议；非法（空列表、重复 id、非法状态、异议无依据）整体拒绝。"""
+def _check_transcript_semantics(raw: Dict[str, Any]) -> None:
+    """带图复查的转写结论/复查状态一致性检查（读原始 JSON，此时 null 键尚在）。
+
+    必须在 drop_nulls 之前做：drop_nulls 会删掉 transcript_ok=null 的键，
+    删完就分不清「模型明确写 null（看不清）」和「模型没写这个字段」了。
+    规则（与复查 prompt 的硬性规则一致）：
+    - 每一项必须明确给出 transcript_ok（true/false/看不清写 null），不得省略；
+    - transcript_ok=false（转写与原图实质不符）→ state 必须为 disagreed；
+    - transcript_ok=null（看不清）→ state 只能为 unverified，
+      看不清是合法终态，不得硬改成 disagreed。
+    违反任一条整体拒绝本次复查（fail-closed），由调用方按 unverified 处理。
+    """
+    reviews = raw.get("reviews")
+    if not isinstance(reviews, list):
+        return  # 交给 pydantic 报「reviews 非法」
+    for item in reviews:
+        if not isinstance(item, dict):
+            continue
+        qid = str(item.get("id", "")).strip() or "?"
+        if "transcript_ok" not in item:
+            raise HermesResultInvalid(
+                f"复查项 {qid}：带图复查必须明确给出 transcript_ok"
+                "（true/false/看不清写 null），不得省略")
+        tok = item["transcript_ok"]
+        state = str(item.get("state", "")).strip()
+        if tok is False and state != "disagreed":
+            raise HermesResultInvalid(
+                f"复查项 {qid}：transcript_ok=false（转写与原图实质不符）"
+                f"必须标 disagreed，当前 state={state or '空'}")
+        if tok is None and state != "unverified":
+            raise HermesResultInvalid(
+                f"复查项 {qid}：transcript_ok=null（看不清）只能标 unverified"
+                f"（看不清是合法终态，不得硬改成 disagreed），"
+                f"当前 state={state or '空'}")
+
+
+def validate_review_response(raw: Dict[str, Any], coverage: str = "") -> ReviewResponse:
+    """校验复查输出协议；非法（空列表、重复 id、非法状态、异议无依据、
+    转写结论与复查状态矛盾）整体拒绝。
+
+    coverage="reread"（带图复查）时额外做转写语义对账
+    （见 _check_transcript_semantics）；纯文字复查（transcript_only）或
+    未指定时 transcript_ok 字段无意义，不做该项检查（旧式输出仍合法）。
+    """
+    if coverage == "reread":
+        _check_transcript_semantics(raw)
     try:
         return ReviewResponse.model_validate(drop_nulls(raw))
     except ValidationError as e:
@@ -399,26 +443,34 @@ def _build_review_messages_with_images(task: Dict[str, Any], run: Dict[str, Any]
         "参考答案与诊断，仅供你核查，不是标准答案。",
         "",
         "【第一步：转写二次确认（看图，必须先做）】",
-        "1. 对每道送审题，在原图中按题号找到对应位置，只重读「学生手写答案」部分；"
-        "不要被印刷题干、红笔批改痕迹干扰，也不要重新求解题目。",
-        "2. 把重读到的作答与【提取转写】里的学生作答逐项对比（只看实质内容，"
+        "1. 对每道送审题，在原图中按题号找到对应位置，先逐项做转写必核清单："
+        "① 题号数字与送审题号一致；② 给词填空括号里的英文原词（如 (difficulty)）"
+        "与转写一致；③ 人名拼写、选项字母与内容的配对与转写一致；"
+        "④ 学生手写答案与转写一致。不要被印刷题干、红笔批改痕迹干扰，"
+        "也不要重新求解题目。",
+        "2. 把重读到的内容与【提取转写】逐项对比（只看实质内容，"
         "忽略项序、空白等无关差异）。",
-        "3. 重读与转写实质不符（例如卷面写的是 A、转写成了 B）→ transcript_ok=false，"
-        "该题直接标 disagreed，basis 必须写清「原图作答为 X，转写为 Y，"
-        "首轮基于错误转写判定」；reread_answer 填你重读到的作答。",
-        "4. 字迹实在看不清、无法重读 → transcript_ok=false，reread_answer 写空串，"
+        "3. 必核清单任一项实质不符（例如卷面写的是 A、转写成了 B，"
+        "或题号/括号原词对不上）→ transcript_ok=false，"
+        "该题直接标 disagreed，basis 必须写清「原图为 X，转写为 Y，"
+        "首轮基于错误转写判定」；reread_answer 填你重读到的内容。",
+        "4. 字迹实在看不清、无法完成必核清单 → transcript_ok 写 null"
+        "（注意：是 null，不是 false），reread_answer 写空串，"
         "state=unverified，不要猜测。",
-        "5. 重读与转写一致 → transcript_ok=true，reread_answer 照抄转写，进入第二步。",
+        "5. 必核清单全过 → transcript_ok=true，reread_answer 照抄转写，进入第二步。",
         "",
         "【第二步：逻辑核查（看文字）】",
         "1. 只核查、只提异议：不裁决、不改判、不给学生重新定性，不输出「正确/错误」结论。",
         "2. 对每道送审题逐项检查：转写（以第一步重读结论为准）与首轮结论是否自洽"
         "（如学生作答明明与参考答案一致却被判错）、首轮求解步骤是否有计算或推理错误、"
         "是否遗漏了转写中的条件、是否把合理答案误判为错、错因是否有文字证据支撑。",
-        "3. 无异议的题只标 agreed（未发现异议，不等于证明原判定必然正确）；"
+        "3. 给词填空/连词成句类多看一眼：参考答案必须由题干给定的原词合法变形得到，"
+        "不能凭空加词、丢词（如题干给了 how，答案就不能丢掉 how）；"
+        "题号是否连续，有无整体错位迹象。",
+        "4. 无异议的题只标 agreed（未发现异议，不等于证明原判定必然正确）；"
         "有异议的题标 disagreed 并必须给出可核验依据（basis）；"
         "转写缺失、字迹存疑导致信息不足以核查的题标 unverified，不要猜测。",
-        "4. 存疑题（首轮标 uncertain）的 agreed 仅表示未发现对存疑判断的异议，"
+        "5. 存疑题（首轮标 uncertain）的 agreed 仅表示未发现对存疑判断的异议，"
         "不代表题目已确认正确或疑点消除。",
         "",
         f"【本次任务上下文】任务号 {task['id']}（轮次 {run['run_no']}），"
@@ -431,15 +483,17 @@ def _build_review_messages_with_images(task: Dict[str, Any], run: Dict[str, Any]
 
     lines.append("【输出契约（最终回答包含且仅包含一个 ```json 代码块）】")
     lines.append("```json")
-    lines.append('{"reviews": [{"id": "题目id", "transcript_ok": true,')
+    lines.append('{"reviews": [{"id": "题目id",')
+    lines.append('  "transcript_ok": true/false/null（看不清写 null，只能配 unverified）,')
     lines.append('  "reread_answer": "重读到的学生作答（与转写一致时照抄转写；看不清写空串）",')
     lines.append('  "state": "agreed|disagreed|unverified",')
     lines.append('  "note": "简短说明", "basis": "disagreed 时必填的可核验依据，其余可为空串"}]}')
     lines.append("```")
     lines.append("硬性规则：送审列表中的每一道题都必须返回一项，id 与送审列表完全一致；"
                  "不得返回未送审的题；transcript_ok=false 的题必须标 disagreed 并给 basis；"
+                 "transcript_ok=null 的题只能标 unverified（看不清是合法终态，不要硬改成 disagreed）；"
                  "disagreed 必须给 basis；"
-                 "所有文本字段用字符串，没有内容写空字符串 \"\"，不要写 null。")
+                 "文本字段没有内容写空字符串 \"\"（transcript_ok 例外，看不清时写 null）。")
 
     text = "\n".join(lines)
     content: List[Dict[str, Any]] = [{"type": "text", "text": text}]
@@ -481,10 +535,13 @@ def _build_review_messages_text_only(task: Dict[str, Any], run: Dict[str, Any],
         "3. 对每道送审题逐项检查：转写与首轮结论是否自洽"
         "（如学生作答明明与参考答案一致却被判错）、首轮求解步骤是否有计算或推理错误、"
         "是否遗漏了转写中的条件、是否把合理答案误判为错、错因是否有文字证据支撑。",
-        "4. 无异议的题只标 agreed（未发现异议，不等于证明原判定必然正确）；"
+        "4. 给词填空/连词成句类多看一眼：参考答案必须由题干给定的原词合法变形得到，"
+        "不能凭空加词、丢词（如题干词表里有 how，答案就不能丢掉 how）；"
+        "题号是否连续，有无整体错位迹象。",
+        "5. 无异议的题只标 agreed（未发现异议，不等于证明原判定必然正确）；"
         "有异议的题标 disagreed 并必须给出可核验依据（basis）；"
         "转写缺失、字迹存疑导致信息不足以核查的题标 unverified，不要猜测。",
-        "5. 存疑题（首轮标 uncertain）的 agreed 仅表示未发现对存疑判断的异议，"
+        "6. 存疑题（首轮标 uncertain）的 agreed 仅表示未发现对存疑判断的异议，"
         "不代表题目已确认正确或疑点消除。",
         "",
         f"【本次任务上下文】任务号 {task['id']}（轮次 {run['run_no']}），"
@@ -724,13 +781,16 @@ class HermesClient:
 
     async def review_questions(self, messages: List[Dict[str, Any]],
                                session_id: str,
-                               timeout: Optional[float] = None) -> Dict[str, Any]:
+                               timeout: Optional[float] = None,
+                               coverage: str = "") -> Dict[str, Any]:
         """用配置的复查模型执行一次只读复查。
 
         返回 {reviews, model_requested, reported_model, reported_provider, usage, raw_excerpt}。
         - 独立会话头 X-Hermes-Session-Id（不复用首轮会话的模型锁）。
         - 请求体带 model + 可选 provider + 可选 model_options（网关按此路由到第二模型）。
         - 不自动重试；错误分类沿用 _request（鉴权/拒绝/不可达/未确认）。
+        - coverage="reread" 时对复查输出做转写语义对账
+          （transcript_ok=false 必须配 disagreed；null 只能配 unverified）。
         """
         if not self.cfg.configured:
             raise HermesNotConfigured("未配置 Hermes 地址或密钥（HERMES_BASE_URL / HERMES_API_KEY）")
@@ -777,7 +837,7 @@ class HermesClient:
         thinking.log_thinking(
             f"hermes复查 session={session_id} model={review_model}", reasoning)
         raw = extract_result_json(text)
-        response = validate_review_response(raw)
+        response = validate_review_response(raw, coverage=coverage)
         reported_model = str(data.get("model") or "").strip()
         usage = data.get("usage") or {}
         log.info("复查完成 session=%s 题数=%d 网关报告模型=%s tokens=%s/%s",

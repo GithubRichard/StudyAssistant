@@ -85,6 +85,14 @@ class StagedGradingConfig(BaseModel):
     extract_zoom_max_images: int = 2
     # 存疑题数超过该值时跳过复核（整页都看不清时复核意义不大）
     extract_zoom_max_items: int = 15
+    # ---- 提取阶段"第二双眼睛"：题号/转写复核 ----
+    # 题号序列复核：extract 后用一次聚焦调用重读题号序列，diff 不一致的题标存疑。
+    # 防题号错位/跳号/漏题（如把 18 读成 19 导致整体顺延）；失败自动降级不阻断主流程。
+    number_verify: bool = True
+    # 逐题转写复核：每题一次聚焦调用，只核对题号 + 括号原词（不碰学生答案）。
+    # 默认关闭：成本为每题一次调用；题数超限时整批跳过。
+    per_question_verify: bool = False
+    per_question_verify_max_items: int = 10
 
 
 class WeeklySummaryConfig(BaseModel):

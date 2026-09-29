@@ -9,7 +9,8 @@ from pathlib import Path
 
 from app import db, review, tasks
 from app.config import Settings
-from app.hermes import validate_result, validate_review_response
+from app.hermes import (HermesResultInvalid, validate_result,
+                        validate_review_response)
 from tests.mock_hermes import LEARNING_RESULT
 from tests.test_tasks import seed_asset, seed_user
 
@@ -53,7 +54,7 @@ class ReviewFakeClient:
                 "reported_model": "hermes-agent", "reported_provider": "",
                 "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
 
-    async def review_questions(self, messages, session_id, timeout=None):
+    async def review_questions(self, messages, session_id, timeout=None, coverage=""):
         self.review_calls += 1
         self.last_review_messages = messages
         if self.review_error:
@@ -309,6 +310,81 @@ class ApplyReviewResultTest(unittest.TestCase):
         self.assertEqual(result["review_summary"]["state"], "failed")
         self.assertEqual(result["review_summary"]["unverified"], 1)
         validate_result(result)
+
+
+class TranscriptSemanticsTest(unittest.TestCase):
+    """带图复查（coverage=reread）的转写语义对账：
+    transcript_ok=false 必须配 disagreed；null 只能配 unverified；
+    省略 transcript_ok 整体拒绝。纯文字复查不受此约束。"""
+
+    def _item(self, **over):
+        d = {"id": "q1", "state": "agreed", "note": "", "basis": ""}
+        d.update(over)
+        return {"reviews": [d]}
+
+    def test_false_with_disagreed_ok(self):
+        resp = validate_review_response(
+            self._item(transcript_ok=False, state="disagreed",
+                       basis="原图为 A，转写为 B"),
+            coverage="reread")
+        self.assertIs(resp.reviews[0].transcript_ok, False)
+
+    def test_false_with_agreed_rejected(self):
+        with self.assertRaises(HermesResultInvalid) as ctx:
+            validate_review_response(
+                self._item(transcript_ok=False, state="agreed"),
+                coverage="reread")
+        self.assertIn("disagreed", str(ctx.exception))
+
+    def test_null_with_unverified_ok(self):
+        # 明确写 null（看不清）：合法终态，drop_nulls 后 transcript_ok=None
+        resp = validate_review_response(
+            self._item(transcript_ok=None, state="unverified",
+                       note="字迹无法辨认"),
+            coverage="reread")
+        self.assertIsNone(resp.reviews[0].transcript_ok)
+        self.assertEqual(resp.reviews[0].state, "unverified")
+
+    def test_null_with_disagreed_rejected(self):
+        # 看不清不得硬改成 disagreed
+        with self.assertRaises(HermesResultInvalid) as ctx:
+            validate_review_response(
+                self._item(transcript_ok=None, state="disagreed",
+                           basis="x"),
+                coverage="reread")
+        self.assertIn("unverified", str(ctx.exception))
+
+    def test_null_with_agreed_rejected(self):
+        with self.assertRaises(HermesResultInvalid):
+            validate_review_response(
+                self._item(transcript_ok=None, state="agreed"),
+                coverage="reread")
+
+    def test_missing_transcript_ok_rejected_in_reread(self):
+        with self.assertRaises(HermesResultInvalid) as ctx:
+            validate_review_response(self._item(), coverage="reread")
+        self.assertIn("transcript_ok", str(ctx.exception))
+
+    def test_true_allows_any_state(self):
+        resp = validate_review_response(
+            self._item(transcript_ok=True, state="unverified",
+                       note="逻辑无法核查"),
+            coverage="reread")
+        self.assertIs(resp.reviews[0].transcript_ok, True)
+
+    def test_transcript_only_ignores_transcript_ok(self):
+        # 纯文字复查：transcript_ok 无意义，不做语义对账（旧式输出仍合法）
+        resp = validate_review_response(self._item(), coverage="transcript_only")
+        self.assertIsNone(resp.reviews[0].transcript_ok)
+        resp = validate_review_response(
+            self._item(transcript_ok=False, state="agreed"),
+            coverage="transcript_only")
+        self.assertEqual(resp.reviews[0].state, "agreed")
+
+    def test_default_coverage_keeps_backward_compat(self):
+        # 不传 coverage：行为与之前一致，不拒绝
+        resp = validate_review_response(self._item())
+        self.assertEqual(resp.reviews[0].state, "agreed")
 
 
 class ReviewMarkdownTest(unittest.TestCase):
