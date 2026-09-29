@@ -543,12 +543,15 @@ class TaskRunner:
             payload, first_payload,
             h.review_expected_model, h.review_expected_provider)
         meta["model_identity"] = identity
-        if identity != review.IDENTITY_CONFIRMED:
+        if identity not in review.IDENTITY_ACCEPTED:
             log.warning("复查模型身份%s task_id=%s: %s", identity, task_id, identity_note)
             label = "未确认" if identity == review.IDENTITY_UNKNOWN else "不符"
             return review.apply_failed(
                 result, targets, overflow,
                 f"复查模型身份{label}：{identity_note}", meta)
+        if identity == review.IDENTITY_MODEL_ONLY:
+            # 网关不回 provider：模型名已核对，采纳本次复查，但如实记录核验范围
+            log.warning("复查模型身份仅核对到模型名 task_id=%s: %s", task_id, identity_note)
 
         reviews_by_id, problems = review.reconcile_reviews(
             targets, payload.get("reviews") or [])

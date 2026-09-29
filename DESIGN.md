@@ -111,7 +111,7 @@
 |---|---|
 | 候选范围 | `wrong` + `uncertain`；`unanswered` 不送；超限时判错题优先，未送审标 `unprocessed` |
 | 模型切换 | 请求体 `model`（`model_routes` 别名或底层 ID）+ `provider` + `model_options`；底层 ID 不带 `provider` 会被网关静默忽略 |
-| 身份核验 | 以网关**报告**的模型为准；报告缺失=身份未确认、与首轮同模型=路由不符、与 `review_expected_*` 不符=不符；三者都不采纳为可信结论，请求值不得冒充实际值 |
+| 身份核验 | 以网关**报告**的模型为准；报告缺失=身份未确认、与首轮同模型=路由不符、模型或 provider 与 `review_expected_*` 不符=不符；三者都不采纳为可信结论，请求值不得冒充实际值。**网关不回 `provider` 时按 `model_only` 采纳**（模型名已核对且不同于首轮模型，provider 只是次级旁证），并在 `review_summary.note` 如实写明核验范围 |
 | 覆盖对账 | 按送审 id 集合核对复查输出；空列表/漏题/未知 id/重复 id 整体拒绝，送审题标 `unverified` |
 | 改判边界 | 复查只写 `review` / `review_summary`；`status`、作答、答案、步骤、`remediation`、`retests` 原样保留；异议在 `final_decision_basis` 追加「尚未重新裁决」记录 |
 | 失败回退 | 首轮模型自述的复查字段一律被规范化覆盖；复查失败不吞首轮成果，归档与台账照常，复查字段如实标注 |

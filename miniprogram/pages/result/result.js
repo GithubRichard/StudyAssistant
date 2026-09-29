@@ -30,7 +30,8 @@ const REVIEW_SUMMARY_TEXT = {
   not_run: '未执行', not_required: '无需复查',
 };
 const REVIEW_IDENTITY_TEXT = {
-  confirmed: '身份已确认', mismatch: '路由不符', unknown: '身份未确认',
+  confirmed: '身份已确认', model_only: '模型已核对（网关未报告 provider）',
+  mismatch: '路由不符', unknown: '身份未确认',
 };
 const DELIVERY_LABEL = {
   not_configured: '未配置', skipped: '已跳过', generated: '已生成',

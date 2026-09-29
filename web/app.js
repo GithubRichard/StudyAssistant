@@ -598,7 +598,8 @@ const REVIEW_STATE_LABEL = {
   unprocessed: "未完成核查", not_applicable: "未送复查",
 };
 const REVIEW_IDENTITY_LABEL = {
-  confirmed: "身份已确认", mismatch: "路由不符", unknown: "身份未确认",
+  confirmed: "身份已确认", model_only: "模型已核对（网关未报告 provider）",
+  mismatch: "路由不符", unknown: "身份未确认",
 };
 
 function reviewSummaryHtml(task) {

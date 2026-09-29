@@ -164,10 +164,20 @@ class IdentityTest(unittest.TestCase):
             payload, self._first(), "glm-5.3", "zai")
         self.assertEqual(identity, review.IDENTITY_MISMATCH)
 
-    def test_unknown_when_provider_unreported(self):
+    def test_model_only_when_provider_unreported(self):
+        """网关只回 model 不回 provider：模型名已核对即采纳，不判失败。"""
         payload = {"reported_model": "glm-5.3", "reported_provider": ""}
-        identity, _ = review.check_model_identity(payload, self._first(), "glm-5.3", "zai")
-        self.assertEqual(identity, review.IDENTITY_UNKNOWN)
+        identity, note = review.check_model_identity(payload, self._first(), "glm-5.3", "zai")
+        self.assertEqual(identity, review.IDENTITY_MODEL_ONLY)
+        self.assertIn("未报告 provider", note)
+        self.assertIn(review.IDENTITY_MODEL_ONLY, review.IDENTITY_ACCEPTED)
+
+    def test_mismatch_when_provider_reported_and_differs(self):
+        """网关确实回了 provider 且与期望不符：这是实据，仍判路由不符。"""
+        payload = {"reported_model": "glm-5.3", "reported_provider": "deepseek"}
+        identity, note = review.check_model_identity(payload, self._first(), "glm-5.3", "zai")
+        self.assertEqual(identity, review.IDENTITY_MISMATCH)
+        self.assertIn("provider 不符", note)
 
 
 class ReconcileTest(unittest.TestCase):
@@ -334,6 +344,29 @@ class ReviewPipelineTest(unittest.IsolatedAsyncioTestCase):
         q = result["questions"][0]
         self.assertEqual(q["review"]["state"], "agreed")
         self.assertEqual(q["status"], "wrong")
+
+    async def test_provider_unreported_still_completes_review(self):
+        """网关不回 provider（如 tencent-tokenhub）：复查照常采纳，只标注核验范围。"""
+        # 复用同一临时目录（路径不变），只改复查身份配置为不支持报告 provider 的部署
+        self.settings = make_settings(self.tmp.name, **{
+            "hermes": {"base_url": "http://hermes.local", "api_key": "k",
+                       "review_model": "hy4", "review_expected_model": "hy4",
+                       "review_expected_provider": "tencent-tokenhub"}})
+        created = await self._create()
+        payload = {
+            "reviews": [{"id": "sim-p12-q1", "state": "agreed",
+                         "note": "复核未发现异议", "basis": ""}],
+            "model_requested": "hy4", "reported_model": "hy4",
+            "reported_provider": "", "usage": {}, "raw_excerpt": "",
+        }
+        await self._run(ReviewFakeClient(review_payload=payload))
+        task = await db.get_task(self.settings.db_path, created["task_id"])
+        view = await tasks.build_task_view(self.settings, task)
+        summary = view["result"]["review_summary"]
+        self.assertEqual(summary["state"], "completed")
+        self.assertEqual(summary["model_identity"], review.IDENTITY_MODEL_ONLY)
+        self.assertIn("未报告 provider", summary["note"])
+        self.assertEqual(view["result"]["questions"][0]["review"]["state"], "agreed")
 
     async def test_identity_unknown_fails_review_but_keeps_task(self):
         created = await self._create()

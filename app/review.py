@@ -15,8 +15,12 @@ from typing import Any, Dict, List, Optional, Tuple
 REVIEW_CANDIDATE_STATUSES = ("wrong", "uncertain")
 
 IDENTITY_CONFIRMED = "confirmed"
+IDENTITY_MODEL_ONLY = "model_only"
 IDENTITY_MISMATCH = "mismatch"
 IDENTITY_UNKNOWN = "unknown"
+
+# 可以据此采纳本次复查结论的身份核验结果（model_only：模型名已核对、provider 网关未报告）
+IDENTITY_ACCEPTED = (IDENTITY_CONFIRMED, IDENTITY_MODEL_ONLY)
 
 
 def _empty_summary() -> Dict[str, Any]:
@@ -154,11 +158,14 @@ def check_model_identity(review_payload: Dict[str, Any],
                          expected_provider: str) -> Tuple[str, str]:
     """核验收复查是否真的用了目标模型且不同于首轮模型。
 
-    返回 (confirmed / mismatch / unknown, 说明)。判据：
+    返回 (confirmed / model_only / mismatch / unknown, 说明)。判据：
     - 网关没报告实际模型 → unknown（不能用请求值冒充实际值）；
     - 报告的模型与首轮相同 → mismatch（不是「另一个模型」）；
-    - 配置了期望身份且不匹配 → mismatch；
-    - 期望模型匹配、provider 无法核对 → 保守判 unknown。
+    - 配置了期望模型且报告模型不符 → mismatch；
+    - 报告 provider 与期望不符 → mismatch（网关确实回了 provider，属于实据）；
+    - 报告模型与期望一致、且不同于首轮模型，但网关没回 provider → model_only：
+      模型这一层已核对，provider 只是次级旁证，不能因为网关不回该字段让复查永久失败；
+    - 模型与 provider 都核对一致 → confirmed。
     """
     reported = (review_payload.get("reported_model") or "").strip()
     reported_provider = (review_payload.get("reported_provider") or "").strip()
@@ -177,9 +184,9 @@ def check_model_identity(review_payload: Dict[str, Any],
     ep = (expected_provider or "").strip()
     if ep:
         if not reported_provider:
-            return IDENTITY_UNKNOWN, (
-                f"报告模型 {reported} 与期望一致，但网关未报告 provider，"
-                f"无法确认走的是 {ep}")
+            return IDENTITY_MODEL_ONLY, (
+                f"网关报告模型 {reported} 与期望一致且不同于首轮模型，"
+                f"但网关未报告 provider，无法核对是否为 {ep}")
         if reported_provider != ep:
             return IDENTITY_MISMATCH, (
                 f"provider 不符：报告 {reported_provider}，期望 {ep}")
@@ -246,6 +253,8 @@ def apply_review_result(result: Dict[str, Any], sent: List[Dict[str, Any]],
 
     if coverage == "transcript_only":
         notes.append("复查仅依据文字转写（提取的题干/学生作答）与首轮结论核查，未读取原图")
+    if meta.get("model_identity") == IDENTITY_MODEL_ONLY:
+        notes.append("网关未报告 provider，复查模型身份仅按模型名核对")
     if overflow:
         notes.append(f"{len(overflow)} 道题超过单次复查上限未送审")
     if unverified:
@@ -302,7 +311,9 @@ def build_review_markdown(result: Dict[str, Any]) -> str:
         parts.append(f"未送审 {summary['unprocessed']} 题")
     lines.append("；".join(parts) + "。")
     if summary.get("model_requested"):
-        identity = {"confirmed": "已确认", "mismatch": "路由不符",
+        identity = {"confirmed": "已确认",
+                    "model_only": "已核对模型名（网关未报告 provider）",
+                    "mismatch": "路由不符",
                     "unknown": "身份未确认"}.get(summary.get("model_identity", ""),
                                                  summary.get("model_identity", ""))
         reported = summary.get("model_reported") or "（网关未报告）"

@@ -124,6 +124,8 @@ hermes:
    用 `zai`，不要用自定义端点的 `zhipu`（会绕过 GLM 专属适配）。
 3. **身份可核验**：结果里的「实际模型」来自网关报告；报告缺失或与首轮相同都会按
    「身份未确认 / 路由不符」如实标注为复查失败，不用请求值冒充。
+   网关**只回 `model` 不回 `provider`** 时不算失败：模型名与 `review_expected_model`
+   一致且不同于首轮模型即按 `model_only` 采纳，结果里标注「模型已核对（网关未报告 provider）」。只在网关确实回了 provider 且与 `review_expected_provider` 不符时才判「路由不符」。
 4. **纯文字核查**：复查不再读图，只用提取转写与首轮结论做对比；复查模型不需要图片链路。
 5. **工具隔离**：只读提示词不是权限控制，启用前核实复查会话的实际工具权限。
 
@@ -337,7 +339,8 @@ cd /opt/study-assistant && scripts/update-and-logs.sh
 | 结果里复查状态是 `failed` / `not_run` | `not_run` = 未配置 `hermes.review_model`；`failed` = 调用失败、身份未确认/路由不符或复查输出未通过对账，看 `review_summary.note` 与服务端日志；首轮批改与归档不受影响 |
 | 想看 Hermes 调用日志 | `docker logs <容器名>` 里找 `app.hermes:` 开头的行（含调用/完成/tokens/耗时）；日志级别由 `.env` 的 `LOG_LEVEL` 控制（默认 INFO），改完重建容器 |
 | 想看模型的思考过程（分析判题问题） | `.env` 里加 `SA_DEBUG_THINKING=1` 后重建容器；实时查看跑 `scripts/watch-thinking.sh`（脚本会先检查开关与日志级别）。思考内容打到 `docker logs`，首尾有 `【模型思考过程】` / `【思考过程结束】` 标记。分析完设回 `0` 并重建。不进数据库、不进批改结果 |
-| 配了复查模型但显示「身份未确认」 | 网关响应没报告实际模型：配置 `review_expected_model` / `review_expected_provider` 并确认网关版本会返回模型身份；报告与首轮相同模型则是路由未生效（检查 `model_routes` 与 `direct_model_requests`） |
+| 配了复查模型但显示「身份未确认」 | 网关响应没报告实际模型：配置 `review_expected_model` 并确认网关版本会返回模型身份；报告与首轮相同模型则是路由未生效（检查 `model_routes` 与 `direct_model_requests`） |
+| 复查显示「模型已核对（网关未报告 provider）」 | 网关只回 `model` 不回 `provider`（常见于腾讯 tokenhub 等部署），复查照常采纳，只是 provider 这一层没核对；如需完全核验，让网关在响应里返回 `provider`，或忽略该提示 |
 | 分阶段批改报 `max_tokens参数非法：限制数值范围[1,1024]` | 该 provider 的输出上限比阶段上限小（如 `glm-4v-flash` 只有 1024）：在 `llm.providers.<名>` 下配 `max_output_tokens`，或换用支持更大输出的模型。不配的话备胎一调用就被 400 拒绝，实际等于没有备胎 |
 | 分阶段批改报「复核返回了未要求的题号」 | 已修：放大复核回传的题号（如「题1」）现在做有限映射；仍不匹配时只忽略该条并在提取阶段记录 `zoom_note`，不再让整单失败 |
 
