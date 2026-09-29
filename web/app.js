@@ -275,7 +275,7 @@ async function render() {
     const pages = {
       login: pageLogin, home: pageHome, learn: pageLearn, task: pageTask,
       result: pageResult, practice: pagePractice, review: pageReview,
-      history: pageHistory, mine: pageMine,
+      history: pageHistory, mine: pageMine, weekly: pageWeekly,
     };
     // 复习详情复用 review 路由（带 param 即为详情）
     const fn = pages[r.name] || pageHome;
@@ -1066,6 +1066,123 @@ async function pageHistory(app, r, alive) {
 }
 
 /* ---------------- 我的：账号与设置 ---------------- */
+/* ---------------- 周总结 ---------------- */
+function _fmtRate(v) {
+  return v == null ? "—" : (Math.round(v * 1000) / 10) + "%";
+}
+function _rateDelta(cur, prev) {
+  if (cur == null || prev == null) return `<span class="muted small">暂无上周对比</span>`;
+  const d = Math.round((cur - prev) * 1000) / 10;
+  if (Math.abs(d) < 0.05) return `<span class="muted small">与上周持平</span>`;
+  const up = d > 0;
+  return `<span class="small" style="color:${up ? "#1a7f37" : "#cf1322"};font-weight:700">${up ? "↑" : "↓"} ${Math.abs(d)}%</span>`;
+}
+function _weekLabel(weekStart) {
+  // "2026-09-21" -> "9.21–9.27"
+  const d = new Date(weekStart + "T00:00:00");
+  if (isNaN(d)) return weekStart;
+  const e = new Date(d.getTime() + 6 * 86400000);
+  return `${d.getMonth() + 1}.${d.getDate()}–${e.getMonth() + 1}.${e.getDate()}`;
+}
+
+async function pageWeekly(app, r, alive) {
+  document.title = "周总结";
+  app.innerHTML = shell("mine", "周总结", `<div class="page"><div class="loading">加载中…</div></div>`);
+  const weeksResp = await S.api("/web/weekly-summaries/weeks").catch(() => null);
+  const weeks = (weeksResp && weeksResp.weeks) || [];
+  if (!weeks.length) {
+    app.innerHTML = shell("mine", "周总结", `<div class="page"><div class="card">
+      <div class="card-title">周总结</div>
+      <p class="muted">还没有生成的周总结。每周日凌晨会自动生成上一周的学习总结，<br>也可以点下方按钮现在生成一次试试。</p>
+      <button class="btn primary block" id="genWeeklyBtn">立即生成上周总结</button>
+    </div></div>`);
+    $("#genWeeklyBtn").onclick = async () => {
+      const btn = $("#genWeeklyBtn");
+      btn.disabled = true;
+      try {
+        await S.api("/web/weekly-summaries/generate", { method: "POST", body: {} });
+        toast("已生成");
+        render();
+      } catch (e) { toast(e.message || "生成失败"); btn.disabled = false; }
+    };
+    return;
+  }
+  const sel = (r.query && r.query.week) || weeks[0];
+  const data = await S.api("/web/weekly-summaries?week=" + encodeURIComponent(sel)).catch(() => null);
+  if (!alive()) return;
+  const rows = (data && data.subjects) || [];
+
+  // 全科汇总（页面内聚合）
+  let tTasks = 0, tCorrect = 0, tChecked = 0, tMistakes = 0, tCorr = 0, tRetest = 0;
+  let accSum = 0, accN = 0, prevSum = 0, prevN = 0;
+  rows.forEach(({ summary: s }) => {
+    tTasks += s.tasks || 0;
+    tCorrect += (s.questions && s.questions.correct) || 0;
+    tChecked += (s.questions && (s.questions.correct + s.questions.wrong + s.questions.unanswered)) || 0;
+    tMistakes += s.new_mistakes || 0;
+    tCorr += s.corrections || 0;
+    tRetest += s.retests || 0;
+    if (s.accuracy != null) { accSum += s.accuracy; accN++; }
+    if (s.prev_accuracy != null) { prevSum += s.prev_accuracy; prevN++; }
+  });
+  const accAll = accN ? accSum / accN : null;
+  const prevAll = prevN ? prevSum / prevN : null;
+
+  const chips = weeks.map((w) =>
+    `<a class="chip${w === sel ? " on" : ""}" href="#/weekly?week=${w}">${_weekLabel(w)}</a>`).join("");
+
+  const subjectCards = rows.map(({ subject, summary: s }) => {
+    const q = s.questions || {};
+    const causes = (s.top_causes || []).map((c) =>
+      `<li>${esc(c.cause)} <span class="muted">×${c.count}</span></li>`).join("");
+    const points = (s.top_points || []).map((p) =>
+      `<li>${esc(p.point)} <span class="muted">×${p.count}</span></li>`).join("");
+    return `<div class="card">
+      <div class="card-title">${esc(subject)}</div>
+      <div class="stat-row">
+        <div class="stat-box"><div class="stat-num">${s.tasks || 0}</div><div class="muted small">批改任务</div></div>
+        <div class="stat-box"><div class="stat-num">${(q.correct || 0) + (q.wrong || 0) + (q.unanswered || 0)}</div><div class="muted small">批改题目</div></div>
+        <div class="stat-box"><div class="stat-num">${_fmtRate(s.accuracy)}</div><div class="muted small">正确率</div></div>
+      </div>
+      <div class="q-row"><span class="q-label">环比上周</span><div>${_rateDelta(s.accuracy, s.prev_accuracy)}</div></div>
+      <div class="q-row"><span class="q-label">新增错题</span><div>${s.new_mistakes || 0} 题</div></div>
+      <div class="q-row"><span class="q-label">订正 / 复测</span><div>${s.corrections || 0} / ${s.retests || 0}</div></div>
+      <div class="q-row"><span class="q-label">待办</span><div>待订正 ${s.pending_correction || 0} · 待复测 ${s.pending_retest || 0}</div></div>
+      ${causes ? `<div class="q-label" style="margin:8px 0 4px">高频错因</div><ul class="event-list">${causes}</ul>` : ""}
+      ${points ? `<div class="q-label" style="margin:8px 0 4px">薄弱知识点</div><ul class="event-list">${points}</ul>` : ""}
+      ${(!causes && !points) ? `<p class="muted small">本周没有新增错题，继续保持 👍</p>` : ""}
+    </div>`;
+  }).join("");
+
+  app.innerHTML = shell("mine", "周总结", `<div class="page">
+    <div class="card">
+      <div class="card-title">第 ${esc(_weekLabel(sel))} 周 <span class="muted small">${esc(data.week_start || "")} ~ ${esc(data.week_end || "")}</span></div>
+      <div class="chip-row" style="margin-bottom:10px">${chips}</div>
+      <div class="stat-row">
+        <div class="stat-box"><div class="stat-num">${tTasks}</div><div class="muted small">批改任务</div></div>
+        <div class="stat-box"><div class="stat-num">${tChecked}</div><div class="muted small">批改题目</div></div>
+        <div class="stat-box"><div class="stat-num">${_fmtRate(accAll)}</div><div class="muted small">平均正确率</div></div>
+      </div>
+      <div class="q-row"><span class="q-label">环比上周</span><div>${_rateDelta(accAll, prevAll)}</div></div>
+      <div class="q-row"><span class="q-label">新增错题</span><div>${tMistakes} 题</div></div>
+      <div class="q-row"><span class="q-label">订正 / 复测</span><div>${tCorr} / ${tRetest}</div></div>
+    </div>
+    ${subjectCards || `<div class="card"><p class="muted">这周没有可总结的数据。</p></div>`}
+    <div class="card"><button class="btn block" id="regenWeeklyBtn">重新生成本周总结</button>
+      <p class="muted small" style="margin-top:8px">每周日凌晨自动生成上一周总结；数据有变化时可手动重新生成。</p></div>
+  </div>`);
+
+  $("#regenWeeklyBtn").onclick = async () => {
+    const btn = $("#regenWeeklyBtn");
+    btn.disabled = true;
+    try {
+      await S.api("/web/weekly-summaries/generate", { method: "POST", body: { week_start: sel } });
+      toast("已重新生成");
+      render();
+    } catch (e) { toast(e.message || "生成失败"); btn.disabled = false; }
+  };
+}
+
 async function pageMine(app, r, alive) {
   document.title = "我的";
   app.innerHTML = shell("mine", "我的", `<div class="page"><div class="loading">加载中…</div></div>`);
@@ -1084,6 +1201,14 @@ async function pageMine(app, r, alive) {
       <div class="q-row"><span class="q-label">孩子</span><div>${esc(user.display_name || user.username || "")}</div></div>
       <div class="q-row"><span class="q-label">用户名</span><div>${esc(user.username || "")}</div></div>
       <div class="q-row"><span class="q-label">数据保留</span><div>错题台账保留 ${Math.round(retention / 365 * 10) / 10} 年，超期自动清理</div></div>
+    </div>
+    <div class="card">
+      <div class="card-title">学习总结</div>
+      <a href="#/weekly" class="ledger-item" style="margin:0">
+        <div class="ledger-top"><span style="font-size:15px;font-weight:700">📊 周总结</span>
+          <span class="ledger-state">查看 &gt;</span></div>
+        <div class="ledger-meta muted small">每周日凌晨自动生成，按科目汇总上周的学习情况</div>
+      </a>
     </div>
     <div class="card">
       <div class="card-title">学习设置</div>

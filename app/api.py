@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -18,7 +19,7 @@ from fastapi import (APIRouter, Depends, File, Form, Header, HTTPException, Quer
                      Request, Response, UploadFile)
 from fastapi.responses import FileResponse
 
-from . import auth, db, tasks, wechat, workspace
+from . import auth, db, tasks, wechat, weekly, workspace
 from .config import Settings, provider_chain, web_asset_version
 from .hermes import HermesClient
 from .schemas import (FamilySettingsUpdate, FollowupCreate, LedgerEventCreate,
@@ -495,6 +496,56 @@ async def web_overview(ctx: dict = Session):
         "top_causes": causes,
         "retention_days": s.retention_days,
     }
+
+
+# ---------- 周总结 ----------
+
+@router.get("/web/weekly-summaries/weeks")
+async def weekly_summary_weeks(ctx: dict = Session,
+                               limit: int = Query(12, ge=1, le=52)):
+    """已生成周总结的周列表（周一日期，倒序）。"""
+    s = get_settings()
+    weeks = await db.list_weekly_weeks(s.db_path, ctx["openid"], limit)
+    return {"weeks": weeks}
+
+
+@router.get("/web/weekly-summaries")
+async def weekly_summary_detail(ctx: dict = Session,
+                                week: str = Query("", description="周一日期 YYYY-MM-DD，空=最近一周")):
+    """某周的周总结：按科目列出统计。不传 week 时取最近已生成的一周。"""
+    s = get_settings()
+    openid = ctx["openid"]
+    week_start = week.strip()
+    if not week_start:
+        weeks = await db.list_weekly_weeks(s.db_path, openid, 1)
+        if not weeks:
+            return {"week_start": "", "week_end": "", "subjects": []}
+        week_start = weeks[0]
+    try:
+        ws = datetime.strptime(week_start, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(400, "week 格式应为 YYYY-MM-DD（周一日期）")
+    rows = await db.get_weekly_summaries(s.db_path, openid, week_start)
+    week_end = (ws + timedelta(days=6)).isoformat()
+    return {"week_start": week_start, "week_end": week_end, "subjects": rows}
+
+
+@router.post("/web/weekly-summaries/generate")
+async def weekly_summary_generate(payload: dict, ctx: dict = Session):
+    """手动触发为当前账号生成某周的周总结（用于测试/补看）。
+
+    body: {"week_start": "2026-09-21"}，空则取最近一个完整周。
+    只生成当前登录账号的数据，不影响其他账号。
+    """
+    s = get_settings()
+    week_start = str((payload or {}).get("week_start") or "").strip()
+    try:
+        ws = (datetime.strptime(week_start, "%Y-%m-%d").date()
+              if week_start else weekly.last_complete_week_monday())
+    except ValueError:
+        raise HTTPException(400, "week_start 格式应为 YYYY-MM-DD（周一日期）")
+    subjects = await weekly.generate_for_user(s.db_path, ctx["openid"], ws)
+    return {"week_start": ws.isoformat(), "subjects": subjects}
 
 
 # ---------- 错题本 ----------

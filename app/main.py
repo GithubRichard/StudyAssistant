@@ -105,10 +105,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 网页版 v1：每日自动清理超期错题（保留两年），仅清理 mistakes 与关联事件，
         # 任务、附件、Git 归档不受影响。
         purge_task = asyncio.create_task(_retention_purge_loop(settings))
+        # 每周日凌晨（上海时间 02:00 后）按账号×科目生成上一周的周总结；
+        # generate_missing 自带补生成，服务器周日宕机重启后也能补上。
+        weekly_task = asyncio.create_task(_weekly_summary_loop(settings))
         try:
             yield
         finally:
             purge_task.cancel()
+            weekly_task.cancel()
             await runner.stop()
             await client.aclose()
             api.hermes_client = None
@@ -148,6 +152,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         log.warning("未找到网页版静态资源目录 %s，网页版暂不可用", web_dir)
 
     return app
+
+
+async def _weekly_summary_loop(settings: "Settings") -> None:
+    """每周日凌晨生成周总结：按账号×科目汇总上一完整自然周（上海时区）。
+
+    每小时检查一次；generate_missing 只生成完整周且有数据的周总结，
+    失败只记录日志，不影响服务。
+    """
+    from . import weekly
+    try:
+        # 启动时先补一次：覆盖"服务器整个周日都宕机"的情况
+        generated = await weekly.generate_missing(settings.db_path)
+        for openid, n in generated.items():
+            log.info("周总结补生成: %s 补了 %d 周", openid, n)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("周总结启动补生成失败")
+    while True:
+        try:
+            await asyncio.sleep(3600)
+            generated = await weekly.generate_missing(settings.db_path)
+            for openid, n in generated.items():
+                log.info("周总结已生成: %s 生成 %d 周", openid, n)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("周总结定时生成失败")
 
 
 async def _retention_purge_loop(settings: "Settings") -> None:

@@ -234,7 +234,7 @@ V2_TASK_COLUMNS = {
     "archive_path": "TEXT NOT NULL DEFAULT ''",
 }
 
-LATEST_VERSION = 3
+LATEST_VERSION = 5
 
 
 async def _column_names(db: aiosqlite.Connection, table: str) -> set:
@@ -343,6 +343,24 @@ async def run_migrations(path: str) -> dict:
             await db.execute("INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(4, ?)",
                              (time.time(),))
             applied.append(4)
+
+        if 5 not in versions:
+            # v5：周总结（每周日凌晨按账号×科目生成，幂等覆盖）
+            await db.executescript(
+                """CREATE TABLE IF NOT EXISTS weekly_summaries(
+                     openid TEXT NOT NULL,
+                     week_start TEXT NOT NULL,
+                     subject TEXT NOT NULL,
+                     summary_json TEXT NOT NULL,
+                     created_at REAL NOT NULL,
+                     PRIMARY KEY(openid, week_start, subject)
+                   )""")
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS schema_version("
+                "version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)")
+            await db.execute("INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(5, ?)",
+                             (time.time(),))
+            applied.append(5)
 
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA busy_timeout=5000")

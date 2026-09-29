@@ -860,6 +860,227 @@ async def top_error_causes(db_path: str, openid: str, since_ts: float,
     return [{"cause": str(cause), "count": int(n)} for cause, n in rows]
 
 
+# ---------- 周总结（每周日凌晨生成，按账号×科目）----------
+
+_UNCATEGORIZED_SUBJECT = "未分类"
+
+
+def normalize_subject(subject: str) -> str:
+    """科目归一化：空字符串统一记为「未分类」，保证按科目聚合不丢数据。"""
+    return (subject or "").strip() or _UNCATEGORIZED_SUBJECT
+
+
+async def weekly_grading_by_subject(db_path: str, openid: str,
+                                    start_ts: float, end_ts: float) -> Dict[str, dict]:
+    """指定时间窗内已完成批改任务的逐题统计，按任务科目分组。
+
+    口径与 grading_stats 一致：每任务取最后一轮已完成 run 的 result_json；
+    uncertain 未给出确定结论，不计入正确率分母。
+    返回 {subject: {tasks, correct, wrong, unanswered, uncertain, checked}}。
+    """
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT t.subject, r.result_json FROM task_runs r
+               JOIN tasks t ON t.id = r.task_id
+               WHERE t.openid=? AND t.task_type='grading' AND r.status='finished'
+                 AND r.finished_at>=? AND r.finished_at<?
+                 AND r.run_no=(SELECT MAX(run_no) FROM task_runs WHERE task_id=r.task_id)""",
+            (openid, start_ts, end_ts),
+        ) as cur:
+            rows = await cur.fetchall()
+    stats: Dict[str, dict] = {}
+    for raw_subject, raw in rows:
+        subject = normalize_subject(str(raw_subject or ""))
+        st = stats.setdefault(subject, {"tasks": 0, "correct": 0, "wrong": 0,
+                                        "unanswered": 0, "uncertain": 0, "checked": 0})
+        st["tasks"] += 1
+        try:
+            payload = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            continue
+        for q in payload.get("questions") or []:
+            status = (q or {}).get("status", "")
+            if status == "correct":
+                st["correct"] += 1
+                st["checked"] += 1
+            elif status == "wrong":
+                st["wrong"] += 1
+                st["checked"] += 1
+            elif status == "unanswered":
+                st["unanswered"] += 1
+                st["checked"] += 1
+            elif status == "uncertain":
+                st["uncertain"] += 1
+    return stats
+
+
+async def weekly_mistake_stats(db_path: str, openid: str,
+                               start_ts: float, end_ts: float) -> Dict[str, dict]:
+    """指定时间窗内新增台账条目统计，按科目分组。
+
+    用户点「我觉得判错了」已撤回的条目不计入新增错题。
+    返回 {subject: {new_mistakes, top_causes[{cause,count}], top_points[{point,count}]}}。
+    """
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT subject, error_rule, knowledge_point FROM mistakes
+               WHERE openid=? AND question_uid<>''
+                 AND remediation_state<>'withdrawn'
+                 AND created_at>=? AND created_at<?""",
+            (openid, start_ts, end_ts),
+        ) as cur:
+            rows = await cur.fetchall()
+    stats: Dict[str, dict] = {}
+    for raw_subject, cause, point in rows:
+        subject = normalize_subject(str(raw_subject or ""))
+        st = stats.setdefault(subject, {"new_mistakes": 0, "causes": {}, "points": {}})
+        st["new_mistakes"] += 1
+        cause = (cause or "").strip()
+        if cause:
+            st["causes"][cause] = st["causes"].get(cause, 0) + 1
+        point = (point or "").strip()
+        if point:
+            st["points"][point] = st["points"].get(point, 0) + 1
+    out = {}
+    for subject, st in stats.items():
+        out[subject] = {
+            "new_mistakes": st["new_mistakes"],
+            "top_causes": [{"cause": c, "count": n}
+                           for c, n in sorted(st["causes"].items(),
+                                              key=lambda kv: (-kv[1], kv[0]))[:5]],
+            "top_points": [{"point": p, "count": n}
+                           for p, n in sorted(st["points"].items(),
+                                              key=lambda kv: (-kv[1], kv[0]))[:5]],
+        }
+    return out
+
+
+async def weekly_event_counts(db_path: str, openid: str,
+                              start_ts: float, end_ts: float) -> Dict[str, dict]:
+    """指定时间窗内订正/复测事件数，按科目分组。
+
+    返回 {subject: {corrections, retests}}。
+    """
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT subject, event_type, COUNT(*) FROM question_events
+               WHERE openid=? AND created_at>=? AND created_at<?
+               GROUP BY subject, event_type""",
+            (openid, start_ts, end_ts),
+        ) as cur:
+            rows = await cur.fetchall()
+    stats: Dict[str, dict] = {}
+    for raw_subject, event_type, n in rows:
+        subject = normalize_subject(str(raw_subject or ""))
+        st = stats.setdefault(subject, {"corrections": 0, "retests": 0})
+        if event_type == "correction":
+            st["corrections"] += int(n)
+        elif event_type == "retest":
+            st["retests"] += int(n)
+    return stats
+
+
+async def weekly_pending_by_subject(db_path: str, openid: str) -> Dict[str, dict]:
+    """当前各科目的待办快照：待订正 / 待复测（含复测未通过）。已撤回的不计。"""
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT subject, remediation_state, COUNT(*) FROM mistakes
+               WHERE openid=? AND question_uid<>''
+                 AND remediation_state<>'withdrawn'
+               GROUP BY subject, remediation_state""",
+            (openid,),
+        ) as cur:
+            rows = await cur.fetchall()
+    stats: Dict[str, dict] = {}
+    for raw_subject, state, n in rows:
+        subject = normalize_subject(str(raw_subject or ""))
+        st = stats.setdefault(subject, {"pending_correction": 0, "pending_retest": 0})
+        if state == "pending_correction":
+            st["pending_correction"] += int(n)
+        elif state in ("corrected_pending_retest", "retest_failed"):
+            st["pending_retest"] += int(n)
+    return stats
+
+
+async def week_has_data(db_path: str, openid: str,
+                        start_ts: float, end_ts: float) -> bool:
+    """该周是否有可总结的数据：有已完成的批改任务或新增台账条目。"""
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT 1 FROM task_runs r JOIN tasks t ON t.id=r.task_id
+               WHERE t.openid=? AND t.task_type='grading' AND r.status='finished'
+                 AND r.finished_at>=? AND r.finished_at<?
+                 AND r.run_no=(SELECT MAX(run_no) FROM task_runs WHERE task_id=r.task_id)
+               LIMIT 1""",
+            (openid, start_ts, end_ts),
+        ) as cur:
+            if await cur.fetchone():
+                return True
+        async with db.execute(
+            """SELECT 1 FROM mistakes
+               WHERE openid=? AND question_uid<>'' AND created_at>=? AND created_at<?
+               LIMIT 1""",
+            (openid, start_ts, end_ts),
+        ) as cur:
+            return bool(await cur.fetchone())
+
+
+async def upsert_weekly_summary(db_path: str, openid: str, week_start: str,
+                                subject: str, summary: dict) -> None:
+    """写入/覆盖某账号某周某科目的周总结（幂等：同一周重复生成直接覆盖）。"""
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """INSERT INTO weekly_summaries(openid, week_start, subject, summary_json, created_at)
+               VALUES(?,?,?,?,?)
+               ON CONFLICT(openid, week_start, subject)
+               DO UPDATE SET summary_json=excluded.summary_json,
+                             created_at=excluded.created_at""",
+            (openid, week_start, subject, json.dumps(summary, ensure_ascii=False),
+             time.time()),
+        )
+        await db.commit()
+
+
+async def has_weekly_summary(db_path: str, openid: str, week_start: str) -> bool:
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            "SELECT 1 FROM weekly_summaries WHERE openid=? AND week_start=? LIMIT 1",
+            (openid, week_start),
+        ) as cur:
+            return bool(await cur.fetchone())
+
+
+async def list_weekly_weeks(db_path: str, openid: str, limit: int = 12) -> List[str]:
+    """该账号已生成周总结的周一日期列表（倒序）。"""
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT DISTINCT week_start FROM weekly_summaries
+               WHERE openid=? ORDER BY week_start DESC LIMIT ?""",
+            (openid, limit),
+        ) as cur:
+            return [str(row[0]) for row in await cur.fetchall()]
+
+
+async def get_weekly_summaries(db_path: str, openid: str,
+                               week_start: str) -> List[dict]:
+    """取某账号某周各科目的周总结（按科目名排序）。"""
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT subject, summary_json FROM weekly_summaries
+               WHERE openid=? AND week_start=? ORDER BY subject""",
+            (openid, week_start),
+        ) as cur:
+            rows = await cur.fetchall()
+    out = []
+    for subject, raw in rows:
+        try:
+            summary = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            continue
+        out.append({"subject": str(subject), "summary": summary})
+    return out
+
+
 async def list_user_openids(db_path: str) -> List[str]:
     """所有登录过或产生过数据的账号身份（用于全账号任务：定时清理、工作区骨架）。"""
     async with aiosqlite.connect(db_path) as db:
