@@ -336,7 +336,7 @@ cd /opt/study-assistant && scripts/update-and-logs.sh
 | 改了 `.env` 没生效 | 必须 `--force-recreate` 重建容器 |
 | 结果里复查状态是 `failed` / `not_run` | `not_run` = 未配置 `hermes.review_model`；`failed` = 调用失败、身份未确认/路由不符或复查输出未通过对账，看 `review_summary.note` 与服务端日志；首轮批改与归档不受影响 |
 | 想看 Hermes 调用日志 | `docker logs <容器名>` 里找 `app.hermes:` 开头的行（含调用/完成/tokens/耗时）；日志级别由 `.env` 的 `LOG_LEVEL` 控制（默认 INFO），改完重建容器 |
-| 想看模型的思考过程（分析判题问题） | `.env` 里加 `SA_DEBUG_THINKING=1` 后重建容器；思考内容打到 `docker logs`，首尾有 `【模型思考过程】` / `【思考过程结束】` 标记，可 `grep -A 200 模型思考过程` 提取。分析完设回 `0` 并重建。不进数据库、不进批改结果 |
+| 想看模型的思考过程（分析判题问题） | `.env` 里加 `SA_DEBUG_THINKING=1` 后重建容器；实时查看跑 `scripts/watch-thinking.sh`（脚本会先检查开关与日志级别）。思考内容打到 `docker logs`，首尾有 `【模型思考过程】` / `【思考过程结束】` 标记。分析完设回 `0` 并重建。不进数据库、不进批改结果 |
 | 配了复查模型但显示「身份未确认」 | 网关响应没报告实际模型：配置 `review_expected_model` / `review_expected_provider` 并确认网关版本会返回模型身份；报告与首轮相同模型则是路由未生效（检查 `model_routes` 与 `direct_model_requests`） |
 
 ## 10. 目录结构
