@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import unittest
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -75,6 +76,26 @@ class PrepareTest(unittest.TestCase):
         self.assertTrue(info["exif_rotated"])
         # 转正后宽高互换
         self.assertEqual((info["width"], info["height"]), (300, 400))
+
+    def test_auto_rotates_when_osd_finds_sideways_text(self):
+        with patch.object(image_prep, "_detect_text_rotation", return_value={
+                "status": "rotated", "rotation": 90, "confidence": 4.2,
+                "error": ""}):
+            out, _mime, info = image_prep.prepare_extract_image(
+                _jpeg(1600, 1200), "image/jpeg", min_long_side=0, max_long_side=0)
+        self.assertEqual(_size(out), (1200, 1600))
+        self.assertEqual(info["text_rotation_degrees"], 90)
+        self.assertEqual(info["orientation_status"], "rotated")
+        self.assertFalse(info["orientation_check_required"])
+
+    def test_low_orientation_confidence_requires_confirmation(self):
+        with patch.object(image_prep, "_detect_text_rotation", return_value={
+                "status": "uncertain", "rotation": 90, "confidence": 0.5,
+                "error": "orientation confidence below threshold"}):
+            _out, _mime, info = image_prep.prepare_extract_image(
+                _jpeg(1600, 1200), "image/jpeg", min_long_side=0, max_long_side=0)
+        self.assertEqual(info["orientation_status"], "uncertain")
+        self.assertTrue(info["orientation_check_required"])
 
 
 class TilesTest(unittest.TestCase):

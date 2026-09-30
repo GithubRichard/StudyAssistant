@@ -27,6 +27,11 @@
 
 ## 2. 本地跑起来（不联网）
 
+图片批改会用 Tesseract OSD 自动识别并校正试卷文字的 0°/90°/180°/270°方向。
+本地运行前需安装 Tesseract，并包含英文、简体中文和 OSD 语言数据；Docker 镜像会自动安装。
+Debian/Ubuntu 可执行 `sudo apt-get install tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim tesseract-ocr-osd`。
+方向识别置信度不足时，任务会停止并提示重新拍摄，不会继续按错误方向批改。
+
 ```bash
 cd StudyAssistant
 python3 -m venv .venv && source .venv/bin/activate

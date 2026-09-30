@@ -802,10 +802,24 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
             min_long_side=cfg.extract_image_min_long_side,
             max_long_side=cfg.extract_image_max_long_side)
         prepped.append((pb, pm))
-        # 诊断用：记录模型实际看到的图（尺寸 + EXIF 旋转），转写幻觉排查时看这行
-        log.info("分阶段批改[extract] 图片%d: 预处理后 %dx%d exif_orientation=%s exif_rotated=%s",
+        # Valid images with uncertain text orientation must not reach the model:
+        # a wrong rotation corrupts every downstream question/answer association.
+        if info.get("orientation_check_required"):
+            raise StageError(
+                "extract",
+                f"第{i + 1}张图片的试卷文字方向无法可靠确认 "
+                f"（{info.get('orientation_error') or '方向识别置信度不足'}）。"
+                "请将试卷转正、拍清整页后重新上传；本次未进行批改。",
+            )
+        # 诊断用：记录模型实际看到的图（尺寸、EXIF 与文字方向）
+        log.info("分阶段批改[extract] 图片%d: 预处理后 %dx%d "
+                 "exif_orientation=%s exif_rotated=%s text_rotation=%s "
+                 "orientation=%s confidence=%s",
                  i + 1, info["width"], info["height"],
-                 info["exif_orientation"], info["exif_rotated"])
+                 info["exif_orientation"], info["exif_rotated"],
+                 info.get("text_rotation_degrees"),
+                 info.get("orientation_status"),
+                 info.get("orientation_confidence"))
 
     system = _stage_system(settings, "extract", EXTRACT_SYSTEM)
     is_followup = prev_result is not None and followup_no > 0

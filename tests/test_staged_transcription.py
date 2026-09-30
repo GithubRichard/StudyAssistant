@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest.mock import patch
 
 from app import staged
 from app.hermes import build_review_messages
-from app.staged import ExtractedQuestion, format_extraction_log
+from app.staged import ExtractedQuestion, StageError, format_extraction_log
 from app.providers import ProviderError
 from tests.test_staged import factory_for, make_settings
 
@@ -188,6 +189,27 @@ class NumberVerifyTest(unittest.IsolatedAsyncioTestCase):
         by_no = {q["no"]: q for q in outcome.result["questions"]}
         self.assertEqual(by_no["1"]["status"], "correct")
 
+
+class OrientationGateTest(unittest.IsolatedAsyncioTestCase):
+    async def test_uncertain_image_orientation_stops_before_model_call(self):
+        calls = []
+        settings = make_settings("fake")
+        scripts = {"fake": {"extract": [_extract_script(_q("1", "1+1=?", "2"))],
+                             "solve": [], "compare": [], "diagnose": []}}
+        factory = factory_for(scripts, calls)
+        info = {"width": 1600, "height": 1200,
+                "exif_orientation": None, "exif_rotated": False,
+                "text_rotation_degrees": 90, "orientation_confidence": 0.5,
+                "orientation_status": "uncertain",
+                "orientation_check_required": True,
+                "orientation_error": "orientation confidence below threshold"}
+        with patch.object(staged.image_prep, "prepare_extract_image",
+                          return_value=(b"image", "image/jpeg", info)):
+            with self.assertRaisesRegex(StageError, "方向无法可靠确认"):
+                await staged.grade_staged(
+                    [(b"image", "image/jpeg")], "数学", "一年级", "", settings,
+                    provider_factory=factory)
+        self.assertEqual(calls, [])
 
 class NumberUncertainFromExtractTest(unittest.IsolatedAsyncioTestCase):
     """extract 自己声明 number_uncertain：不送求解，直接标存疑。"""

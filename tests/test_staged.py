@@ -840,10 +840,17 @@ class StagedStagesViewTest(unittest.IsolatedAsyncioTestCase):
 
 
 def _tiny_jpeg(w=400, h=300, color=(255, 255, 255)) -> bytes:
-    from PIL import Image
+    from PIL import Image, ImageDraw
     import io
+    image = Image.new("RGB", (w, h), color)
+    draw = ImageDraw.Draw(image)
+    # Orientation OSD needs multiple text lines; a blank JPEG is intentionally
+    # rejected by the new fail-closed direction gate.
+    for row in range(8):
+        draw.text((8, 8 + row * 20), f"Question {row + 1}: sample text",
+                  fill=(0, 0, 0))
     buf = io.BytesIO()
-    Image.new("RGB", (w, h), color).save(buf, format="JPEG")
+    image.save(buf, format="JPEG")
     return buf.getvalue()
 
 
