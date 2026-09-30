@@ -398,6 +398,19 @@ workspace/
 
 私有数据仍在 `data/`：`app.db`、`uploads/<随机id>.jpg`、`runs/<task_id>/run<N>/`，**不进工作区、不进 Git**。
 
+### 拆分思考日志
+
+```bash
+python3 scripts/split_thinking.py data/logs/thinking.log -o data/logs/thinking-sessions
+# 也可以拆分导出的日志
+python3 scripts/split_thinking.py thinking.txt -o data/logs/thinking-export-sessions
+```
+
+同一 `session=` 的模型调用合并为一个文件；没有会话 ID 的调用每段单独保存
+（目前分阶段批改日志没有 ID，不能可靠还原完整批改会话）。原始日志不修改，
+输出目录必须不存在，避免覆盖；残缺段仍保存并提示，段外内容保存为 `unassigned`。
+不指定 `-o` 时，自动在输入文件旁新建带时间戳的目录。
+
 ## 11. 尚未实现（如需启用请另行授权）
 
 - 与真实 Hermes 的联调（版本、工具权限、模型工具调用能力）
