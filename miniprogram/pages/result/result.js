@@ -79,6 +79,8 @@ Page({
     deliveryRows: [],
     gitConflictRecord: '',
     authError: '',
+    orientationPages: [],
+    orientationReady: false,
   },
 
   onLoad(options) {
@@ -140,6 +142,12 @@ Page({
         deliveryRows: this.buildDeliveryRows(result),
         gitConflictRecord: (gitItem && gitItem.conflict_record) || '',
       });
+      if (t.orientation) {
+        this.clearTimer();
+        await this.loadOrientation(t);
+        return;
+      }
+      this.setData({orientationPages: [], orientationReady: false});
       if (TERMINAL.includes(t.status)) {
         this.clearTimer();
         return;
@@ -153,6 +161,45 @@ Page({
       return;
     }
     this.schedule();
+  },
+
+  async loadOrientation(task) {
+    const run = task.runs[task.runs.length - 1];
+    this.orientationRunId = run.id;
+    const pages = task.orientation.pages.filter(p => !p.confirmed).map(p => ({page: p.page, rotation: 0, src: ''}));
+    this.setData({orientationPages: pages, orientationReady: false});
+    try {
+      for (const page of pages) {
+        const data = await api.getOrientationPreview(this.data.taskId, run.id, page.page);
+        const path = wx.env.USER_DATA_PATH + '/orientation-' + this.data.taskId + '-' + page.page + '.jpg';
+        await new Promise((resolve, reject) => wx.getFileSystemManager().writeFile({
+          filePath: path, data: data.preview.split(',')[1], encoding: 'base64', success: resolve, fail: reject,
+        }));
+        page.src = path;
+      }
+      this.setData({orientationPages: pages, orientationReady: true});
+    } catch (e) {
+      wx.showToast({title: '预览读取失败，请刷新重试', icon: 'none'});
+    }
+  },
+
+  rotateOrientation(e) {
+    const page = Number(e.currentTarget.dataset.page);
+    this.setData({orientationPages: this.data.orientationPages.map(p =>
+      p.page === page ? {...p, rotation: (p.rotation + 90) % 360} : p)});
+  },
+
+  async confirmOrientation() {
+    if (this.data.submitting || !this.data.orientationReady) return;
+    this.setData({submitting: true});
+    try {
+      await api.confirmOrientation(this.data.taskId, {run_id: this.orientationRunId,
+        rotations: this.data.orientationPages.map(p => ({page: p.page, rotation: p.rotation}))});
+      this.setData({orientationPages: [], orientationReady: false});
+      this.refresh();
+    } catch (e) {
+      wx.showToast({title: e.message || '确认失败', icon: 'none'});
+    } finally { this.setData({submitting: false}); }
   },
 
   refresh() {

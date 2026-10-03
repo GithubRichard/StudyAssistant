@@ -30,7 +30,16 @@
 图片批改会用 Tesseract OSD 自动识别并校正试卷文字的 0°/90°/180°/270°方向。
 本地运行前需安装 Tesseract，并包含英文、简体中文和 OSD 语言数据；Docker 镜像会自动安装。
 Debian/Ubuntu 可执行 `sudo apt-get install tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim tesseract-ocr-osd`。
-方向识别置信度不足时，任务会停止并提示重新拍摄，不会继续按错误方向批改。
+方向识别置信度不足时，服务会用视觉模型补充判断一次；仍不能确认则进入“确认页面方向”，
+在网页或小程序里旋转预览、确认后继续同一轮批改。图片保留，不重复上传或扣任务次数。
+每页最多一次补充判向调用，不做模型切换或自动重试；确认角度统一为顺时针。
+`staged_grading.orientation_provider` 可指定直接支持图片输入的模型，留空则选模型链中首个
+`supports_vision: true` 的 provider；不支持图片的 provider 应配置 `supports_vision: false`。
+`orientation_visual_fallback: false` 可关闭视觉补判，直接等待人工确认。
+复查要求直接读取已确认方向的图片；只能获取图片文字摘要时必须标“未能核验”。
+真实网关是否保留图像输入仍需在部署环境核实，配置声明和模型自述不能独立证明它看到了图片。
+开启 `SA_DEBUG_THINKING=1` 后，判向和各阶段产出也写入思考日志，带统一的任务 ID、轮次、
+`session=study-<task_id>-<run_no>`；切分脚本会把同一轮的判向、思考与阶段产出合并为一个文件。
 
 ```bash
 cd StudyAssistant

@@ -19,11 +19,11 @@ from fastapi import (APIRouter, Depends, File, Form, Header, HTTPException, Quer
                      Request, Response, UploadFile)
 from fastapi.responses import FileResponse
 
-from . import auth, db, tasks, wechat, weekly, workspace
+from . import auth, db, tasks, wechat, weekly, workspace, orientation_tasks
 from .config import Settings, provider_chain, web_asset_version
 from .hermes import HermesClient
 from .schemas import (FamilySettingsUpdate, FollowupCreate, LedgerEventCreate,
-                      ManualLedgerCreate, StudyTaskCreate)
+                      ManualLedgerCreate, StudyTaskCreate, OrientationConfirm)
 from .tasks import TaskError
 
 log = logging.getLogger(__name__)
@@ -284,6 +284,26 @@ async def get_task(task_id: str, ctx: dict = Session):
     except auth.AuthError as e:
         raise HTTPException(e.status_code, e.message) from e
     return await tasks.build_task_view(s, task)
+
+
+@router.get("/tasks/{task_id}/orientation/{page}")
+async def orientation_preview(task_id: str, page: int, run_id: str, ctx: dict = Session):
+    try:
+        return await orientation_tasks.preview(get_settings(), ctx["openid"], task_id, run_id, page)
+    except TaskError as e:
+        raise HTTPException(e.status_code, e.message) from e
+    except OSError as e:
+        raise HTTPException(409, "原图片无法读取，请重新提交") from e
+
+
+@router.post("/tasks/{task_id}/orientation")
+async def confirm_orientation(task_id: str, payload: OrientationConfirm, ctx: dict = Session):
+    try:
+        return await orientation_tasks.confirm(get_settings(), ctx["openid"], task_id, payload)
+    except TaskError as e:
+        raise HTTPException(e.status_code, e.message) from e
+    except OSError as e:
+        raise HTTPException(409, "原图片无法读取，请重新提交") from e
 
 
 @router.delete("/tasks/{task_id}")

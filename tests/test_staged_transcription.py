@@ -203,9 +203,11 @@ class OrientationGateTest(unittest.IsolatedAsyncioTestCase):
                 "orientation_status": "uncertain",
                 "orientation_check_required": True,
                 "orientation_error": "orientation confidence below threshold"}
+        settings.staged_grading.orientation_visual_fallback = False
+        from app.orientation import ConfirmationRequired
         with patch.object(staged.image_prep, "prepare_extract_image",
                           return_value=(b"image", "image/jpeg", info)):
-            with self.assertRaisesRegex(StageError, "方向无法可靠确认"):
+            with self.assertRaisesRegex(ConfirmationRequired, "确认"):
                 await staged.grade_staged(
                     [(b"image", "image/jpeg")], "数学", "一年级", "", settings,
                     provider_factory=factory)

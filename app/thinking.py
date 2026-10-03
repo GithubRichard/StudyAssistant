@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,22 @@ _TRUE_VALUES = {"1", "true", "yes", "on"}
 
 #: 保留天数（含今天）：thinking.log + 4 个历史文件
 RETAIN_DAYS = 5
+_context = ContextVar("thinking_task_context", default="")
+
+
+@contextmanager
+def task_context(task_id: str, run_no: int):
+    token = _context.set(f"session=study-{task_id}-{run_no} task_id={task_id} run_no={run_no}")
+    try:
+        yield
+    finally:
+        _context.reset(token)
+
+
+def log_event(stage: str, data: Any) -> None:
+    if is_enabled():
+        log.info("【任务阶段】%s stage=%s\n%s\n【任务阶段结束】", _context.get(), stage,
+                 json.dumps(data, ensure_ascii=False))
 
 
 def is_enabled() -> bool:
@@ -80,7 +98,7 @@ def log_thinking(context: str, reasoning: str) -> None:
     text = (reasoning or "").strip()
     if not text:
         return
-    log.info("【模型思考过程】%s\n%s\n【思考过程结束】", context, text)
+    log.info("【模型思考过程】%s %s\n%s\n【思考过程结束】", _context.get(), context, text)
 
 
 def setup_file_logging(data_dir: str) -> str:

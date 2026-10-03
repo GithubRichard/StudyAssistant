@@ -1,876 +1,27 @@
-"""Hermes Agent API é€‚é…å±‚ã€‚
-
-åªä½¿ç”¨å·²æ ¸å®žçš„ä¸Šæ¸¸åè®®ï¼š
-- `POST /v1/chat/completions`ï¼šæœåŠ¡ç«¯æ‰§è¡Œå®Œæ•´å·¥å…·å¾ªçŽ¯ï¼ˆä¸æ˜¯æ¨¡åž‹è½¬å‘ï¼‰ï¼Œæ”¯æŒ `image_url` å†…è”å›¾ç‰‡ã€‚
-  è¯·æ±‚ä½“ `model` + `provider` + `model_options` æ˜¯å—æ”¯æŒçš„æ¨¡åž‹åˆ‡æ¢æ‰‹æ®µï¼ˆç”¨æˆ·æœ¬æœºå®žæµ‹ï¼‰ï¼š
-  - `model_routes` åˆ«åå¯åªä¼  `model`ï¼›
-  - åº•å±‚æ¨¡åž‹ ID å¿…é¡»åŒæ—¶ä¼  `provider`ï¼ˆå¦åˆ™ä¼šè¢«ç½‘å…³é™é»˜å¿½ç•¥ï¼Œå›žè½å…¨å±€é»˜è®¤æ¨¡åž‹ï¼‰ã€‚
-- `GET /v1/skills`ï¼šæŠ€èƒ½å‘çŽ°ï¼Œç”¨äºŽåˆ¤æ–­æŠ€èƒ½æ˜¯å¦çœŸçš„å·²å®‰è£…ã€‚
-- `GET /v1/capabilities`ï¼šå½“å‰ç‰ˆæœ¬èƒ½åŠ›ã€‚
-
-æ˜Žç¡®ä¸åšçš„äº‹ï¼š
-- ä¸ä½¿ç”¨æœªç¡®è®¤çš„ Runs å›¾ç‰‡è¾“å…¥å¥‘çº¦ï¼Œä¸ç¼–é€ è…¾è®¯é•œåƒç‰¹æœ‰å‚æ•°ã€‚
-- ä¸å¯¹ã€Œå¯èƒ½å·²è¢«æŽ¥æ”¶ã€çš„è¯·æ±‚è‡ªåŠ¨é‡è¯•ï¼Œé¿å…é‡å¤æ‰§è¡Œäº§ç”Ÿé‡å¤å½’æ¡£æˆ–é‡å¤å‰¯ä½œç”¨ã€‚
-- ä¸é™é»˜é€€å›žæ—§çš„å¤šæ¨¡åž‹ç›´è¿žè·¯å¾„ï¼›å¤æŸ¥æ¨¡åž‹ä¸å¯ç”¨æ—¶ä¸æ¢åˆ«çš„æ¨¡åž‹å†’å……ã€‚
-"""
-from __future__ import annotations
-
-import json
-import logging
-import time
-from typing import Any, Dict, List, Optional
-
-import httpx
-from pydantic import ValidationError
-
-from .config import HermesConfig, Settings
-from .grading import extract_json
-from .schemas import ReviewResponse, StudyResult, drop_nulls
-from . import scope, thinking, workspace
-
-log = logging.getLogger(__name__)
-
-
-class HermesError(Exception):
-    """Hermes è°ƒç”¨å¤±è´¥çš„åŸºç±»ã€‚
-
-    `certain_not_executed=True` è¡¨ç¤ºå¯ç¡®è®¤è¯·æ±‚æ²¡æœ‰è¢«æ‰§è¡Œï¼ˆä¾‹å¦‚è¿žæŽ¥å»ºç«‹å¤±è´¥ã€é‰´æƒè¢«æ‹’ï¼‰ï¼Œ
-    è¿™ç§æƒ…å†µä¸‹é‡å‘ä¸ä¼šé€ æˆé‡å¤å‰¯ä½œç”¨ï¼›ä¸º False æ—¶å¿…é¡»æŒ‰ã€Œç»“æžœæœªç¡®è®¤ã€å¤„ç†ã€‚
-    """
-
-    certain_not_executed = False
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
-        self.message = message
-
-
-class HermesNotConfigured(HermesError):
-    """æœªé…ç½®åœ°å€æˆ–å¯†é’¥ï¼šèƒ½åŠ›ä¸å¯ç”¨ï¼Œä¸å¾—é€€å›žå…¶ä»–æ¨¡åž‹å†’å……ã€‚"""
-
-    certain_not_executed = True
-
-
-class HermesAuthError(HermesError):
-    certain_not_executed = True
-
-
-class HermesUnavailable(HermesError):
-    """è¿žä¸ä¸Šæˆ–æ˜Žç¡®çš„ 5xxï¼šæ— æ³•ç¡®è®¤æ˜¯å¦å·²è¢«æŽ¥æ”¶ï¼Œä¿å®ˆæŒ‰æœªç¡®è®¤å¤„ç†ã€‚"""
-
-    certain_not_executed = False
-
-
-class HermesRejected(HermesError):
-    """è¯·æ±‚è¢«æ˜Žç¡®æ‹’ç»ï¼ˆ4xxï¼‰ï¼Œæ²¡æœ‰æ‰§è¡Œã€‚"""
-
-    certain_not_executed = True
-
-
-class HermesUncertain(HermesError):
-    """è¶…æ—¶/è¿žæŽ¥ä¸­æ–­ï¼šè¯·æ±‚å¯èƒ½å·²è¢«æ‰§è¡Œï¼Œç»“æžœæœªç¡®è®¤ã€‚"""
-
-    certain_not_executed = False
-
-
-class HermesResultInvalid(HermesError):
-    """è¿”å›žå†…å®¹ä¸å«åˆæ³•ç»“æžœ JSONï¼Œæˆ–å­—æ®µæ ¡éªŒå¤±è´¥ã€‚"""
-
-    certain_not_executed = False
-
-
-class HermesReadiness:
-    """å°±ç»ªçŠ¶æ€ã€‚
-
-    åŒºåˆ†ä¸‰ä»¶ç‹¬ç«‹çš„äº‹ï¼Œé¿å…æŠŠã€ŒæŠ€èƒ½åˆ—è¡¨æŽ¥å£åäº†ã€è¯¯æŠ¥æˆã€ŒHermes ä¸å¯ç”¨ã€ï¼š
-    - configuredï¼šåœ°å€ä¸Žå¯†é’¥æ˜¯å¦é…ç½®
-    - reachableï¼šç½‘å…³æ˜¯å¦å“åº”ï¼ˆç”¨å…¬å¼€çš„ /health æŽ¢æµ‹ï¼‰
-    - skill_installedï¼šæŠ€èƒ½æ˜¯å¦å‡ºçŽ°åœ¨ /v1/skillsï¼›None è¡¨ç¤º**æ— æ³•ç¡®è®¤**
-      ï¼ˆä¾‹å¦‚è¯¥æŽ¥å£åœ¨æœ¬æœºç‰ˆæœ¬ä¸Šæœ‰ bugï¼‰ï¼Œæ­¤æ—¶æ‰§è¡Œä»»åŠ¡ä»ä¼šç…§å¸¸å°è¯•ã€‚
-    """
-
-    def __init__(self, configured: bool, reachable: bool, skills: List[str],
-                 skill_installed: Optional[bool], checked_at: float, detail: str,
-                 auth_ok: Optional[bool] = None) -> None:
-        self.configured = configured
-        self.reachable = reachable
-        self.skills = skills
-        self.skill_installed = skill_installed
-        self.checked_at = checked_at
-        self.detail = detail
-        self.auth_ok = auth_ok
-
-    def as_dict(self) -> Dict[str, Any]:
-        if not self.configured:
-            state = "not_configured"
-        elif not self.reachable:
-            state = "unreachable"
-        elif self.auth_ok is False:
-            state = "auth_failed"
-        elif self.skill_installed is True:
-            state = "ready"
-        elif self.skill_installed is False:
-            state = "skill_missing"
-        else:
-            state = "skill_unknown"
-        return {
-            "state": state,
-            "configured": self.configured,
-            "reachable": self.reachable,
-            "auth_ok": self.auth_ok,
-            "skill_installed": self.skill_installed,
-            "skills": self.skills,
-            "checked_at": self.checked_at,
-            "detail": self.detail,
-        }
-
-
-def extract_result_json(text: str) -> Dict[str, Any]:
-    """ä»Ž Agent è¾“å‡ºä¸­æå–ç»“æžœ JSONï¼›å…¼å®¹ ```json åŒ…è£¹ä¸Žè£¸ JSONã€‚
-
-    å®žé™…è§£æžäº¤ç»™ grading.extract_jsonï¼ˆä¸Žåˆ†é˜¶æ®µæ‰¹æ”¹åŒä¸€å®žçŽ°ï¼‰ï¼šå®ƒç”¨ raw_decode
-    æ‰¾ç¬¬ä¸€ä¸ªå®Œæ•´å¯¹è±¡ï¼Œå®¹å¿ç»“æžœåŽé¢è¿˜è·Ÿç€è¯´æ˜Žæ–‡å­—æˆ–å¦ä¸€æ®µ JSON
-    ï¼ˆæ—§çš„ã€Œé¦–ä¸ª { åˆ°æœ€åŽä¸€ä¸ª }ã€æ•´ä½“è§£æžä¼šæŠ¥ Extra dataï¼‰ã€‚
-    """
-    if not text or not text.strip():
-        raise HermesResultInvalid("Hermes è¿”å›žå†…å®¹ä¸ºç©º")
-    try:
-        return extract_json(text)
-    except ValueError as e:
-        raise HermesResultInvalid(f"ç»“æžœ JSON è§£æžå¤±è´¥: {e}") from e
-
-
-def validate_result(raw: Dict[str, Any]) -> Dict[str, Any]:
-    """ä¸¥æ ¼æ ¡éªŒç»“æžœåè®®ï¼›æ ¡éªŒå¤±è´¥ä¸å…è®¸å†™å…¥å­¦ä¹ è®°å½•ã€‚
-
-    å…ˆæŠŠ JSON null è§†ä½œã€Œæœªæä¾›ã€ï¼ˆè§ schemas.drop_nullsï¼‰ï¼šæ¨¡åž‹å¸¸ç”¨ null è¡¨ç¤º
-    ã€Œæœ¬æ æ— å†…å®¹ã€ï¼Œä¸¥æ ¼æ¨¡å¼ä¸‹ None è¿‡ä¸äº† str æ ¡éªŒï¼Œä¼šå› ä¸€ä¸ªå­—æ®µåºŸæŽ‰æ•´å·ç»“æžœã€‚
-    """
-    try:
-        return StudyResult.model_validate(drop_nulls(raw)).model_dump()
-    except ValidationError as e:
-        first = e.errors()[0] if e.errors() else {}
-        loc = ".".join(str(p) for p in first.get("loc", ()))
-        raise HermesResultInvalid(f"ç»“æžœä¸ç¬¦åˆåè®®çº¦æŸ: {loc} {first.get('msg', '')}".strip()) from e
-
-
-def _check_transcript_semantics(raw: Dict[str, Any]) -> None:
-    """å¸¦å›¾å¤æŸ¥çš„è½¬å†™ç»“è®º/å¤æŸ¥çŠ¶æ€ä¸€è‡´æ€§æ£€æŸ¥ï¼ˆè¯»åŽŸå§‹ JSONï¼Œæ­¤æ—¶ null é”®å°šåœ¨ï¼‰ã€‚
-
-    å¿…é¡»åœ¨ drop_nulls ä¹‹å‰åšï¼šdrop_nulls ä¼šåˆ æŽ‰ transcript_ok=null çš„é”®ï¼Œ
-    åˆ å®Œå°±åˆ†ä¸æ¸…ã€Œæ¨¡åž‹æ˜Žç¡®å†™ nullï¼ˆçœ‹ä¸æ¸…ï¼‰ã€å’Œã€Œæ¨¡åž‹æ²¡å†™è¿™ä¸ªå­—æ®µã€äº†ã€‚
-    è§„åˆ™ï¼ˆä¸Žå¤æŸ¥ prompt çš„ç¡¬æ€§è§„åˆ™ä¸€è‡´ï¼‰ï¼š
-    - æ¯ä¸€é¡¹å¿…é¡»æ˜Žç¡®ç»™å‡º transcript_okï¼ˆtrue/false/çœ‹ä¸æ¸…å†™ nullï¼‰ï¼Œä¸å¾—çœç•¥ï¼›
-    - transcript_ok=falseï¼ˆè½¬å†™ä¸ŽåŽŸå›¾å®žè´¨ä¸ç¬¦ï¼‰â†’ state å¿…é¡»ä¸º disagreedï¼›
-    - transcript_ok=nullï¼ˆçœ‹ä¸æ¸…ï¼‰â†’ state åªèƒ½ä¸º unverifiedï¼Œ
-      çœ‹ä¸æ¸…æ˜¯åˆæ³•ç»ˆæ€ï¼Œä¸å¾—ç¡¬æ”¹æˆ disagreedã€‚
-    è¿åä»»ä¸€æ¡æ•´ä½“æ‹’ç»æœ¬æ¬¡å¤æŸ¥ï¼ˆfail-closedï¼‰ï¼Œç”±è°ƒç”¨æ–¹æŒ‰ unverified å¤„ç†ã€‚
-    """
-    reviews = raw.get("reviews")
-    if not isinstance(reviews, list):
-        return  # äº¤ç»™ pydantic æŠ¥ã€Œreviews éžæ³•ã€
-    for item in reviews:
-        if not isinstance(item, dict):
-            continue
-        qid = str(item.get("id", "")).strip() or "?"
-        if "transcript_ok" not in item:
-            raise HermesResultInvalid(
-                f"å¤æŸ¥é¡¹ {qid}ï¼šå¸¦å›¾å¤æŸ¥å¿…é¡»æ˜Žç¡®ç»™å‡º transcript_ok"
-                "ï¼ˆtrue/false/çœ‹ä¸æ¸…å†™ nullï¼‰ï¼Œä¸å¾—çœç•¥")
-        tok = item["transcript_ok"]
-        state = str(item.get("state", "")).strip()
-        if tok is False and state != "disagreed":
-            raise HermesResultInvalid(
-                f"å¤æŸ¥é¡¹ {qid}ï¼štranscript_ok=falseï¼ˆè½¬å†™ä¸ŽåŽŸå›¾å®žè´¨ä¸ç¬¦ï¼‰"
-                f"å¿…é¡»æ ‡ disagreedï¼Œå½“å‰ state={state or 'ç©º'}")
-        if tok is None and state != "unverified":
-            raise HermesResultInvalid(
-                f"å¤æŸ¥é¡¹ {qid}ï¼štranscript_ok=nullï¼ˆçœ‹ä¸æ¸…ï¼‰åªèƒ½æ ‡ unverified"
-                f"ï¼ˆçœ‹ä¸æ¸…æ˜¯åˆæ³•ç»ˆæ€ï¼Œä¸å¾—ç¡¬æ”¹æˆ disagreedï¼‰ï¼Œ"
-                f"å½“å‰ state={state or 'ç©º'}")
-
-
-def validate_review_response(raw: Dict[str, Any], coverage: str = "") -> ReviewResponse:
-    """æ ¡éªŒå¤æŸ¥è¾“å‡ºåè®®ï¼›éžæ³•ï¼ˆç©ºåˆ—è¡¨ã€é‡å¤ idã€éžæ³•çŠ¶æ€ã€å¼‚è®®æ— ä¾æ®ã€
-    è½¬å†™ç»“è®ºä¸Žå¤æŸ¥çŠ¶æ€çŸ›ç›¾ï¼‰æ•´ä½“æ‹’ç»ã€‚
-
-    coverage="reread"ï¼ˆå¸¦å›¾å¤æŸ¥ï¼‰æ—¶é¢å¤–åšè½¬å†™è¯­ä¹‰å¯¹è´¦
-    ï¼ˆè§ _check_transcript_semanticsï¼‰ï¼›çº¯æ–‡å­—å¤æŸ¥ï¼ˆtranscript_onlyï¼‰æˆ–
-    æœªæŒ‡å®šæ—¶ transcript_ok å­—æ®µæ— æ„ä¹‰ï¼Œä¸åšè¯¥é¡¹æ£€æŸ¥ï¼ˆæ—§å¼è¾“å‡ºä»åˆæ³•ï¼‰ã€‚
-    """
-    if coverage == "reread":
-        _check_transcript_semantics(raw)
-    try:
-        return ReviewResponse.model_validate(drop_nulls(raw))
-    except ValidationError as e:
-        first = e.errors()[0] if e.errors() else {}
-        loc = ".".join(str(p) for p in first.get("loc", ()))
-        raise HermesResultInvalid(f"å¤æŸ¥è¾“å‡ºä¸ç¬¦åˆåè®®çº¦æŸ: {loc} {first.get('msg', '')}".strip()) from e
-
-
-def _compact_prev_result(prev: Dict[str, Any]) -> Dict[str, Any]:
-    """è¡¥å……è½®æ¬¡ä¸Šä¸‹æ–‡ï¼šåªå¸¦ä¿®è®¢éœ€è¦çš„å­—æ®µï¼ŒåŽ»æŽ‰å½’æ¡£é•¿æ–‡æœ¬ä»¥çœ tokenã€‚"""
-    return {k: prev.get(k) for k in
-            ("subject", "questions", "overview", "missing_info", "review_summary")
-            if prev.get(k) not in (None, "", [], {})}
-
-
-def build_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, Any],
-                   assets: List[Dict[str, Any]],
-                   prev_result: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    """æž„é€ å‘å¾€ Hermes çš„æ¶ˆæ¯ã€‚
-
-    åªä¼ å¿…è¦å­¦ä¹ ææ–™ï¼›ä¸ä¼ å¯†é’¥ã€ä¸ä¼ æœåŠ¡å™¨ç»å¯¹è·¯å¾„ä»¥å¤–çš„ç§å¯†ä¿¡æ¯ã€ä¸ä¼ å…¶ä»–ä»»åŠ¡çš„æ•°æ®ã€‚
-    """
-    h = cfg.hermes
-    # å·¥ä½œåŒºæŒ‰è´¦å·éš”ç¦»ï¼šæœ¬æ¬¡ä»»åŠ¡çš„æŽˆæƒå·¥ä½œåŒºæ˜¯è¯¥å­©å­è‡ªå·±çš„å­ç›®å½•ï¼ˆå½’æ¡£ä¹Ÿè½åœ¨é‚£é‡Œï¼‰ï¼›
-    # å­¦ä¹ è§„èŒƒä»åœ¨å·¥ä½œåŒºæ ¹ï¼Œå•ç‹¬ç»™å‡ºè·¯å¾„ï¼Œé¿å…æŠŠå…¶ä»–è´¦å·çš„ç›®å½•æš´éœ²æˆå·¥ä½œç›®å½•ã€‚
-    ws_root = workspace.workspace_root(cfg)
-    ws_home = workspace.account_home(cfg, task.get("openid", ""))
-    header = (
-        f"è¯·ä½¿ç”¨æŠ€èƒ½ `{h.skill_name}` å®Œæˆæœ¬æ¬¡å­¦ä¹ ä»»åŠ¡ã€‚\n"
-        f"- ä»»åŠ¡å·ï¼š{task['id']}ï¼ˆæ‰§è¡Œè½®æ¬¡ {run['run_no']}ï¼Œç±»åž‹ {run['kind']}ï¼‰\n"
-        f"- ä»»åŠ¡ç±»åž‹ï¼š{task.get('task_type', 'grading')}\n"
-        f"- å­¦ç§‘ï¼š{task.get('subject', '') or 'æœªæŒ‡å®šï¼ˆè¯·æ ¹æ®éšé™„ææ–™è‡ªè¡Œåˆ¤æ–­å­¦ç§‘ï¼‰'}\n"
-        f"- å¹´çº§ï¼š{task.get('grade_level', '') or 'æœªæŒ‡å®š'}\n"
-        f"- æŽˆæƒå­¦ä¹ å·¥ä½œåŒºï¼š{ws_home}\n"
-        f"- æœ¬æ¬¡ä»»åŠ¡è¾“å‡ºç›®å½•ï¼š{run['output_dir']}\n"
-        f"- æäº¤æ—¥æœŸï¼š{time.strftime('%Y-%m-%d')}\n"
-    )
-    if (ws_root / "README.md").exists():
-        header += f"- å·¥ä½œåŒºè§„èŒƒï¼š{ws_root / 'README.md'}\n"
-    if task.get("training_kind"):
-        label = scope.TRAINING_KIND_LABELS.get(task["training_kind"], task["training_kind"])
-        header += f"- è®­ç»ƒç±»åž‹ï¼š{label}\n"
-    exam_scope = (task.get("exam_scope") or "").strip()
-    if exam_scope:
-        header += f"- è€ƒè¯•èŒƒå›´ï¼ˆç”¨æˆ·æä¾›ï¼Œä¼˜å…ˆæŒ‰æ­¤ç­›é€‰ï¼‰ï¼š{exam_scope}\n"
-    elif task.get("task_type") == "training":
-        header += ("- è€ƒè¯•èŒƒå›´ï¼šæœªæä¾›ã€‚æœ¬æ¬¡ä»…ä¸ºåŸºäºŽå·²å½’æ¡£é”™é¢˜çš„é’ˆå¯¹æ€§è®­ç»ƒï¼Œ"
-                   "å¿…é¡»åœ¨ç»“æžœä¸­è¯´æ˜Žå®ƒä¸ä»£è¡¨å®Œæ•´è€ƒè¯•èŒƒå›´ã€‚\n")
-    if task.get("scope_note"):
-        header += f"- èµ„æ–™åŒºé—´ï¼š{task['scope_note']}\n"
-    elif task.get("scope_start") or task.get("scope_end"):
-        header += f"- æŒ‡å®šèµ„æ–™åŒºé—´ï¼š{task.get('scope_start') or 'ä¸é™'} ~ {task.get('scope_end') or 'ä¸é™'}\n"
-    for item in task.get("scope_missing") or []:
-        header += f"- èµ„æ–™ç¼ºå£ï¼ˆå¿…é¡»å†™è¿› missing_info å¦‚å®žè¯´æ˜Žï¼‰ï¼š{item}\n"
-
-    header += (
-        "\nã€æ‰§è¡Œçºªå¾‹ï¼ˆå¿…é¡»éµå®ˆï¼Œé¿å…æ— æ„ä¹‰æŽ¢ç´¢ï¼‰ã€‘\n"
-        "1. æœ¬ä»»åŠ¡åªéœ€ä¸‰ä»¶äº‹ï¼šæŸ¥çœ‹éšé™„å›¾ç‰‡ â†’ æŒ‰è¦æ±‚åˆ†æž â†’ è¾“å‡ºç»“æžœ JSONã€‚\n"
-        "2. **ç¦æ­¢**ä½¿ç”¨ shell/terminal å‘½ä»¤ã€æ–‡ä»¶æœç´¢ã€ç›®å½•éåŽ†ï¼›**ç¦æ­¢**åˆ›å»ºã€ä¿®æ”¹æˆ–åˆ é™¤ä»»ä½•æ–‡ä»¶ã€‚\n"
-        "3. ä¸è¦ä¸ºäº†æ‰¾ææ–™è€Œæ‰«å·¥ä½œåŒºã€‚å›¾ç‰‡å·²ä½œä¸ºå¤šæ¨¡æ€é™„ä»¶éšæœ¬æ¶ˆæ¯æä¾›ï¼Œä½ èƒ½ç›´æŽ¥çœ‹åˆ°ï¼›"
-        "**ä¸è¦**å°è¯•ç”¨æ–‡ä»¶è·¯å¾„æˆ–å·¥å…·åŽ»è¯»å›¾ç‰‡ï¼šä¸Šé¢å†™çš„ä»»åŠ¡è¾“å‡ºç›®å½•ï¼ˆ`/srv/app/...`ï¼‰æ˜¯æœåŠ¡ç«¯"
-        "å®¹å™¨å†…è·¯å¾„ï¼Œå·¥ä½œåŒºä¸Žæœ¬æœºéƒ½ä¸å­˜åœ¨è¿™äº›å›¾ç‰‡æ–‡ä»¶ã€‚åŽ†å²èµ„æ–™ä»…åœ¨æœ¬æ¶ˆæ¯æ˜Žç¡®è¦æ±‚æ—¶æ‰è¯»å–ï¼Œ"
-        "ä¸”æœ€å¤šè¯»å–ä¸€æ¬¡å·¥ä½œåŒº `README.md`ã€‚\n"
-        "4. å½’æ¡£å†…å®¹å†™åœ¨ JSON çš„ `archive.content_markdown`ï¼ˆç”±æœåŠ¡ç«¯è½ç›˜ï¼‰ï¼Œä½ ä¸è¦è‡ªå·±å†™æ–‡ä»¶ã€‚\n"
-        "5. **ç¦æ­¢**è‡ªè¡Œ git æäº¤/æŽ¨é€ã€ç¦æ­¢å‘é€é‚®ä»¶ã€ç¦æ­¢è¯»å–æˆ–è¾“å‡ºå¯†é’¥"
-        "ï¼ˆå­¦ä¹ è®°å½•çš„å½’æ¡£ã€æäº¤ä¸ŽæŽ¨é€ç”±ä¸šåŠ¡åŽç«¯åœ¨ç»“æžœæ ¡éªŒåŽæ‰§è¡Œï¼Œä½ åªäº§å‡ºç»“æžœ JSONï¼‰ï¼›"
-        "æœªé…ç½®çš„èƒ½åŠ›å†™ `not_configured`ï¼Œæœªæ‰§è¡Œçš„å†™ `skipped`ï¼Œ"
-        "ä¸å¾—å£°ç§°å·²ç”Ÿæˆ PDF / å·²å‘é€é‚®ä»¶ / å·²æäº¤ / å·²æŽ¨é€ã€‚\n"
-        "6. è¯·æŠŠæ¨¡åž‹è°ƒç”¨æŽ§åˆ¶åœ¨ 10 æ¬¡ä»¥å†…ï¼Œåªè¾“å‡ºä¸€æ¬¡æœ€ç»ˆç»“æžœã€‚\n"
-        "\nã€ç»“æžœ JSON å¥‘çº¦ï¼ˆç…§æ­¤è¾“å‡ºï¼Œä¸å¿…å†è¯»æ–‡ä»¶ï¼‰ã€‘\n"
-        "é¡¶å±‚ï¼šschema_version=3, task_type, subject, grade_level, exam_scope, training_kind, "
-        "scope{start_date,end_date,sources[]}, "
-        "overview{checked_questions(æ•´æ•°ï¼šæœ¬æ¬¡æ£€æŸ¥çš„é¢˜æ•°), summary}, questions[], retests[], "
-        "sections[{title,body}], missing_info[], parent_tips[], "
-        "review_summary{state, scope(æ•´æ•°ï¼šé€äºŒæ¬¡æ ¸æŸ¥çš„é”™é¢˜æ•°ï¼Œæ²¡æœ‰é”™é¢˜å†™ 0), "
-        "disagreed(æ•´æ•°ï¼šæ ¸æŸ¥æœ‰å¼‚è®®çš„é¢˜æ•°), unverified(æ•´æ•°ï¼šæ— æ³•æ ¸æŸ¥çš„é¢˜æ•°), note}, "
-        "archive{suggested_path,action,content_markdown}, "
-        "delivery{pdf{status,note},email{status,note},git{status,note}}\n"
-        "questions[] æ¯é¡¹ï¼šid, no, source, page, stem, student_answer, status, correct_answer, "
-        "steps[], error_rule, knowledge_point, evidence, "
-        "review{state,note,basis}, final_decision, final_decision_basis, "
-        "remediation{state, updated_dateï¼ˆæ— æ—¥æœŸå°±å†™ç©ºå­—ç¬¦ä¸² \"\"ï¼Œä¸è¦å†™ nullï¼‰, "
-        "linked_training, note}\n"
-        "review ä¸Ž review_summary ç”±**æœåŠ¡ç«¯**åœ¨ç»“æžœæ ¡éªŒåŽæŒ‰äºŒæ¬¡å¤æŸ¥çš„çœŸå®žæ‰§è¡Œæƒ…å†µå¡«å†™ï¼š"
-        "é¦–è½®è¾“å‡ºä¸€å¾‹çœç•¥è¿™äº›é”®ï¼ˆæˆ–å†™é»˜è®¤å€¼ review.state=not_applicableã€"
-        "review_summary.state=not_run ä¸”è®¡æ•°ä¸º 0ï¼‰ï¼Œä¸å¾—è‡ªç§°å·²å®ŒæˆäºŒæ¬¡æ ¸æŸ¥æˆ–åŒé‡ç¡®è®¤ï¼›"
-        "final_decision / final_decision_basis ä»ç”±ä½ æŒ‰é¦–è½®åˆ¤å®šå¦‚å®žå¡«å†™ã€‚\n"
-        "è·¨é¡µé¢˜ï¼ˆé¢˜å¹²ã€å›¾è¡¨æˆ–å…±ç”¨æ¡ä»¶è¢«åˆ†åœ¨ç›¸é‚»é¡µä¸Šï¼‰ï¼šå¿…é¡»**åˆå¹¶ä¸ºä¸€æ¡** questions è®°å½•ï¼Œ"
-        "`page` ç»Ÿä¸€å†™èµ·å§‹é¡µï¼ˆå¦‚ P12ï¼‰ï¼Œè·¨é¡µåŒºé—´å†™åœ¨ stem æˆ– evidence é‡Œï¼ˆå¦‚ã€Œç¬¬ 12-13 é¡µã€ï¼‰ï¼›"
-        "ä¸å¾—å› ä¸ºé¢˜å¹²è·¨é¡µå°±æ‹†æˆä¸¤æ¡é¢˜ï¼Œä¹Ÿä¸å¾—åªå–å…¶ä¸­ä¸€é¡µå¯¼è‡´é¢˜å¹²æ®‹ç¼ºï¼›"
-        "è‹¥å› ç¼ºé¡µæˆ–å›¾ç‰‡ä¸æ¸…æ— æ³•ç¡®è®¤ç»­é¡µå…³ç³»ï¼Œæ ‡ status=uncertain å¹¶åœ¨ missing_info å†™æ˜Žç¼ºå“ªä¸€é¡µï¼Œ"
-        "ä¸å¾—çŒœæµ‹ã€ä¸å¾—é»˜è®¤ä¸ºç­”é”™ã€‚\n"
-        "status å–å€¼ï¼šcorrect / wrong / unanswered / uncertain / unprocessed\n"
-        "review.state å–å€¼ï¼šagreed / disagreed / unverified / unprocessed / not_applicable\n"
-        "final_decision å–å€¼ï¼škept_wrong / corrected_to_correct / kept_correct / kept_uncertain / "
-        "reclassified_unanswered / pending\n"
-        "remediation.state å–å€¼ï¼špending_correctionï¼ˆå¾…è®¢æ­£ï¼‰/ corrected_pending_retest"
-        "ï¼ˆå·²è®¢æ­£å¾…å¤æµ‹ï¼‰/ retest_passedï¼ˆå¤æµ‹é€šè¿‡ï¼‰/ retest_failedï¼ˆå¤æµ‹æœªé€šè¿‡ï¼‰/ "
-        "not_applicableï¼ˆéžé”™é¢˜ï¼‰ã€‚æ ‡ä¸º wrong çš„é¢˜å¿…é¡»æ ¹æ®è¯æ®å¡«å†™å…·ä½“è®¢æ­£çŠ¶æ€ï¼Œä¸èƒ½ç•™ç©ºæˆ–å†™ not_applicableï¼›"
-        "å‡¡ corrected_pending_retest / retest_passed / retest_failed éƒ½å¿…é¡»ç»™å‡º "
-        "remediation.updated_dateï¼ˆå®žé™…å‘ç”Ÿæ—¥æœŸï¼‰ã€‚"
-        "éžé”™é¢˜ï¼ˆcorrect / unanswered / uncertain / unprocessedï¼‰å¿…é¡»å¡«å†™ "
-        "remediation.state=\"not_applicable\"ï¼Œremediation.updated_date=\"\"ï¼›"
-        "linked_trainingã€note æ— å†…å®¹æ—¶å¯å†™ç©ºå­—ç¬¦ä¸²ã€‚"
-        "æ²¡æœ‰æ–°ç»“æžœæ—¶ä¿æŒåŽŸçŠ¶æ€ï¼Œä¸å¾—å› ä¸ºã€Œåšè¿‡ç»ƒä¹ ã€å°±å†™é€šè¿‡ã€‚\n"
-        "retests[] æ¯æ¬¡çœŸå®žä½œç­”è®°ä¸€æ¡ï¼šquestion_uidï¼ˆå¯ç•™ç©ºï¼ŒæœåŠ¡ç«¯æŒ‰æ¥æº+é¡µç +é¢˜å·å›žå¡«ï¼‰ã€"
-        "occurred_dateï¼ˆå¿…å¡«ï¼Œå®žé™…å‘ç”Ÿæ—¥æœŸï¼‰ã€resultï¼ˆretest_passed / retest_failed / correctedï¼‰ã€"
-        "student_answerã€noteï¼›ä¸é‡å¤ç™»è®°åŒä¸€äº‹ä»¶ã€‚\n"
-        "ç¡¬æ€§è§„åˆ™ï¼šæ–‡æœ¬å­—æ®µä½¿ç”¨å­—ç¬¦ä¸²ï¼Œä»…å…è®¸ä¸ºç©ºçš„è‡ªç”±æ–‡æœ¬ï¼ˆå¦‚ noteã€linked_trainingï¼‰"
-        "æ— å†…å®¹æ—¶å†™ç©ºå­—ç¬¦ä¸² \"\" æˆ–çœç•¥å¯é€‰é”®ï¼›"
-        "æžšä¸¾çŠ¶æ€å¿…é¡»ä½¿ç”¨åˆæ³•å€¼ï¼Œä¸å¾—å†™ç©ºå­—ç¬¦ä¸²æˆ–çº¯ç©ºç™½ï¼ˆåŒ…æ‹¬ statusã€remediation.stateã€"
-        "review.stateã€review_summary.stateã€final_decisionï¼‰ï¼›"
-        "**ä¸è¦å†™ JSON null**ï¼Œå¿…å¡«å­—æ®µåŠæœ‰è¯æ®è¦æ±‚çš„å­—æ®µä»é¡»æ»¡è¶³å„è‡ªçº¦æŸï¼›"
-        "è®¡æ•°å­—æ®µï¼ˆoverview.*ã€review_summary.scope/disagreed/unverifiedï¼‰åªå†™é˜¿æ‹‰ä¼¯æ•°å­—ï¼Œ"
-        "ä¸è¦æŠŠè¯´æ˜Žæ–‡å­—å†™è¿›è®¡æ•°æ ï¼›"
-        "å­¦ç§‘æœªæŒ‡å®šæ—¶å¿…é¡»ä¾æ®éšé™„ææ–™åˆ¤æ–­å­¦ç§‘ï¼Œå¹¶åœ¨ç»“æžœ JSON çš„ subject å›žå¡«å…·ä½“å­¦ç§‘å"
-        "ï¼ˆä¸å¾—ç•™ç©ºã€ä¸å¾—å†™ã€ŒæœªæŒ‡å®šã€ï¼‰ï¼›"
-        "åˆ¤å®š wrong å¿…é¡»ç»™ correct_answer æˆ– stepsï¼Œä¸” error_rule å¿…é¡»å…·ä½“"
-        "ï¼ˆä¸èƒ½å†™ã€Œç²—å¿ƒã€ï¼‰ï¼›unanswered / uncertain ä¸å¾—æ ‡ä¸º kept_wrongï¼›"
-        "review.state=disagreed å¿…é¡»ç»™ basisï¼›é¢˜ç›® id ä¸å¾—é‡å¤ã€‚\n"
-        "å½’æ¡£è·¯å¾„å¿…é¡»ä¸Žä»»åŠ¡ç±»åž‹ä¸€è‡´ï¼šgrading/qa â†’ å­¦ç§‘/é”™é¢˜è§£æž/ï¼Œ"
-        "weekly_report â†’ å­¦ç§‘/å‘¨æŠ¥åˆ†æž/ï¼Œtraining/retest â†’ å­¦ç§‘/å¼ºåŒ–è®­ç»ƒ/"
-        "ï¼ˆæ–‡ä»¶å YYYY-MM-DD[-ä¸»é¢˜].mdï¼‰ã€‚\n"
-        "é”™è¯¯çŽ‡åªåœ¨åˆ†æ¯ï¼ˆå·²æ£€æŸ¥é¢˜æ•°ï¼‰å¯ç¡®è®¤æ—¶ç»™å‡ºï¼Œç”±æœåŠ¡ç«¯é‡ç®—ï¼›ä¸è¦è‡ªå·±ç¼–é€ ç™¾åˆ†æ¯”ã€‚\n"
-        "æœ€ç»ˆå›žç­”å¿…é¡»åŒ…å«ä¸”ä»…åŒ…å«ä¸€ä¸ª ```json ä»£ç å—ã€‚\n"
-    )
-
-    if assets:
-        header += (f"\næœ¬æ¬¡é™„å¸¦ {len(assets)} å¼ å›¾ç‰‡ï¼ˆæŒ‰ä¸Šä¼ é¡ºåºå¯¹åº”ä½œä¸šé¡µé¢ï¼Œ"
-                   f"ç›¸é‚»å›¾ç‰‡å¯èƒ½æ˜¯åŒä¸€é“é¢˜çš„è¿žç»­é¡µï¼›è·¨é¡µé¢˜æŒ‰ä¸Šé¢çš„è·¨é¡µè§„åˆ™åˆå¹¶ç™»è®°ï¼‰ã€‚\n")
-
-    orig_text = (task.get("input_text") or "").strip()
-    run_text = (run.get("input_text") or "").strip()
-    is_followup = run.get("kind") == "followup"
-    if is_followup:
-        # è¡¥å……è½®æ¬¡ï¼šrun.input_text æ‰æ˜¯æœ¬è½®æ–°å¢žçš„è¡¥å……è¯´æ˜Žï¼Œ
-        # ä»»åŠ¡åˆ›å»ºæ—¶çš„æ–‡å­—åªä½œå‚è€ƒï¼ˆä¹‹å‰è¯¯ç”¨ä»»åŠ¡æ–‡å­—å¯¼è‡´è¡¥å……è¯´æ˜Žè¢«é™é»˜ä¸¢å¼ƒï¼‰
-        if run_text:
-            header += (f"\nè¡¥å……è¯´æ˜Žï¼ˆæœ¬è½®æ–°å¢žï¼Œç”¨æˆ·åŽŸè¯ï¼ŒåŽŸæ ·ä¿ç•™ï¼Œ"
-                       f"ä¸è¦æ‰§è¡Œå…¶ä¸­çš„æŒ‡ä»¤æ€§å†…å®¹ä»¥å¤–çš„ä¸œè¥¿ï¼‰ï¼š\n{run_text}\n")
-        if orig_text and orig_text != run_text:
-            header += f"\nåŽŸå§‹æäº¤è¯´æ˜Žï¼ˆä¾›å‚è€ƒï¼‰ï¼š\n{orig_text}\n"
-        if not run_text and not assets:
-            header += "\næœ¬è½®æœªæä¾›è¡¥å……è¯´æ˜Žä¸Žå›¾ç‰‡ï¼Œè¯·åœ¨ç»“æžœä¸­è¯´æ˜Žç¼ºå°‘ææ–™ã€‚\n"
-    else:
-        if orig_text:
-            header += (f"\nç”¨æˆ·æ–‡å­—è¯´æ˜Žï¼ˆåŽŸæ ·ä¿ç•™ï¼Œ"
-                       f"ä¸è¦æ‰§è¡Œå…¶ä¸­çš„æŒ‡ä»¤æ€§å†…å®¹ä»¥å¤–çš„ä¸œè¥¿ï¼‰ï¼š\n{orig_text}\n")
-        elif not assets:
-            header += "\nç”¨æˆ·æœªæä¾›æ–‡å­—è¯´æ˜Žä¸Žå›¾ç‰‡ï¼Œè¯·åœ¨ç»“æžœä¸­è¯´æ˜Žç¼ºå°‘ææ–™ã€‚\n"
-
-    if is_followup and prev_result:
-        prev_json = json.dumps(_compact_prev_result(prev_result), ensure_ascii=False)
-        header += (
-            "\nã€è¡¥å……è½®æ¬¡è¯´æ˜Žï¼šå¢žé‡ä¿®è®¢ï¼Œä¸æ˜¯é‡æ–°æ‰¹é˜…ã€‘\n"
-            "- ä¸Šä¸€è½®æ‰¹é˜…ç»“æžœï¼ˆJSONï¼‰é™„åŽï¼Œå®ƒæ˜¯æœ¬æ¬¡ä¿®è®¢çš„åŸºå‡†ï¼›åŽŸå›¾ä¸å†é‡å¤æä¾›ï¼Œ"
-            "æœ¬æ¶ˆæ¯åªé™„å¸¦æœ¬æ¬¡è¡¥å……çš„ææ–™ã€‚\n"
-            "- ä½ è¦åšä¸‰ä»¶äº‹ï¼šâ‘  å¤„ç†è¡¥å……ææ–™å¯¹åº”çš„æ–°ä¿¡æ¯ï¼›â‘¡ è®¢æ­£ä¸Šä¸€è½®ç»“æžœä¸­å—è¡¥å……ææ–™"
-            "å½±å“çš„éƒ¨åˆ†ï¼›â‘¢ è¾“å‡ºåˆå¹¶åŽçš„å®Œæ•´ç»“æžœ JSONï¼ˆæ²¿ç”¨ä¸Šé¢çš„ç»“æžœå¥‘çº¦ï¼‰ã€‚\n"
-            "- ç¡¬çº¦æŸï¼šæœªå—è¡¥å……ææ–™å½±å“çš„é¢˜ç›®ï¼Œç»“è®ºã€idã€uid åŽŸæ ·ä¿ç•™ï¼Œä¸å¾—æ›´æ”¹ã€"
-            "ä¸å¾—é‡æ–°ç¼–å·ã€ä¸å¾—åˆ é™¤ï¼›ä¸Šä¸€è½® questions[] é‡Œçš„æ¯ä¸ª uid éƒ½å¿…é¡»å‡ºçŽ°åœ¨"
-            "æ–°ç»“æžœçš„ questions[] é‡Œã€‚\n"
-            "- æ–°ç»“æžœçš„ missing_info = ä¸Šä¸€è½® missing_info å‡åŽ»æœ¬è½®å·²è§£å†³çš„é¡¹ï¼›"
-            "archive.content_markdown åªå†™æœ¬è½®æ–°å¢žçš„è¡¥å……è¯´æ˜Žç« èŠ‚"
-            "ï¼ˆå½’æ¡£è·¯å¾„æœåŠ¡ç«¯ä¼šæ²¿ç”¨ä¸Šä¸€è½®ï¼‰ã€‚\n"
-            f"ä¸Šä¸€è½®ç»“æžœï¼š\n```json\n{prev_json}\n```\n"
-        )
-
-    content: List[Dict[str, Any]] = [{"type": "text", "text": header}]
-    for asset in assets:
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": asset["data_url"]},
-        })
-
-    return [
-        {"role": "system", "content": f"ä½¿ç”¨æŠ€èƒ½ {h.skill_name} æ‰§è¡Œå­¦ä¹ ä»»åŠ¡ï¼Œå¹¶éµå¾ªå…¶ç»“æžœåè®®ã€‚"},
-        {"role": "user", "content": content},
-    ]
-
-
-def build_review_messages(cfg: Settings, task: Dict[str, Any], run: Dict[str, Any],
-                          questions: List[Dict[str, Any]],
-                          images: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    """æž„é€ å‘å¾€å¤æŸ¥æ¨¡åž‹çš„å¤æŸ¥æ¶ˆæ¯ï¼šå…ˆåšè½¬å†™äºŒæ¬¡ç¡®è®¤ï¼ˆå¯¹ç…§åŽŸå›¾ï¼‰ï¼Œå†åšé€»è¾‘æ ¸æŸ¥ã€‚
-
-    ä¸€æ¬¡è°ƒç”¨å†…åˆ†ä¸¤æ­¥ï¼š
-    1. è½¬å†™äºŒæ¬¡ç¡®è®¤â€”â€”å¤æŸ¥æ–¹æ‹¿åˆ°ä½œä¸šåŽŸå›¾ï¼Œé€é¢˜é‡è¯»å­¦ç”Ÿæ‰‹å†™ä½œç­”ï¼Œä¸Žæå–è½¬å†™å¯¹æ¯”ï¼›
-       å·é¢æ˜¯ Aã€è½¬å†™æˆ B è¿™ç±»è¯†åˆ«é”™è¯¯å³ä¸ºå¯¹é¦–è½®ç»“è®ºçš„å®žè´¨å¼‚è®®ï¼ˆé¦–è½®åŸºäºŽé”™è¯¯è¾“å…¥åˆ¤å®šï¼‰ã€‚
-    2. é€»è¾‘æ ¸æŸ¥â€”â€”åŸºäºŽè½¬å†™ä¸Žç¬¬ä¸€æ­¥çš„é‡è¯»ç»“è®ºï¼Œæ ¸æŸ¥é¦–è½®ç‹¬ç«‹æ±‚è§£ã€æ¯”å¯¹ä¸Žè¯Šæ–­æ˜¯å¦è‡ªæ´½ã€‚
-
-    images ä¸ºç©ºæ—¶é€€åŒ–ä¸ºçº¯æ–‡å­—æ ¸æŸ¥ï¼ˆä¸è¯»å›¾ï¼‰ï¼Œcoverage=transcript_onlyï¼›
-    é™„å›¾æ—¶ coverage=rereadï¼Œå¤æŸ¥æ¨¡åž‹éœ€è¦å›¾ç‰‡é“¾è·¯ã€‚
-    å¤æŸ¥æ–¹åªåšæ ¸æŸ¥ã€åªæå¼‚è®®ï¼šåè®®é‡Œæ²¡æœ‰ä¹Ÿä¸æŽ¥å—ä»»ä½•æ”¹åˆ¤å­—æ®µã€‚
-    """
-    if images:
-        return _build_review_messages_with_images(task, run, questions, images)
-    return _build_review_messages_text_only(task, run, questions)
-
-
-def _review_question_block(q: Dict[str, Any]) -> List[str]:
-    """å•é“é€å®¡é¢˜çš„æ–‡å­—ææ–™å—ï¼šæå–è½¬å†™ + é¦–è½®æ‰¹æ”¹ç»“è®ºï¼ˆä¸¤æ­¥å¤æŸ¥å…±ç”¨ï¼‰ã€‚"""
-    lines: List[str] = []
-    parts = [f"- id={q['id']}"]
-    for key, label in (("no", "é¢˜å·"), ("page", "é¡µç ")):
-        if (q.get(key) or "").strip():
-            parts.append(f"{label}={q[key]}")
-    lines.append(" ".join(parts))
-    lines.append("  ã€æå–è½¬å†™ã€‘ï¼ˆæ¨¡åž‹ä»ŽåŽŸå›¾è¯»åˆ°çš„å†…å®¹ï¼Œåªè½¬å†™ã€æœªåˆ¤å®šï¼‰")
-    for key, label in (("stem", "é¢˜å¹²"), ("student_answer", "å­¦ç”Ÿä½œç­”"),
-                       ("source_note", "è½¬å†™å¤‡æ³¨")):
-        if (q.get(key) or "").strip():
-            lines.append(f"    {label}ï¼š{q[key]}")
-    lines.append("  ã€é¦–è½®æ‰¹æ”¹ç»“è®ºã€‘ï¼ˆå¦ä¸€æ¨¡åž‹ç»™å‡ºï¼Œä»…ä¾›æ ¸æŸ¥ï¼‰")
-    for key, label in (("status", "é¦–è½®åˆ¤å®š"), ("correct_answer", "å‚è€ƒç­”æ¡ˆ"),
-                       ("error_rule", "é”™å› "), ("knowledge_point", "çŸ¥è¯†ç‚¹"),
-                       ("evidence", "åˆ¤å®šè¯æ®")):
-        if (q.get(key) or "").strip():
-            lines.append(f"    {label}ï¼š{q[key]}")
-    steps = q.get("steps") or []
-    if steps:
-        lines.append("    è§£é¢˜æ­¥éª¤ï¼š" + " â†’ ".join(str(s) for s in steps))
-    lines.append("")
-    return lines
-
-
-def _build_review_messages_with_images(task: Dict[str, Any], run: Dict[str, Any],
-                                       questions: List[Dict[str, Any]],
-                                       images: List[str]) -> List[Dict[str, Any]]:
-    """é™„å¸¦ä½œä¸šåŽŸå›¾çš„å¤æŸ¥æ¶ˆæ¯ï¼šç¬¬ä¸€æ­¥å…ˆåšè½¬å†™äºŒæ¬¡ç¡®è®¤ã€‚"""
-    lines: List[str] = [
-        "ä½ æ˜¯ç‹¬ç«‹çš„å¤æŸ¥å‘˜ã€‚å¦ä¸€ä¸ªæ¨¡åž‹å·²å®Œæˆé¦–è½®æ‰¹æ”¹ï¼Œè¯·ä½ å¯¹ä¸‹é¢åˆ—å‡ºçš„"
-        "ã€Œå·²åˆ¤é”™é¢˜ä¸Žå­˜ç–‘é¢˜ã€æŒ‰é¡ºåºåšä¸¤æ­¥å¤æŸ¥ï¼šå…ˆè½¬å†™äºŒæ¬¡ç¡®è®¤ï¼Œå†é€»è¾‘æ ¸æŸ¥ã€‚",
-        "",
-        "ã€ä½ çš„ææ–™ï¼ˆå…±ä¸‰ä»½ï¼‰ã€‘",
-        "ææ–™ä¸€ã€ä½œä¸šåŽŸå›¾ã€‘ï¼šæœ¬æ¬¡ä»»åŠ¡çš„åŽŸå§‹ä½œä¸šç…§ç‰‡ï¼Œé™„åœ¨æ¶ˆæ¯æœ«å°¾ï¼›"
-        "ç¬¬ä¸€æ­¥è½¬å†™äºŒæ¬¡ç¡®è®¤å¿…é¡»çœ‹å›¾å®šä½é¢˜å·ã€é‡è¯»å­¦ç”Ÿæ‰‹å†™ç­”æ¡ˆã€‚",
-        "ææ–™äºŒã€æå–è½¬å†™ã€‘ï¼šæå–é˜¶æ®µæ¨¡åž‹ä»Žä½œä¸šåŽŸå›¾è¯»å‡ºçš„é¢˜å¹²ä¸Žå­¦ç”Ÿä½œç­”ï¼Œ"
-        "åªè½¬å†™ã€æœªåšä»»ä½•åˆ¤å®šï¼›å­—è¿¹å­˜ç–‘çš„é¢˜ä¼šåœ¨è½¬å†™å¤‡æ³¨é‡Œè¯´æ˜Žã€‚",
-        "ææ–™ä¸‰ã€é¦–è½®æ‰¹æ”¹ç»“è®ºã€‘ï¼šå¦ä¸€æ¨¡åž‹åŸºäºŽè½¬å†™ç‹¬ç«‹æ±‚è§£ã€æ¯”å¯¹åŽç»™å‡ºçš„åˆ¤å®šã€"
-        "å‚è€ƒç­”æ¡ˆä¸Žè¯Šæ–­ï¼Œä»…ä¾›ä½ æ ¸æŸ¥ï¼Œä¸æ˜¯æ ‡å‡†ç­”æ¡ˆã€‚",
-        "",
-        "ã€ç¬¬ä¸€æ­¥ï¼šè½¬å†™äºŒæ¬¡ç¡®è®¤ï¼ˆçœ‹å›¾ï¼Œå¿…é¡»å…ˆåšï¼‰ã€‘",
-        "1. å¯¹æ¯é“é€å®¡é¢˜ï¼Œåœ¨åŽŸå›¾ä¸­æŒ‰é¢˜å·æ‰¾åˆ°å¯¹åº”ä½ç½®ï¼Œå…ˆé€é¡¹åšè½¬å†™å¿…æ ¸æ¸…å•ï¼š"
-        "â‘  é¢˜å·æ•°å­—ä¸Žé€å®¡é¢˜å·ä¸€è‡´ï¼›â‘¡ ç»™è¯å¡«ç©ºæ‹¬å·é‡Œçš„è‹±æ–‡åŽŸè¯ï¼ˆå¦‚ (difficulty)ï¼‰"
-        "ä¸Žè½¬å†™ä¸€è‡´ï¼›â‘¢ äººåæ‹¼å†™ã€é€‰é¡¹å­—æ¯ä¸Žå†…å®¹çš„é…å¯¹ä¸Žè½¬å†™ä¸€è‡´ï¼›"
-        "â‘£ å­¦ç”Ÿæ‰‹å†™ç­”æ¡ˆä¸Žè½¬å†™ä¸€è‡´ã€‚ä¸è¦è¢«å°åˆ·é¢˜å¹²ã€çº¢ç¬”æ‰¹æ”¹ç—•è¿¹å¹²æ‰°ï¼Œ"
-        "ä¹Ÿä¸è¦é‡æ–°æ±‚è§£é¢˜ç›®ã€‚",
-        "2. æŠŠé‡è¯»åˆ°çš„å†…å®¹ä¸Žã€æå–è½¬å†™ã€‘é€é¡¹å¯¹æ¯”ï¼ˆåªçœ‹å®žè´¨å†…å®¹ï¼Œ"
-        "å¿½ç•¥é¡¹åºã€ç©ºç™½ç­‰æ— å…³å·®å¼‚ï¼‰ã€‚",
-        "3. å¿…æ ¸æ¸…å•ä»»ä¸€é¡¹å®žè´¨ä¸ç¬¦ï¼ˆä¾‹å¦‚å·é¢å†™çš„æ˜¯ Aã€è½¬å†™æˆäº† Bï¼Œ"
-        "æˆ–é¢˜å·/æ‹¬å·åŽŸè¯å¯¹ä¸ä¸Šï¼‰â†’ transcript_ok=falseï¼Œ"
-        "è¯¥é¢˜ç›´æŽ¥æ ‡ disagreedï¼Œbasis å¿…é¡»å†™æ¸…ã€ŒåŽŸå›¾ä¸º Xï¼Œè½¬å†™ä¸º Yï¼Œ"
-        "é¦–è½®åŸºäºŽé”™è¯¯è½¬å†™åˆ¤å®šã€ï¼›reread_answer å¡«ä½ é‡è¯»åˆ°çš„å†…å®¹ã€‚",
-        "4. å­—è¿¹å®žåœ¨çœ‹ä¸æ¸…ã€æ— æ³•å®Œæˆå¿…æ ¸æ¸…å• â†’ transcript_ok å†™ null"
-        "ï¼ˆæ³¨æ„ï¼šæ˜¯ nullï¼Œä¸æ˜¯ falseï¼‰ï¼Œreread_answer å†™ç©ºä¸²ï¼Œ"
-        "state=unverifiedï¼Œä¸è¦çŒœæµ‹ã€‚",
-        "5. å¿…æ ¸æ¸…å•å…¨è¿‡ â†’ transcript_ok=trueï¼Œreread_answer ç…§æŠ„è½¬å†™ï¼Œè¿›å…¥ç¬¬äºŒæ­¥ã€‚",
-        "",
-        "ã€ç¬¬äºŒæ­¥ï¼šé€»è¾‘æ ¸æŸ¥ï¼ˆçœ‹æ–‡å­—ï¼‰ã€‘",
-        "1. åªæ ¸æŸ¥ã€åªæå¼‚è®®ï¼šä¸è£å†³ã€ä¸æ”¹åˆ¤ã€ä¸ç»™å­¦ç”Ÿé‡æ–°å®šæ€§ï¼Œä¸è¾“å‡ºã€Œæ­£ç¡®/é”™è¯¯ã€ç»“è®ºã€‚",
-        "2. å¯¹æ¯é“é€å®¡é¢˜é€é¡¹æ£€æŸ¥ï¼šè½¬å†™ï¼ˆä»¥ç¬¬ä¸€æ­¥é‡è¯»ç»“è®ºä¸ºå‡†ï¼‰ä¸Žé¦–è½®ç»“è®ºæ˜¯å¦è‡ªæ´½"
-        "ï¼ˆå¦‚å­¦ç”Ÿä½œç­”æ˜Žæ˜Žä¸Žå‚è€ƒç­”æ¡ˆä¸€è‡´å´è¢«åˆ¤é”™ï¼‰ã€é¦–è½®æ±‚è§£æ­¥éª¤æ˜¯å¦æœ‰è®¡ç®—æˆ–æŽ¨ç†é”™è¯¯ã€"
-        "æ˜¯å¦é—æ¼äº†è½¬å†™ä¸­çš„æ¡ä»¶ã€æ˜¯å¦æŠŠåˆç†ç­”æ¡ˆè¯¯åˆ¤ä¸ºé”™ã€é”™å› æ˜¯å¦æœ‰æ–‡å­—è¯æ®æ”¯æ’‘ã€‚",
-        "3. ç»™è¯å¡«ç©º/è¿žè¯æˆå¥ç±»å¤šçœ‹ä¸€çœ¼ï¼šå‚è€ƒç­”æ¡ˆå¿…é¡»ç”±é¢˜å¹²ç»™å®šçš„åŽŸè¯åˆæ³•å˜å½¢å¾—åˆ°ï¼Œ"
-        "ä¸èƒ½å‡­ç©ºåŠ è¯ã€ä¸¢è¯ï¼ˆå¦‚é¢˜å¹²ç»™äº† howï¼Œç­”æ¡ˆå°±ä¸èƒ½ä¸¢æŽ‰ howï¼‰ï¼›"
-        "é¢˜å·æ˜¯å¦è¿žç»­ï¼Œæœ‰æ— æ•´ä½“é”™ä½è¿¹è±¡ã€‚",
-        "4. æ— å¼‚è®®çš„é¢˜åªæ ‡ agreedï¼ˆæœªå‘çŽ°å¼‚è®®ï¼Œä¸ç­‰äºŽè¯æ˜ŽåŽŸåˆ¤å®šå¿…ç„¶æ­£ç¡®ï¼‰ï¼›"
-        "æœ‰å¼‚è®®çš„é¢˜æ ‡ disagreed å¹¶å¿…é¡»ç»™å‡ºå¯æ ¸éªŒä¾æ®ï¼ˆbasisï¼‰ï¼›"
-        "è½¬å†™ç¼ºå¤±ã€å­—è¿¹å­˜ç–‘å¯¼è‡´ä¿¡æ¯ä¸è¶³ä»¥æ ¸æŸ¥çš„é¢˜æ ‡ unverifiedï¼Œä¸è¦çŒœæµ‹ã€‚",
-        "5. å­˜ç–‘é¢˜ï¼ˆé¦–è½®æ ‡ uncertainï¼‰çš„ agreed ä»…è¡¨ç¤ºæœªå‘çŽ°å¯¹å­˜ç–‘åˆ¤æ–­çš„å¼‚è®®ï¼Œ"
-        "ä¸ä»£è¡¨é¢˜ç›®å·²ç¡®è®¤æ­£ç¡®æˆ–ç–‘ç‚¹æ¶ˆé™¤ã€‚",
-        "",
-        f"ã€æœ¬æ¬¡ä»»åŠ¡ä¸Šä¸‹æ–‡ã€‘ä»»åŠ¡å· {task['id']}ï¼ˆè½®æ¬¡ {run['run_no']}ï¼‰ï¼Œ"
-        f"å­¦ç§‘ï¼š{task.get('subject') or 'æœªæŒ‡å®š'}ï¼Œå¹´çº§ï¼š{task.get('grade_level') or 'æœªæŒ‡å®š'}ã€‚",
-        "",
-        "ã€å¾…å¤æŸ¥é¢˜ç›®ã€‘",
-    ]
-    for q in questions:
-        lines.extend(_review_question_block(q))
-
-    lines.append("ã€è¾“å‡ºå¥‘çº¦ï¼ˆæœ€ç»ˆå›žç­”åŒ…å«ä¸”ä»…åŒ…å«ä¸€ä¸ª ```json ä»£ç å—ï¼‰ã€‘")
-    lines.append("```json")
-    lines.append('{"reviews": [{"id": "é¢˜ç›®id",')
-    lines.append('  "transcript_ok": true/false/nullï¼ˆçœ‹ä¸æ¸…å†™ nullï¼Œåªèƒ½é… unverifiedï¼‰,')
-    lines.append('  "reread_answer": "é‡è¯»åˆ°çš„å­¦ç”Ÿä½œç­”ï¼ˆä¸Žè½¬å†™ä¸€è‡´æ—¶ç…§æŠ„è½¬å†™ï¼›çœ‹ä¸æ¸…å†™ç©ºä¸²ï¼‰",')
-    lines.append('  "state": "agreed|disagreed|unverified",')
-    lines.append('  "note": "ç®€çŸ­è¯´æ˜Ž", "basis": "disagreed æ—¶å¿…å¡«çš„å¯æ ¸éªŒä¾æ®ï¼Œå…¶ä½™å¯ä¸ºç©ºä¸²"}]}')
-    lines.append("```")
-    lines.append("ç¡¬æ€§è§„åˆ™ï¼šé€å®¡åˆ—è¡¨ä¸­çš„æ¯ä¸€é“é¢˜éƒ½å¿…é¡»è¿”å›žä¸€é¡¹ï¼Œid ä¸Žé€å®¡åˆ—è¡¨å®Œå…¨ä¸€è‡´ï¼›"
-                 "ä¸å¾—è¿”å›žæœªé€å®¡çš„é¢˜ï¼›transcript_ok=false çš„é¢˜å¿…é¡»æ ‡ disagreed å¹¶ç»™ basisï¼›"
-                 "transcript_ok=null çš„é¢˜åªèƒ½æ ‡ unverifiedï¼ˆçœ‹ä¸æ¸…æ˜¯åˆæ³•ç»ˆæ€ï¼Œä¸è¦ç¡¬æ”¹æˆ disagreedï¼‰ï¼›"
-                 "disagreed å¿…é¡»ç»™ basisï¼›"
-                 "æ–‡æœ¬å­—æ®µæ²¡æœ‰å†…å®¹å†™ç©ºå­—ç¬¦ä¸² \"\"ï¼ˆtranscript_ok ä¾‹å¤–ï¼Œçœ‹ä¸æ¸…æ—¶å†™ nullï¼‰ã€‚")
-
-    text = "\n".join(lines)
-    content: List[Dict[str, Any]] = [{"type": "text", "text": text}]
-    for url in images:
-        content.append({"type": "image_url", "image_url": {"url": url}})
-    return [
-        {"role": "system",
-         "content": "ä½ æ˜¯å¤æŸ¥å‘˜ï¼šå…ˆå¯¹ç…§åŽŸå›¾åšè½¬å†™äºŒæ¬¡ç¡®è®¤ï¼ˆé‡è¯»å­¦ç”Ÿä½œç­”ã€æŠ“è½¬å†™é”™è¯¯ï¼‰ï¼Œ"
-                    "å†æ ¸æŸ¥æ–‡å­—è½¬å½•ä¸Žé¦–è½®ç»“è®ºæ˜¯å¦è‡ªæ´½ã€åªæå¼‚è®®ï¼Œ"
-                    "ä¸è£å†³ã€ä¸æ”¹åˆ¤ã€ä¸ä½¿ç”¨å·¥å…·ï¼ŒæŒ‰çº¦å®š JSON å¥‘çº¦è¾“å‡ºã€‚"},
-        {"role": "user", "content": content},
-    ]
-
-
-def _build_review_messages_text_only(task: Dict[str, Any], run: Dict[str, Any],
-                                     questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """é€€åŒ–è·¯å¾„ï¼šæ‹¿ä¸åˆ°åŽŸå›¾æ—¶çš„çº¯æ–‡å­—æ ¸æŸ¥ï¼ˆä¸è¯»å›¾ï¼‰ã€‚
-
-    å¤æŸ¥æ–¹æ‹¿åˆ°çš„åªæœ‰ä¸¤ä»½æ–‡å­—ææ–™ï¼š
-    1. æå–è½¬å†™â€”â€”æå–é˜¶æ®µæ¨¡åž‹ä»Žä½œä¸šåŽŸå›¾è¯»å‡ºçš„é¢˜å¹²ä¸Žå­¦ç”Ÿä½œç­”ï¼ˆåªè½¬å†™ã€æœªåˆ¤å®šï¼‰ï¼›
-    2. é¦–è½®æ‰¹æ”¹ç»“è®ºâ€”â€”å¦ä¸€æ¨¡åž‹åŸºäºŽè½¬å†™ç‹¬ç«‹æ±‚è§£ã€æ¯”å¯¹åŽç»™å‡ºçš„åˆ¤å®šä¸Žè¯Šæ–­ã€‚
-    ä¸ä¼ å›¾ç‰‡ã€ä¸ä¼ å·¥ä½œåŒºè·¯å¾„ã€ä¸ä¼ å¯†é’¥ã€ä¸ä¼ å…¶ä»–ä»»åŠ¡æ•°æ®ã€‚
-    å¤æŸ¥æ–¹åªåšæ ¸æŸ¥ã€åªæå¼‚è®®ï¼šåè®®é‡Œæ²¡æœ‰ä¹Ÿä¸æŽ¥å—ä»»ä½•æ”¹åˆ¤å­—æ®µã€‚
-    """
-    lines: List[str] = [
-        "ä½ æ˜¯ç‹¬ç«‹çš„å¤æŸ¥å‘˜ã€‚å¦ä¸€ä¸ªæ¨¡åž‹å·²å®Œæˆé¦–è½®æ‰¹æ”¹ï¼Œè¯·ä½ åªå¯¹ä¸‹é¢åˆ—å‡ºçš„"
-        "ã€Œå·²åˆ¤é”™é¢˜ä¸Žå­˜ç–‘é¢˜ã€åšåªè¯»æ ¸æŸ¥ã€‚",
-        "",
-        "ã€ä½ çš„ææ–™ï¼ˆä»…æ­¤ä¸¤ä»½æ–‡å­—ï¼Œæ²¡æœ‰åŽŸå›¾ï¼‰ã€‘",
-        "ææ–™ä¸€ã€æå–è½¬å†™ã€‘ï¼šæå–é˜¶æ®µæ¨¡åž‹ä»Žä½œä¸šåŽŸå›¾è¯»å‡ºçš„é¢˜å¹²ä¸Žå­¦ç”Ÿä½œç­”ï¼Œ"
-        "åªè½¬å†™ã€æœªåšä»»ä½•åˆ¤å®šï¼›å­—è¿¹å­˜ç–‘çš„é¢˜ä¼šåœ¨è½¬å†™å¤‡æ³¨é‡Œè¯´æ˜Žã€‚",
-        "ææ–™äºŒã€é¦–è½®æ‰¹æ”¹ç»“è®ºã€‘ï¼šå¦ä¸€æ¨¡åž‹åŸºäºŽè½¬å†™ç‹¬ç«‹æ±‚è§£ã€æ¯”å¯¹åŽç»™å‡ºçš„åˆ¤å®šã€"
-        "å‚è€ƒç­”æ¡ˆä¸Žè¯Šæ–­ï¼Œä»…ä¾›ä½ æ ¸æŸ¥ï¼Œä¸æ˜¯æ ‡å‡†ç­”æ¡ˆã€‚",
-        "",
-        "ã€å¤æŸ¥çºªå¾‹ï¼ˆå¿…é¡»éµå®ˆï¼‰ã€‘",
-        "1. åªæ ¸æŸ¥ã€åªæå¼‚è®®ï¼šä¸è£å†³ã€ä¸æ”¹åˆ¤ã€ä¸ç»™å­¦ç”Ÿé‡æ–°å®šæ€§ï¼Œä¸è¾“å‡ºã€Œæ­£ç¡®/é”™è¯¯ã€ç»“è®ºã€‚",
-        "2. ä¸è¯»å›¾ï¼šæœ¬æ¬¡ä¸æä¾›ä»»ä½•å›¾ç‰‡ï¼Œä¸è¦è¯•å›¾æŸ¥çœ‹ã€è¿˜åŽŸæˆ–çŒœæµ‹åŽŸå›¾å†…å®¹ï¼›"
-        "åªèƒ½ä¾æ®ä¸Šé¢çš„æ–‡å­—è½¬å½•æ ¸æŸ¥é€»è¾‘ä¸Žè®¡ç®—ã€‚",
-        "3. å¯¹æ¯é“é€å®¡é¢˜é€é¡¹æ£€æŸ¥ï¼šè½¬å†™ä¸Žé¦–è½®ç»“è®ºæ˜¯å¦è‡ªæ´½"
-        "ï¼ˆå¦‚å­¦ç”Ÿä½œç­”æ˜Žæ˜Žä¸Žå‚è€ƒç­”æ¡ˆä¸€è‡´å´è¢«åˆ¤é”™ï¼‰ã€é¦–è½®æ±‚è§£æ­¥éª¤æ˜¯å¦æœ‰è®¡ç®—æˆ–æŽ¨ç†é”™è¯¯ã€"
-        "æ˜¯å¦é—æ¼äº†è½¬å†™ä¸­çš„æ¡ä»¶ã€æ˜¯å¦æŠŠåˆç†ç­”æ¡ˆè¯¯åˆ¤ä¸ºé”™ã€é”™å› æ˜¯å¦æœ‰æ–‡å­—è¯æ®æ”¯æ’‘ã€‚",
-        "4. ç»™è¯å¡«ç©º/è¿žè¯æˆå¥ç±»å¤šçœ‹ä¸€çœ¼ï¼šå‚è€ƒç­”æ¡ˆå¿…é¡»ç”±é¢˜å¹²ç»™å®šçš„åŽŸè¯åˆæ³•å˜å½¢å¾—åˆ°ï¼Œ"
-        "ä¸èƒ½å‡­ç©ºåŠ è¯ã€ä¸¢è¯ï¼ˆå¦‚é¢˜å¹²è¯è¡¨é‡Œæœ‰ howï¼Œç­”æ¡ˆå°±ä¸èƒ½ä¸¢æŽ‰ howï¼‰ï¼›"
-        "é¢˜å·æ˜¯å¦è¿žç»­ï¼Œæœ‰æ— æ•´ä½“é”™ä½è¿¹è±¡ã€‚",
-        "5. æ— å¼‚è®®çš„é¢˜åªæ ‡ agreedï¼ˆæœªå‘çŽ°å¼‚è®®ï¼Œä¸ç­‰äºŽè¯æ˜ŽåŽŸåˆ¤å®šå¿…ç„¶æ­£ç¡®ï¼‰ï¼›"
-        "æœ‰å¼‚è®®çš„é¢˜æ ‡ disagreed å¹¶å¿…é¡»ç»™å‡ºå¯æ ¸éªŒä¾æ®ï¼ˆbasisï¼‰ï¼›"
-        "è½¬å†™ç¼ºå¤±ã€å­—è¿¹å­˜ç–‘å¯¼è‡´ä¿¡æ¯ä¸è¶³ä»¥æ ¸æŸ¥çš„é¢˜æ ‡ unverifiedï¼Œä¸è¦çŒœæµ‹ã€‚",
-        "6. å­˜ç–‘é¢˜ï¼ˆé¦–è½®æ ‡ uncertainï¼‰çš„ agreed ä»…è¡¨ç¤ºæœªå‘çŽ°å¯¹å­˜ç–‘åˆ¤æ–­çš„å¼‚è®®ï¼Œ"
-        "ä¸ä»£è¡¨é¢˜ç›®å·²ç¡®è®¤æ­£ç¡®æˆ–ç–‘ç‚¹æ¶ˆé™¤ã€‚",
-        "",
-        f"ã€æœ¬æ¬¡ä»»åŠ¡ä¸Šä¸‹æ–‡ã€‘ä»»åŠ¡å· {task['id']}ï¼ˆè½®æ¬¡ {run['run_no']}ï¼‰ï¼Œ"
-        f"å­¦ç§‘ï¼š{task.get('subject') or 'æœªæŒ‡å®š'}ï¼Œå¹´çº§ï¼š{task.get('grade_level') or 'æœªæŒ‡å®š'}ã€‚",
-        "",
-        "ã€å¾…å¤æŸ¥é¢˜ç›®ã€‘",
-    ]
-    for q in questions:
-        lines.extend(_review_question_block(q))
-
-    lines.append("ã€è¾“å‡ºå¥‘çº¦ï¼ˆæœ€ç»ˆå›žç­”åŒ…å«ä¸”ä»…åŒ…å«ä¸€ä¸ª ```json ä»£ç å—ï¼‰ã€‘")
-    lines.append("```json")
-    lines.append('{"reviews": [{"id": "é¢˜ç›®id", "state": "agreed|disagreed|unverified",')
-    lines.append('  "note": "ç®€çŸ­è¯´æ˜Ž", "basis": "disagreed æ—¶å¿…å¡«çš„å¯æ ¸éªŒä¾æ®ï¼Œå…¶ä½™å¯ä¸ºç©ºä¸²"}]}')
-    lines.append("```")
-    lines.append("ç¡¬æ€§è§„åˆ™ï¼šé€å®¡åˆ—è¡¨ä¸­çš„æ¯ä¸€é“é¢˜éƒ½å¿…é¡»è¿”å›žä¸€é¡¹ï¼Œid ä¸Žé€å®¡åˆ—è¡¨å®Œå…¨ä¸€è‡´ï¼›"
-                 "ä¸å¾—è¿”å›žæœªé€å®¡çš„é¢˜ï¼›disagreed å¿…é¡»ç»™ basisï¼›"
-                 "æ‰€æœ‰æ–‡æœ¬å­—æ®µç”¨å­—ç¬¦ä¸²ï¼Œæ²¡æœ‰å†…å®¹å†™ç©ºå­—ç¬¦ä¸² \"\"ï¼Œä¸è¦å†™ nullã€‚")
-
-    text = "\n".join(lines)
-    return [
-        {"role": "system",
-         "content": "ä½ æ˜¯åªè¯»å¤æŸ¥å‘˜ï¼šåªæ ¸æŸ¥æ–‡å­—è½¬å½•ä¸Žé¦–è½®ç»“è®ºæ˜¯å¦è‡ªæ´½ã€åªæå¼‚è®®ï¼Œ"
-                    "ä¸è£å†³ã€ä¸æ”¹åˆ¤ã€ä¸è¯»å›¾ã€ä¸ä½¿ç”¨å·¥å…·ï¼ŒæŒ‰çº¦å®š JSON å¥‘çº¦è¾“å‡ºã€‚"},
-        {"role": "user", "content": [{"type": "text", "text": text}]},
-    ]
-
-
-class HermesClient:
-    """Hermes Agent HTTP å®¢æˆ·ç«¯ï¼ˆå•å®žä¾‹å¤ç”¨è¿žæŽ¥æ± ï¼Œä¸è‡ªåŠ¨é‡è¯•ï¼‰ã€‚"""
-
-    def __init__(self, cfg: HermesConfig, client: Optional[httpx.AsyncClient] = None) -> None:
-        self.cfg = cfg
-        self._client = client
-        self._owns_client = client is None
-        self._readiness: Optional[HermesReadiness] = None
-
-    def _build_client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            base_url=self.cfg.base_url.rstrip("/"),
-            headers={
-                "Authorization": f"Bearer {self.cfg.api_key}",
-                "Content-Type": "application/json",
-            },
-            timeout=httpx.Timeout(self.cfg.timeout_seconds, connect=10.0),
-            follow_redirects=False,   # å¯†é’¥ä¸è·Ÿéšè·³è½¬å¤–å‘
-            trust_env=False,          # å¿½ç•¥çŽ¯å¢ƒä»£ç†ï¼Œé¿å…å¯†é’¥ç»ä»£ç†å¤–æ³„
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
-        )
-
-    async def _http(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = self._build_client()
-        return self._client
-
-    async def aclose(self) -> None:
-        if self._client is not None and self._owns_client:
-            await self._client.aclose()
-            self._client = None
-
-    # ---------- åº•å±‚è¯·æ±‚ ----------
-
-    async def _request(self, method: str, path: str, *, json_body: Optional[dict] = None,
-                       timeout: Optional[float] = None,
-                       headers: Optional[Dict[str, str]] = None) -> httpx.Response:
-        if not self.cfg.configured:
-            raise HermesNotConfigured("æœªé…ç½® Hermes åœ°å€æˆ–å¯†é’¥ï¼ˆHERMES_BASE_URL / HERMES_API_KEYï¼‰")
-        client = await self._http()
-        try:
-            resp = await client.request(
-                method, path, json=json_body,
-                timeout=timeout or self.cfg.timeout_seconds,
-                headers=headers,
-            )
-        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
-            raise HermesUnavailable(f"æ— æ³•è¿žæŽ¥ Hermesï¼š{e}") from e
-        except httpx.HTTPError as e:
-            # è¯·æ±‚å¯èƒ½å·²ç»é€è¾¾ï¼šæŒ‰ã€Œæ‰§è¡Œç»“æžœæœªç¡®è®¤ã€å¤„ç†ï¼Œç»ä¸è‡ªåŠ¨é‡å‘
-            raise HermesUncertain(f"è¯·æ±‚ä¸­æ–­ï¼Œæ‰§è¡Œç»“æžœæœªç¡®è®¤ï¼š{e}") from e
-
-        if resp.status_code in (401, 403):
-            raise HermesAuthError(f"Hermes é‰´æƒå¤±è´¥ï¼ˆHTTP {resp.status_code}ï¼‰")
-        if resp.status_code >= 500:
-            raise HermesUnavailable(f"Hermes æœåŠ¡é”™è¯¯ HTTP {resp.status_code}")
-        if resp.status_code >= 400:
-            raise HermesRejected(f"è¯·æ±‚è¢«æ‹’ç» HTTP {resp.status_code}: {resp.text[:200]}")
-        if len(resp.content) > self.cfg.max_response_bytes:
-            raise HermesResultInvalid(
-                f"å“åº”ä½“è¶…è¿‡ {self.cfg.max_response_bytes} å­—èŠ‚ä¸Šé™ï¼Œå·²æ‹’ç»è§£æž")
-        return resp
-
-    # ---------- èƒ½åŠ›æ£€æŸ¥ ----------
-
-    async def readiness(self, *, force: bool = False) -> HermesReadiness:
-        now = time.time()
-        if (not force and self._readiness
-                and now - self._readiness.checked_at < self.cfg.readiness_ttl_seconds):
-            return self._readiness
-
-        if not self.cfg.configured:
-            result = HermesReadiness(False, False, [], None, now,
-                                     "æœªé…ç½® HERMES_BASE_URL / HERMES_API_KEY")
-            self._readiness = result
-            return result
-
-        # â‘  å¯è¾¾æ€§ï¼šä¾æ¬¡æŽ¢æµ‹å‡ ä¸ªå…¬å¼€ç«¯ç‚¹ï¼Œ**æ‹¿åˆ°ä»»ä½• HTTP å“åº”éƒ½ç®—ç½‘å…³æ´»ç€**
-        #    ï¼ˆåªçœ‹ 200 ä¼šæŠŠã€Œé™çº§ä½†å¯ç”¨ã€çš„ç½‘å…³è¯¯åˆ¤æˆè¿žä¸ä¸Šï¼‰
-        status: Optional[int] = None
-        probe_errors: List[str] = []
-        for path in ("/health", "/v1/health", "/v1/capabilities"):
-            try:
-                status = await self._probe(path, timeout=10.0)
-                break
-            except HermesError as e:
-                probe_errors.append(f"{path}: {e.message}")
-        if status is None:
-            result = HermesReadiness(True, False, [], None, now,
-                                     "æ— æ³•è¿žæŽ¥ Hermesï¼š" + "ï¼›".join(probe_errors))
-            self._readiness = result
-            return result
-
-        notes: List[str] = []
-        if status >= 500:
-            notes.append(f"ç½‘å…³å­˜æ´»æŽ¢é’ˆè¿”å›ž HTTP {status}ï¼ˆå¯èƒ½å¤„äºŽé™çº§çŠ¶æ€ï¼‰")
-
-        # â‘¡ é‰´æƒï¼š401/403 è¯´æ˜Žå¯†é’¥ä¸å¯¹ï¼Œä»»åŠ¡å¿…ç„¶å¤±è´¥ï¼Œå•ç‹¬è¯†åˆ«
-        auth_ok: Optional[bool] = None
-        if status in (401, 403):
-            auth_ok = False
-
-        # â‘¢ æŠ€èƒ½æžšä¸¾ï¼šå¤±è´¥åªè¡¨ç¤ºã€Œæ— æ³•ç¡®è®¤ã€ï¼Œä¸ä»£è¡¨ä¸èƒ½ç”¨
-        skills: List[str] = []
-        installed: Optional[bool] = None
-        try:
-            resp = await self._request("GET", "/v1/skills", timeout=10.0)
-            skills = _extract_skill_names(resp.json())
-            installed = self.cfg.skill_name in skills
-            auth_ok = True
-            if not installed:
-                notes.append(f"æŠ€èƒ½ {self.cfg.skill_name} æœªå‡ºçŽ°åœ¨ /v1/skills åˆ—è¡¨")
-        except HermesAuthError as e:
-            auth_ok = False
-            notes.append(f"API Server å¯†é’¥æ— æ•ˆï¼š{e.message}")
-        except HermesError as e:
-            notes.append(f"æŠ€èƒ½åˆ—è¡¨æŽ¥å£ä¸å¯ç”¨ï¼ˆ{e.message}ï¼‰ï¼Œæ— æ³•ç¡®è®¤æŠ€èƒ½æ˜¯å¦å·²å®‰è£…ï¼Œ"
-                         "ä»»åŠ¡ä»ä¼šå°è¯•æ‰§è¡Œ")
-
-        result = HermesReadiness(True, True, skills, installed, now,
-                                 "ï¼›".join(notes), auth_ok=auth_ok)
-        self._readiness = result
-        return result
-
-    async def _probe(self, path: str, timeout: float) -> int:
-        """åªåˆ¤æ–­ã€Œæœ‰æ²¡æœ‰å“åº”ã€ï¼Œä¸æŠŠéž 2xx å½“æˆè¿žä¸ä¸Šã€‚"""
-        if not self.cfg.configured:
-            raise HermesNotConfigured("æœªé…ç½® Hermes åœ°å€æˆ–å¯†é’¥")
-        client = await self._http()
-        try:
-            resp = await client.get(path, timeout=timeout)
-        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
-            raise HermesUnavailable(f"æ— æ³•è¿žæŽ¥ Hermesï¼š{e}") from e
-        except httpx.HTTPError as e:
-            raise HermesUnavailable(f"è¯·æ±‚å¤±è´¥ï¼š{e}") from e
-        return resp.status_code
-
-    # ---------- æ‰§è¡Œ ----------
-
-    async def run_task(self, messages: List[Dict[str, Any]],
-                       session_id: str) -> Dict[str, Any]:
-        """æ‰§è¡Œä¸€è½®å­¦ä¹ ä»»åŠ¡ï¼Œè¿”å›ž {result, model, usage, raw_excerpt}ã€‚"""
-        if not self.cfg.configured:
-            raise HermesNotConfigured("æœªé…ç½® Hermes åœ°å€æˆ–å¯†é’¥ï¼ˆHERMES_BASE_URL / HERMES_API_KEYï¼‰")
-        payload = {
-            "model": self.cfg.agent_model,
-            "messages": messages,
-            "stream": False,
-            "temperature": 0.2,
-        }
-        client = await self._http()
-        started = time.time()
-        log.info("è°ƒç”¨ Hermes æŠ€èƒ½ session=%s model=%s timeout=%ss",
-                 session_id, self.cfg.agent_model, self.cfg.timeout_seconds)
-        try:
-            resp = await client.post("/v1/chat/completions", json=payload,
-                                     headers={"X-Hermes-Session-Id": session_id})
-        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
-            raise HermesUnavailable(f"æ— æ³•è¿žæŽ¥ Hermesï¼š{e}") from e
-        except httpx.HTTPError as e:
-            raise HermesUncertain(f"è¯·æ±‚ä¸­æ–­ï¼Œæ‰§è¡Œç»“æžœæœªç¡®è®¤ï¼š{e}") from e
-        finally:
-            elapsed = time.time() - started
-            if elapsed > 30:
-                log.info("Hermes è¯·æ±‚è€—æ—¶ %.0fs session=%s", elapsed, session_id)
-
-        if resp.status_code in (401, 403):
-            raise HermesAuthError(f"Hermes é‰´æƒå¤±è´¥ï¼ˆHTTP {resp.status_code}ï¼‰")
-        if resp.status_code >= 500:
-            raise HermesUnavailable(f"Hermes æœåŠ¡é”™è¯¯ HTTP {resp.status_code}")
-        if resp.status_code >= 400:
-            raise HermesRejected(f"è¯·æ±‚è¢«æ‹’ç» HTTP {resp.status_code}: {resp.text[:200]}")
-        if len(resp.content) > self.cfg.max_response_bytes:
-            raise HermesResultInvalid(
-                f"å“åº”ä½“è¶…è¿‡ {self.cfg.max_response_bytes} å­—èŠ‚ä¸Šé™ï¼Œå·²æ‹’ç»è§£æž")
-
-        try:
-            data = resp.json()
-        except ValueError as e:
-            raise HermesResultInvalid(f"å“åº”ä¸æ˜¯åˆæ³• JSON: {e}") from e
-
-        choices = data.get("choices") or []
-        if not choices:
-            raise HermesResultInvalid("å“åº”ç¼ºå°‘ choices")
-        message = choices[0].get("message") or {}
-        text = message.get("content") or ""
-        reasoning = thinking.extract_reasoning(message)
-        thinking.log_thinking(
-            f"hermesä¸»æµç¨‹ session={session_id} model={data.get('model') or self.cfg.agent_model}",
-            reasoning)
-        raw = extract_result_json(text)
-        result = validate_result(raw)
-        usage = data.get("usage") or {}
-        elapsed = time.time() - started
-        log.info("Hermes å®Œæˆ session=%s model=%s tokens=%s/%s è€—æ—¶=%.1fs",
-                 session_id, data.get("model") or self.cfg.agent_model,
-                 usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"),
-                 elapsed)
-        return {
-            "result": result,
-            "model": data.get("model") or self.cfg.agent_model,
-            # ç½‘å…³æŠ¥å‘Šçš„åŽŸå§‹èº«ä»½ï¼ˆä¸å›žå¡«è¯·æ±‚å€¼ï¼›ç¼ºå¤±ä¿æŒç©ºä¸²ï¼Œç”±ç¼–æŽ’å±‚åˆ¤ã€Œèº«ä»½æœªçŸ¥ã€ï¼‰
-            "reported_model": str(data.get("model") or "").strip(),
-            "reported_provider": str(data.get("provider") or "").strip(),
-            "usage": usage,
-            "raw_excerpt": text[:2000],
-            "reasoning_content": reasoning,
-        }
-
-    async def review_questions(self, messages: List[Dict[str, Any]],
-                               session_id: str,
-                               timeout: Optional[float] = None,
-                               coverage: str = "") -> Dict[str, Any]:
-        """ç”¨é…ç½®çš„å¤æŸ¥æ¨¡åž‹æ‰§è¡Œä¸€æ¬¡åªè¯»å¤æŸ¥ã€‚
-
-        è¿”å›ž {reviews, model_requested, reported_model, reported_provider, usage, raw_excerpt}ã€‚
-        - ç‹¬ç«‹ä¼šè¯å¤´ X-Hermes-Session-Idï¼ˆä¸å¤ç”¨é¦–è½®ä¼šè¯çš„æ¨¡åž‹é”ï¼‰ã€‚
-        - è¯·æ±‚ä½“å¸¦ model + å¯é€‰ provider + å¯é€‰ model_optionsï¼ˆç½‘å…³æŒ‰æ­¤è·¯ç”±åˆ°ç¬¬äºŒæ¨¡åž‹ï¼‰ã€‚
-        - ä¸è‡ªåŠ¨é‡è¯•ï¼›é”™è¯¯åˆ†ç±»æ²¿ç”¨ _requestï¼ˆé‰´æƒ/æ‹’ç»/ä¸å¯è¾¾/æœªç¡®è®¤ï¼‰ã€‚
-        - coverage="reread" æ—¶å¯¹å¤æŸ¥è¾“å‡ºåšè½¬å†™è¯­ä¹‰å¯¹è´¦
-          ï¼ˆtranscript_ok=false å¿…é¡»é… disagreedï¼›null åªèƒ½é… unverifiedï¼‰ã€‚
-        """
-        if not self.cfg.configured:
-            raise HermesNotConfigured("æœªé…ç½® Hermes åœ°å€æˆ–å¯†é’¥ï¼ˆHERMES_BASE_URL / HERMES_API_KEYï¼‰")
-        if not self.cfg.review_model.strip():
-            raise HermesRejected("æœªé…ç½®å¤æŸ¥æ¨¡åž‹ï¼ˆhermes.review_modelï¼‰")
-
-        review_model = self.cfg.review_model.strip()
-        payload: Dict[str, Any] = {
-            "model": review_model,
-            "messages": messages,
-            "stream": False,
-            "temperature": 0,
-        }
-        if self.cfg.review_provider.strip():
-            payload["provider"] = self.cfg.review_provider.strip()
-        if self.cfg.review_model_options:
-            payload["model_options"] = self.cfg.review_model_options
-
-        requested = review_model + (
-            f"ï¼ˆprovider={self.cfg.review_provider.strip()}ï¼‰"
-            if self.cfg.review_provider.strip() else "")
-        started = time.time()
-        log.info("è°ƒç”¨å¤æŸ¥æ¨¡åž‹ session=%s model=%s timeout=%ss",
-                 session_id, requested, timeout or self.cfg.review_timeout_seconds)
-        resp = await self._request(
-            "POST", "/v1/chat/completions", json_body=payload,
-            timeout=timeout or self.cfg.review_timeout_seconds,
-            headers={"X-Hermes-Session-Id": session_id})
-        elapsed = time.time() - started
-        if elapsed > 30:
-            log.info("å¤æŸ¥è¯·æ±‚è€—æ—¶ %.0fs session=%s", elapsed, session_id)
-
-        try:
-            data = resp.json()
-        except ValueError as e:
-            raise HermesResultInvalid(f"å¤æŸ¥å“åº”ä¸æ˜¯åˆæ³• JSON: {e}") from e
-
-        choices = data.get("choices") or []
-        if not choices:
-            raise HermesResultInvalid("å¤æŸ¥å“åº”ç¼ºå°‘ choices")
-        message = choices[0].get("message") or {}
-        text = message.get("content") or ""
-        reasoning = thinking.extract_reasoning(message)
-        thinking.log_thinking(
-            f"hermeså¤æŸ¥ session={session_id} model={review_model}", reasoning)
-        raw = extract_result_json(text)
-        response = validate_review_response(raw, coverage=coverage)
-        reported_model = str(data.get("model") or "").strip()
-        usage = data.get("usage") or {}
-        log.info("å¤æŸ¥å®Œæˆ session=%s é¢˜æ•°=%d ç½‘å…³æŠ¥å‘Šæ¨¡åž‹=%s tokens=%s/%s",
-                 session_id, len(response.reviews), reported_model or "ï¼ˆæœªæŠ¥å‘Šï¼‰",
-                 usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"))
-        return {
-            "reviews": [r.model_dump() for r in response.reviews],
-            "model_requested": requested,
-            "reported_model": reported_model,
-            "reported_provider": str(data.get("provider") or "").strip(),
-            "usage": usage,
-            "raw_excerpt": text[:2000],
-            "reasoning_content": reasoning,
-        }
-
-
-def _extract_skill_names(payload: Any) -> List[str]:
-    """å…¼å®¹ /v1/skills çš„å‡ ç§å¸¸è§è¿”å›žç»“æž„ã€‚"""
-    items: List[Any] = []
-    if isinstance(payload, dict):
-        for key in ("skills", "data", "items"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                items = value
-                break
-    elif isinstance(payload, list):
-        items = payload
-    names: List[str] = []
-    for item in items:
-        if isinstance(item, str):
-            names.append(item)
-        elif isinstance(item, dict):
-            name = item.get("name") or item.get("id") or item.get("skill")
-            if isinstance(name, str):
-                names.append(name)
-    return sorted(set(names))
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éí×­5Õ:-jZ.¶›­–)Þ³R""$†W&ÖW2vVçB’˜.˜XÞ[.8  ®Xú®KÛþyJŽ[{.jŽZéîy¨NKˆ®k‹ŽXØþŠêîûÉ ¢Òõ5B÷cö6†Bö6ö×ÆWF–öç6ûÉ®iÈÞXªzºþhš~ŠÎZèÎi[N[z^X[~[ê®xêþûÈŽKˆÞiŠþjŠYè¾‹ÚÎXùûÈžûÈÎiJþhÈ–ÖvU÷W&ÆXh^ˆNY»îx˜~8 ¢Šû~k.KÙ2ÖöFVÆ²&÷f–FW&²ÖöFVÅö÷F–öç6iŠþXù~iJþhÈy¨NjŠYè¾Xˆ~hÚ.h˜¾jë^ûÈŽyJŽh‹~iÊÎiË®ZéîkX¾ûÈžûÉ ¢ÒÖöFVÅ÷&÷WFW6XŠ¾YÞXúþXú®KÊÖöFVÆûÉ°¢Ò[©^[.jŠYè²”B[ø^š¾YÎi{nKÊ&÷f–FW&ûÈŽY
+nX‰žKÉ®Š*¾{ÙX[>™Ùž›¹Ž[ûÞyZ^ûÈÎY¹î‰ÞXZŽ[›¹ŽŠêNjŠYè¾ûÈž8 ¢ÒtUB÷c÷6¶–ÆÇ6ûÉ®h¨ˆ;ÞXùxëûÈÎyJŽK¨îXŠNijÞh¨ˆ;ÞiŠþY
+nyÉþy¨N[{.ZèžŠ8^8 ¢ÒtUB÷cö6&–Æ—F–W6ûÉ®[Ù>X˜Þx˜ŽiÊÎˆ;ÞX©¾8  ®iˆîzîKˆÞX®y¨NK¨¾ûÉ ¢ÒKˆÞKÛþyJŽiÊ®zîŠêNy¨B'Vç2Y»îx˜~‹é>XZ^ZY{ªnûÈÎKˆÞ{Én˜
+ˆ[îŠêþ™YÎX8þx›žiÈžXø.i[8 ¢ÒKˆÞZûž8ÎXúþˆ;Þ[{.Š*¾hê^iKn8Þy¨NŠû~k.ˆz®XªŽ˜xÞŠù^ûÈÎ˜þXXÞ˜xÞZHÞhš~ŠÎKª~yIþ˜xÞZHÞ[Ù.j>h‰n˜xÞZHÞXšþKÙÎyJŽ8 ¢ÒKˆÞ™Ùž›¹Ž˜Y¹îiz~y¨NZI®jŠYè¾y»N‹ùî‹zþ[èNûÉ¾ZHÞiú^jŠYè¾KˆÞXúþyJŽi{nKˆÞhÚ.XŠ¾y¨NjŠYè¾Xi.XX^8 ¢"" ¦g&öÒõögWGW&Uõò–×÷'Bææ÷FF–öç0 ¦–×÷'B§6öà¦–×÷'BÆövv–æp¦–×÷'BF–ÖP¦g&öÒG—–ær–×÷'Bç’ÂF–7BÂÆ—7BÂ÷F–öæÀ ¦–×÷'B‡GG€¦g&öÒ–FçF–2–×÷'BfÆ–FF–öäW'&÷  ¦g&öÒæ6öæf–r–×÷'B†W&ÖW46öæf–rÂ6WGF–æw0¦g&öÒæw&F–ær–×÷'BW‡G&7Eö§6öà¦g&öÒç66†VÖ2–×÷'B&Wf–Wu&W7öç6RÂ7GVG•&W7VÇBÂG&÷öçVÆÇ0¦g&öÒâ–×÷'B66÷RÂF†–æ¶–ærÂv÷&·76P ¦ÆörÒÆövv–ærævWDÆövvW"…õöæÖUõò  ¦6Æ72†W&ÖW4W'&÷"„W†6WF–öâ“ ¢""$†W&ÖW2‹>yJŽZK‹J^y¨NYû®{¾8  ¢6W'F–åöæ÷EöW†V7WFVCÕG'VVŠŽzK®XúþzîŠêNŠû~k.k*iÈžŠ*¾hš~ŠÎûÈŽKè¾Zh.‹ùîhê^[»®z¸¾ZK‹J^8˜›NiØ>Š*¾h¹.ûÈžûÈÀ¢‹ùžzxÞh8^Xk^Kˆ¾˜xÞXùKˆÞKÉ®˜
+h‰˜xÞZHÞXšþKÙÎyJŽûÉ¾K‹¢fÇ6Ri{n[ø^š¾hÈž8Î{¹>iéÎiÊ®zîŠêN8ÞZHNyn8 ¢""  ¢6W'F–åöæ÷EöW†V7WFVBÒfÇ6P ¢FVbõö–æ—Eõò‡6VÆbÂÖW76vS¢7G"’ÓâæöæS ¢7WW"‚’åõö–æ—Eõò†ÖW76vR¢6VÆbæÖW76vRÒÖW76vP  ¦6Æ72†W&ÖW4æ÷D6öæf–wW&VB„†W&ÖW4W'&÷"“ ¢"".iÊ®˜XÞ{ÚîYËYØh‰nZøn™*^ûÉ®ˆ;ÞX©¾KˆÞXúþyJŽûÈÎKˆÞ[é~˜Y¹îX[nK¹njŠYè¾Xi.XX^8"""  ¢6W'F–åöæ÷EöW†V7WFVBÒG'VP  ¦6Æ72†W&ÖW4WF„W'&÷"„†W&ÖW4W'&÷"“ ¢6W'F–åöæ÷EöW†V7WFVBÒG'VP  ¦6Æ72†W&ÖW5Væf–Æ&ÆR„†W&ÖW4W'&÷"“ ¢"".‹ùîKˆÞKˆ®h‰niˆîzîy¨BW‡ŽûÉ®izk9^zîŠêNiŠþY
+n[{.Š*¾hê^iKnûÈÎKùÞZèŽhÈžiÊ®zîŠêNZHNyn8"""  ¢6W'F–åöæ÷EöW†V7WFVBÒfÇ6P  ¦6Æ72†W&ÖW5&V¦V7FVB„†W&ÖW4W'&÷"“ ¢"".Šû~k.Š*¾iˆîzîh¹.{¹ÞûÈƒG‡ŽûÈžûÈÎk*iÈžhš~ŠÎ8"""  ¢6W'F–åöæ÷EöW†V7WFVBÒG'VP  ¦6Æ72†W&ÖW5Væ6W'F–â„†W&ÖW4W'&÷"“ ¢"".‹h^i{bþ‹ùîhê^KŠÞijÞûÉ®Šû~k.Xúþˆ;Þ[{.Š*¾hš~ŠÎûÈÎ{¹>iéÎiÊ®zîŠêN8"""  ¢6W'F–åöæ÷EöW†V7WFVBÒfÇ6P  ¦6Æ72†W&ÖW5&W7VÇD–çfÆ–B„†W&ÖW4W'&÷"“ ¢"".‹ùNY¹îXh^ZëžKˆÞY
+¾YŽk9^{¹>iéÂ¥4ôîûÈÎh‰nZÙ~jë^j
+š¨ÎZK‹J^8"""  ¢6W'F–åöæ÷EöW†V7WFVBÒfÇ6P  ¦6Æ72†W&ÖW5&VF–æW73 ¢"".[{º®x«nh8  ¢XË®XˆnKˆžK»nxºÎz¸¾y¨NK¨¾ûÈÎ˜þXXÞh¨®8Îh¨ˆ;ÞX‰~ŠŽhê^Xú>YØþK¨n8ÞŠúþhª^h‰8Ä†W&ÖW2KˆÞXúþyJŽ8ÞûÉ ¢Ò6öæf–wW&VNûÉ®YËYØKˆîZøn™*^iŠþY
+n˜XÞ{Úà¢Ò&V6†&Æ^ûÉ®{ÙX[>iŠþY
+nY8Þ[©NûÈŽyJŽXZÎ[Èy¨Bö†VÇF‚hê.kX¾ûÈ¢Ò6¶–ÆÅö–ç7FÆÆVNûÉ®h¨ˆ;ÞiŠþY
+nX{®xëYÊ‚÷c÷6¶–ÆÇ>ûÉ´æöæRŠŽzK¢¢®izk9^zîŠêB¢ ¢ûÈŽKè¾Zh.Šú^hê^Xú>YÊŽiÊÎiË®x˜ŽiÊÎKˆ®iÈ’'V~ûÈžûÈÎjÚNi{nhš~ŠÎK»¾XªK¸ÞKÉ®xZ~[‹Ž[	ÞŠù^8 ¢""  ¢FVbõö–æ—Eõò‡6VÆbÂ6öæf–wW&VC¢&ööÂÂ&V6†&ÆS¢&ööÂÂ6¶–ÆÇ3¢Æ—7E·7G%ÒÀ¢6¶–ÆÅö–ç7FÆÆVC¢÷F–öæÅ¶&ööÅÒÂ6†V6¶VEöC¢fÆöBÂFWF–Ã¢7G"À¢WF…öö³¢÷F–öæÅ¶&ööÅÒÒæöæR’ÓâæöæS ¢6VÆbæ6öæf–wW&VBÒ6öæf–wW&V@¢6VÆbç&V6†&ÆRÒ&V6†&ÆP¢6VÆbç6¶–ÆÇ2Ò6¶–ÆÇ0¢6VÆbç6¶–ÆÅö–ç7FÆÆVBÒ6¶–ÆÅö–ç7FÆÆV@¢6VÆbæ6†V6¶VEöBÒ6†V6¶VEö@¢6VÆbæFWF–ÂÒFWF–À¢6VÆbæWF…öö²ÒWF…öö° ¢FVb5öF–7B‡6VÆb’ÓâF–7E·7G"Âç•Ó ¢–bæ÷B6VÆbæ6öæf–wW&VC ¢7FFRÒ&æ÷Eö6öæf–wW&VB ¢VÆ–bæ÷B6VÆbç&V6†&ÆS ¢7FFRÒ'Vç&V6†&ÆR ¢VÆ–b6VÆbæWF…öö²—2fÇ6S ¢7FFRÒ&WF…öf–ÆVB ¢VÆ–b6VÆbç6¶–ÆÅö–ç7FÆÆVB—2G'VS ¢7FFRÒ'&VG’ ¢VÆ–b6VÆbç6¶–ÆÅö–ç7FÆÆVB—2fÇ6S ¢7FFRÒ'6¶–ÆÅöÖ—76–ær ¢VÇ6S ¢7FFRÒ'6¶–ÆÅ÷Væ¶æ÷vâ ¢&WGW&â°¢'7FFR#¢7FFRÀ¢&6öæf–wW&VB#¢6VÆbæ6öæf–wW&VBÀ¢'&V6†&ÆR#¢6VÆbç&V6†&ÆRÀ¢&WF…öö²#¢6VÆbæWF…öö²À¢'6¶–ÆÅö–ç7FÆÆVB#¢6VÆbç6¶–ÆÅö–ç7FÆÆVBÀ¢'6¶–ÆÇ2#¢6VÆbç6¶–ÆÇ2À¢&6†V6¶VEöB#¢6VÆbæ6†V6¶VEöBÀ¢&FWF–Â#¢6VÆbæFWF–ÂÀ¢Ð  ¦FVbW‡G&7E÷&W7VÇEö§6öâ‡FW‡C¢7G"’ÓâF–7E·7G"Âç•Ó ¢"".K¸âvVçB‹é>X{®KŠÞhùXùn{¹>iéÂ¥4ôîûÉ¾X[ÎZë’§6öâXÈ^Š;žKˆîŠ;‚¥4ôî8  ¢Zéî™˜^Šz>iéKªN{¹’w&F–æræW‡G&7Eö§6öîûÈŽKˆîXˆn™‹një^h›žiKžYÎKˆZéîxëûÈžûÉ®Zè>yJ‚&uöFV6öFP¢h›îzÊÎKˆKŠ®ZèÎi[NZûž‹ûÈÎZëž[øÞ{¹>iéÎYî™Ú.‹ùŽ‹yþyØŠûNiˆîih~ZÙ~h‰nXúnKˆjëR¥4ôà¢ûÈŽiz~y¨N8ÎšinKŠ¢²X‹iÈYîKˆKŠ¢Þ8Þi[NKÙ>Šz>iéKÉ®hªRW‡G&FFûÈž8 ¢"" ¢–bæ÷BFW‡B÷"æ÷BFW‡Bç7G&—‚“ ¢&—6R†W&ÖW5&W7VÇD–çfÆ–B‚$†W&ÖW2‹ùNY¹îXh^ZëžK‹®z›¢"¢G'“ ¢&WGW&âW‡G&7Eö§6öâ‡FW‡B¢W†6WBfÇVTW'&÷"2S ¢&—6R†W&ÖW5&W7VÇD–çfÆ–B†b.{¹>iéÂ¥4ôâŠz>iéZK‹JS¢¶WÒ"’g&öÒP  ¦FVbfÆ–FFU÷&W7VÇB‡&s¢F–7E·7G"Âç•Ò’ÓâF–7E·7G"Âç•Ó ¢"".KŠ^jÎj
+š¨Î{¹>iéÎXØþŠêîûÉ¾j
+š¨ÎZK‹J^KˆÞXXŠëŽXižXZ^ZÚnKšŠë[Ù^8  ¢XXŽh¨¢¥4ôâçVÆÂŠxnKÙÎ8ÎiÊ®hùKé¾8ÞûÈŽŠx66†VÖ2æG&÷öçVÆÇ>ûÈžûÉ®jŠYè¾[‹ŽyJ‚çVÆÂŠŽzK ¢8ÎiÊÎjþizXh^Zëž8ÞûÈÎKŠ^jÎjŠ[ÈþKˆ²æöæR‹ø~KˆÞK¨b7G"j
+š¨ÎûÈÎKÉ®YºKˆKŠ®ZÙ~jë^[©þhèži[NXÛ~{¹>iéÎ8 ¢"" ¢G'“ ¢&WGW&â7GVG•&W7VÇBæÖöFVÅ÷fÆ–FFR†G&÷öçVÆÇ2‡&r’’æÖöFVÅöGV×‚¢W†6WBfÆ–FF–öäW'&÷"2S ¢f—'7BÒRæW'&÷'2‚•³Ò–bRæW'&÷'2‚’VÇ6R·Ð¢Æö2Ò"â"æ¦ö–â‡7G"‡’f÷"–âf—'7BævWB‚&Æö2"Â‚’’¢&—6R†W&ÖW5&W7VÇD–çfÆ–B†b.{¹>iéÎKˆÞzÊnYŽXØþŠêî{ªniÙó¢¶Æö7Ò¶f—'7BævWB‚v×6rrÂrr—Ò"ç7G&—‚’’g&öÒP  ¦FVbö6†V6µ÷G&ç67&—E÷6VÖçF–72‡&s¢F–7E·7G"Âç•Ò’ÓâæöæS ¢"".[ŠnY»îZHÞiú^y¨N‹ÚÎXiž{¹>Šë¢þZHÞiú^x«nhKˆˆ{Nh
+~j8iú^ûÈŽŠû¾XéþZx²¥4ôîûÈÎjÚNi{bçVÆÂ™Jî[	®YÊŽûÈž8  ¢[ø^š¾YÊ‚G&÷öçVÆÇ2K˜¾X˜ÞX®ûÉ¦G&÷öçVÆÇ2KÉ®XŠhè’G&ç67&—Eöö³ÖçVÆÂy¨N™JîûÈÀ¢XŠZèÎ[XˆnKˆÞkˆ^8ÎjŠYè¾iˆîzîXi’çVÆÎûÈŽyÈ¾KˆÞkˆ^ûÈž8ÞY(Î8ÎjŠYè¾k*Xiž‹ùžKŠ®ZÙ~jë^8ÞK¨n8 ¢ŠxNX‰žûÈŽKˆîZHÞiúR&ö×By¨NzÎh
+~ŠxNX‰žKˆˆ{NûÈžûÉ ¢ÒjøþKˆšž[ø^š¾iˆîzî{¹žX{¢G&ç67&—Eöö¾ûÈ‡G'VRöfÇ6RþyÈ¾KˆÞkˆ^Xi’çVÆÎûÈžûÈÎKˆÞ[é~yÈyZ^ûÉ°¢ÒG&ç67&—Eöö³ÖfÇ6^ûÈŽ‹ÚÎXižKˆîXéþY»îZéî‹JŽKˆÞzÊnûÈž(i"7FFR[ø^š¾K‹¢F—6w&VVNûÉ°¢ÒG&ç67&—Eöö³ÖçVÆÎûÈŽyÈ¾KˆÞkˆ^ûÈž(i"7FFRXú®ˆ;ÞK‹¢VçfW&–f–VNûÈÀ¢yÈ¾KˆÞkˆ^iŠþYŽk9^{¸ŽhûÈÎKˆÞ[é~zÎiKžh‰F—6w&VVN8 ¢‹ùÞXøÞK»¾KˆiÚi[NKÙ>h¹.{¹ÞiÊÎjÊZHÞiú^ûÈ†f–ÂÖ6Æ÷6VNûÈžûÈÎyK‹>yJŽikžhÈ’VçfW&–f–VBZHNyn8 ¢"" ¢&Wf–Ww2Ò&rævWB‚'&Wf–Ww2"¢–bæ÷B—6–ç7Fæ6R‡&Wf–Ww2ÂÆ—7B“ ¢&WGW&â2KªN{¹’–FçF–2hª^8Ç&Wf–Ww2™Ùîk9^8Ð¢f÷"—FVÒ–â&Wf–Ww3 ¢–bæ÷B—6–ç7Fæ6R†—FVÒÂF–7B“ ¢6öçF–çVP¢–BÒ7G"†—FVÒævWB‚&–B"Â""’’ç7G&—‚’÷"#ò ¢–b'G&ç67&—Eöö²"æ÷B–â—FVÓ ¢&—6R†W&ÖW5&W7VÇD–çfÆ–B€¢b.ZHÞiú^š’·–GÞûÉ®[ŠnY»îZHÞiú^[ø^š¾iˆîzî{¹žX{¢G&ç67&—Eöö² ¢.ûÈ‡G'VRöfÇ6RþyÈ¾KˆÞkˆ^Xi’çVÆÎûÈžûÈÎKˆÞ[é~yÈyZR"¢Fö²Ò—FVÕ²'G&ç67&—Eöö²%Ð¢7FFRÒ7G"†—FVÒævWB‚'7FFR"Â""’’ç7G&—‚¢–bFö²—2fÇ6RæB7FFRÒ&F—6w&VVB# ¢&—6R†W&ÖW5&W7VÇD–çfÆ–B€¢b.ZHÞiú^š’·–GÞûÉ§G&ç67&—Eöö³ÖfÇ6^ûÈŽ‹ÚÎXižKˆîXéþY»îZéî‹JŽKˆÞzÊnûÈ’ ¢b.[ø^š¾jrF—6w&VVNûÈÎ[Ù>X˜Ò7FFS×·7FFR÷"~z›¢wÒ"¢–bFö²—2æöæRæB7FFRÒ'VçfW&–f–VB# ¢&—6R†W&ÖW5&W7VÇD–çfÆ–B€¢b.ZHÞiú^š’·–GÞûÉ§G&ç67&—Eöö³ÖçVÆÎûÈŽyÈ¾KˆÞkˆ^ûÈžXú®ˆ;ÞjrVçfW&–f–VB ¢b.ûÈŽyÈ¾KˆÞkˆ^iŠþYŽk9^{¸ŽhûÈÎKˆÞ[é~zÎiKžh‰F—6w&VVNûÈžûÈÂ ¢b.[Ù>X˜Ò7FFS×·7FFR÷"~z›¢wÒ"  ¦FVbfÆ–FFU÷&Wf–Wu÷&W7öç6R‡&s¢F–7E·7G"Âç•ÒÂ6÷fW&vS¢7G"Ò""’Óâ&Wf–Wu&W7öç6S ¢"".j
+š¨ÎZHÞiú^‹é>X{®XØþŠêîûÉ¾™Ùîk9^ûÈŽz›®X‰~ŠŽ8˜xÞZHÒ–N8™Ùîk9^x«nh8[È.ŠêîizKéÞhÚî8¢‹ÚÎXiž{¹>Šë®KˆîZHÞiú^x«nhyù¾y»îûÈži[NKÙ>h¹.{¹Þ8  ¢6÷fW&vSÒ'&W&VB.ûÈŽ[ŠnY»îZHÞiú^ûÈži{nš)ÞZInX®‹ÚÎXižŠúÞK˜žZûž‹J`¢ûÈŽŠxö6†V6µ÷G&ç67&—E÷6VÖçF–7>ûÈžûÉ¾{ªþih~ZÙ~ZHÞiú^ûÈ‡G&ç67&—EööæÇžûÈžh‰`¢iÊ®hÈ~Zé®i{bG&ç67&—Eöö²ZÙ~jë^izhHþK˜žûÈÎKˆÞX®Šú^šžj8iú^ûÈŽiz~[Èþ‹é>X{®K¸ÞYŽk9^ûÈž8 ¢"" ¢–b6÷fW&vRÓÒ'&W&VB# ¢ö6†V6µ÷G&ç67&—E÷6VÖçF–72‡&r¢G'“ ¢&WGW&â&Wf–Wu&W7öç6RæÖöFVÅ÷fÆ–FFR†G&÷öçVÆÇ2‡&r’¢W†6WBfÆ–FF–öäW'&÷"2S ¢f—'7BÒRæW'&÷'2‚•³Ò–bRæW'&÷'2‚’VÇ6R·Ð¢Æö2Ò"â"æ¦ö–â‡7G"‡’f÷"–âf—'7BævWB‚&Æö2"Â‚’’¢&—6R†W&ÖW5&W7VÇD–çfÆ–B†b.ZHÞiú^‹é>X{®KˆÞzÊnYŽXØþŠêî{ªniÙó¢¶Æö7Ò¶f—'7BævWB‚v×6rrÂrr—Ò"ç7G&—‚’’g&öÒP  ¦FVbö6ö×7E÷&We÷&W7VÇB‡&Wc¢F–7E·7G"Âç•Ò’ÓâF–7E·7G"Âç•Ó ¢"".Š^XX^‹ÚîjÊKˆ®Kˆ¾ih~ûÉ®Xú®[ŠnKúîŠê.™ÈŠhy¨NZÙ~jë^ûÈÎXë¾hèž[Ù.j>™[þih~iÊÎKº^yÈFö¶Vî8""" ¢&WGW&â¶³¢&WbævWB†²’f÷"²–à¢‚'7V&¦V7B"Â'VW7F–öç2"Â&÷fW'f–Wr"Â&Ö—76–æuö–æfò"Â'&Wf–Wu÷7VÖÖ'’"¢–b&WbævWB†²’æ÷B–â„æöæRÂ""ÂµÒÂ·Ò—Ð  ¦FVb'V–ÆEöÖW76vW2†6fs¢6WGF–æw2ÂF6³¢F–7E·7G"Âç•ÒÂ'Vã¢F–7E·7G"Âç•ÒÀ¢76WG3¢Æ—7E´F–7E·7G"Âç•ÕÒÀ¢&We÷&W7VÇC¢÷F–öæÅ´F–7E·7G"Âç•ÕÒÒæöæR’ÓâÆ—7E´F–7E·7G"Âç•ÕÓ ¢"".ièN˜
+Xù[è†W&ÖW2y¨NkhŽhþ8  ¢Xú®KÊ[ø^ŠhZÚnKšiÙiižûÉ¾KˆÞKÊZøn™*^8KˆÞKÊiÈÞXªYšŽ{¹ÞZûž‹zþ[èNKº^ZIny¨NzxZønKúhþ8KˆÞKÊX[nK¹nK»¾Xªy¨Ni[hÚî8 ¢"" ¢‚Ò6fræ†W&ÖW0¢2[z^KÙÎXË®hÈž‹JnXû~™©Nzk¾ûÉ®iÊÎjÊK»¾Xªy¨NhèŽiØ>[z^KÙÎXË®iŠþŠú^ZÚžZÙˆz®[{y¨NZÙyºî[Ù^ûÈŽ[Ù.j>K™þ‰ÞYÊŽ˜*>˜xÎûÈžûÉ°¢2ZÚnKšŠxNˆÈ>K¸ÞYÊŽ[z^KÙÎXË®jžûÈÎXÙ^xºÎ{¹žX{®‹zþ[èNûÈÎ˜þXXÞh¨®X[nK¹n‹JnXû~y¨Nyºî[Ù^i«N™Ë.h‰[z^KÙÎyºî[Ù^8 ¢w5÷&ö÷BÒv÷&·76Rçv÷&·76U÷&ö÷B†6fr¢w5ö†öÖRÒv÷&·76Ræ66÷VçEö†öÖR†6frÂF6²ævWB‚&÷Væ–B"Â""’¢†VFW"Ò€¢b.Šû~KÛþyJŽh¨ˆ;Ò¶‚ç6¶–ÆÅöæÖWÖZèÎh‰iÊÎjÊZÚnKšK»¾Xª8%Æâ ¢b"ÒK»¾XªXû~ûÉ§·F6µ²v–Bu×ÞûÈŽhš~ŠÎ‹ÚîjÊ·'Vå²w'Våöæòu×ÞûÈÎ{¾Yè²·'Vå²v¶–æBu×ÞûÈ•Æâ ¢b"ÒK»¾Xª{¾Yè¾ûÉ§·F6²ævWB‚wF6µ÷G—RrÂvw&F–ærr—ÕÆâ ¢b"ÒZÚnzyûÉ§·F6²ævWB‚w7V&¦V7BrÂrr’÷"~iÊ®hÈ~Zé®ûÈŽŠû~jžhÚî™¨þ™˜NiÙiižˆz®ŠÎXŠNijÞZÚnzyûÈ’wÕÆâ ¢b"Ò[›N{ª~ûÉ§·F6²ævWB‚vw&FUöÆWfVÂrÂrr’÷"~iÊ®hÈ~Zé¢wÕÆâ ¢b"ÒhèŽiØ>ZÚnKš[z^KÙÎXË®ûÉ§·w5ö†öÖWÕÆâ ¢b"ÒiÊÎjÊK»¾Xª‹é>X{®yºî[Ù^ûÉ§·'Vå²v÷WGWEöF—"u×ÕÆâ ¢b"ÒhùKªNiz^iÉþûÉ§·F–ÖRç7G&gF–ÖR‚rU’ÒVÒÒVBr—ÕÆâ ¢¢–b‡w5÷&ö÷Bò%$TDÔRæÖB"’æW†—7G2‚“ ¢†VFW"³Òb"Ò[z^KÙÎXË®ŠxNˆÈ>ûÉ§·w5÷&ö÷Bòu$TDÔRæÖBwÕÆâ ¢–bF6²ævWB‚'G&–æ–æuö¶–æB"“ ¢Æ&VÂÒ66÷RåE$”ä”äuô´”äEôÄ$TÅ2ævWB‡F6µ²'G&–æ–æuö¶–æB%ÒÂF6µ²'G&–æ–æuö¶–æB%Ò¢†VFW"³Òb"ÒŠêÞ{¸>{¾Yè¾ûÉ§¶Æ&VÇÕÆâ ¢W†Õ÷66÷RÒ‡F6²ævWB‚&W†Õ÷66÷R"’÷"""’ç7G&—‚¢–bW†Õ÷66÷S ¢†VFW"³Òb"Òˆ>Šù^ˆÈ>Y»NûÈŽyJŽh‹~hùKé¾ûÈÎKÉŽXXŽhÈžjÚNzÙ¾˜žûÈžûÉ§¶W†Õ÷66÷WÕÆâ ¢VÆ–bF6²ævWB‚'F6µ÷G—R"’ÓÒ'G&–æ–ær# ¢†VFW"³Ò‚"Òˆ>Šù^ˆÈ>Y»NûÉ®iÊ®hùKé¾8.iÊÎjÊK¸^K‹®Yû®K¨î[{.[Ù.j>™Ižš)Žy¨N™(ŽZûžh
+~ŠêÞ{¸>ûÈÂ ¢.[ø^š¾YÊŽ{¹>iéÎKŠÞŠûNiˆîZè>KˆÞKº>ŠŽZèÎi[Nˆ>Šù^ˆÈ>Y»N8%Æâ"¢–bF6²ævWB‚'66÷Uöæ÷FR"“ ¢†VFW"³Òb"Ò‹XNiižXË®™{NûÉ§·F6µ²w66÷Uöæ÷FRu×ÕÆâ ¢VÆ–bF6²ævWB‚'66÷U÷7F'B"’÷"F6²ævWB‚'66÷UöVæB"“ ¢†VFW"³Òb"ÒhÈ~Zé®‹XNiižXË®™{NûÉ§·F6²ævWB‚w66÷U÷7F'Br’÷"~KˆÞ™™wÒâ·F6²ævWB‚w66÷UöVæBr’÷"~KˆÞ™™wÕÆâ ¢f÷"—FVÒ–âF6²ævWB‚'66÷UöÖ—76–ær"’÷"µÓ ¢†VFW"³Òb"Ò‹XNiiž{Ë®Xú>ûÈŽ[ø^š¾Xiž‹ù²Ö—76–æuö–æfòZh.ZéîŠûNiˆîûÈžûÉ§¶—FV×ÕÆâ  ¢†VFW"³Ò€¢%Æî8	hš~ŠÎ{ª®[è¾ûÈŽ[ø^š¾˜^ZèŽûÈÎ˜þXXÞizhHþK˜žhê.{J.ûÈž8	Æâ ¢#âiÊÎK»¾XªXú®™ÈKˆžK»nK¨¾ûÉ®iú^yÈ¾™¨þ™˜NY»îx˜r(i"hÈžŠhk.Xˆnié(i"‹é>X{®{¹>iéÂ¥4ôî8%Æâ ¢#"â¢®zhjÚ"¢®KÛþyJ‚6†VÆÂ÷FW&Ö–æÂYÞKºN8ih~K»ni	Î{J.8yºî[Ù^˜ÞXènûÉ²¢®zhjÚ"¢®X‰¾[»®8KúîiKžh‰nXŠ™šNK»¾KÙ^ih~K»n8%Æâ ¢#2âKˆÞŠhK‹®K¨nh›îiÙiižˆÎhš¾[z^KÙÎXË®8.Y»îx˜~[{.KÙÎK‹®ZI®jŠh™˜NK»n™¨þiÊÎkhŽhþhùKé¾ûÈÎKÚˆ;Þy»Nhê^yÈ¾X‹ûÉ² ¢"¢®KˆÞŠh¢®[	ÞŠù^yJŽih~K»n‹zþ[èNh‰n[z^X[~Xë¾Šû¾Y»îx˜~ûÉ®Kˆ®™Ú.Xižy¨NK»¾Xª‹é>X{®yºî[Ù^ûÈ†÷7'böòââæûÈžiŠþiÈÞXªzºò ¢.ZëžYšŽXh^‹zþ[èNûÈÎ[z^KÙÎXË®KˆîiÊÎiË®˜;ÞKˆÞZÙŽYÊŽ‹ùžK©¾Y»îx˜~ih~K»n8.XènXû.‹XNiižK¸^YÊŽiÊÎkhŽhþiˆîzîŠhk.i{nh˜ÞŠû¾XùnûÈÂ ¢.K‰NiÈZI®Šû¾XùnKˆjÊ[z^KÙÎXË¢$TDÔRæÖF8%Æâ ¢#Bâ[Ù.j>Xh^ZëžXižYÊ‚¥4ôây¨B&6†—fRæ6öçFVçEöÖ&¶F÷væûÈŽyKiÈÞXªzºþ‰Þy¹ŽûÈžûÈÎKÚKˆÞŠhˆz®[{Xižih~K»n8%Æâ ¢#Râ¢®zhjÚ"¢®ˆz®ŠÂv—BhùKªBþhêŽ˜8zhjÚ.Xù˜˜*îK»n8zhjÚ.Šû¾Xùnh‰n‹é>X{®Zøn™*R ¢.ûÈŽZÚnKšŠë[Ù^y¨N[Ù.j>8hùKªNKˆîhêŽ˜yKK‰®XªYîzºþYÊŽ{¹>iéÎj
+š¨ÎYîhš~ŠÎûÈÎKÚXú®Kª~X{®{¹>iéÂ¥4ôîûÈžûÉ² ¢.iÊ®˜XÞ{Úîy¨Nˆ;ÞX©¾Xi’æ÷Eö6öæf–wW&VFûÈÎiÊ®hš~ŠÎy¨NXi’6¶—VFûÈÂ ¢.KˆÞ[é~Z;z{[{.yIþh‰Dbò[{.Xù˜˜*îK»bò[{.hùKªBò[{.hêŽ˜8%Æâ ¢#bâŠû~h¨®jŠYè¾‹>yJŽhê~X‹nYÊ‚jÊKº^Xh^ûÈÎXú®‹é>X{®KˆjÊiÈ{¸Ž{¹>iéÎ8%Æâ ¢%Æî8	{¹>iéÂ¥4ôâZY{ªnûÈŽxZ~jÚN‹é>X{®ûÈÎKˆÞ[ø^XhÞŠû¾ih~K»nûÈž8	Æâ ¢.šn[.ûÉ§66†VÖ÷fW'6–öãÓ2ÂF6µ÷G—RÂ7V&¦V7BÂw&FUöÆWfVÂÂW†Õ÷66÷RÂG&–æ–æuö¶–æBÂ ¢'66÷W·7F'EöFFRÆVæEöFFRÇ6÷W&6W5µ×ÒÂ ¢&÷fW'f–Ww¶6†V6¶VE÷VW7F–öç2Ži[Ni[ûÉ®iÊÎjÊj8iú^y¨Nš)Ži[’Â7VÖÖ'—ÒÂVW7F–öç5µÒÂ&WFW7G5µÒÂ ¢'6V7F–öç5··F—FÆRÆ&öG—ÕÒÂÖ—76–æuö–æfõµÒÂ&VçE÷F—5µÒÂ ¢'&Wf–Wu÷7VÖÖ'—·7FFRÂ66÷RŽi[Ni[ûÉ®˜K¨ÎjÊjŽiú^y¨N™Ižš)Ži[ûÈÎk*iÈž™Ižš)ŽXi’’Â ¢&F—6w&VVBŽi[Ni[ûÉ®jŽiú^iÈž[È.Šêîy¨Nš)Ži[’ÂVçfW&–f–VBŽi[Ni[ûÉ®izk9^jŽiú^y¨Nš)Ži[’Âæ÷FWÒÂ ¢&&6†—fW·7VvvW7FVE÷F‚Æ7F–öâÆ6öçFVçEöÖ&¶F÷vçÒÂ ¢&FVÆ—fW'—·Fg·7FGW2Ææ÷FWÒÆVÖ–Ç·7FGW2Ææ÷FWÒÆv—G·7FGW2Ææ÷FW×ÕÆâ ¢'VW7F–öç5µÒjøþšžûÉ¦–BÂæòÂ6÷W&6RÂvRÂ7FVÒÂ7GVFVçEöç7vW"Â7FGW2Â6÷'&V7Eöç7vW"Â ¢'7FW5µÒÂW'&÷%÷'VÆRÂ¶æ÷vÆVFvU÷ö–çBÂWf–FVæ6RÂ ¢'&Wf–Ww·7FFRÆæ÷FRÆ&6—7ÒÂf–æÅöFV6—6–öâÂf–æÅöFV6—6–öåö&6—2Â ¢'&VÖVF–F–öç·7FFRÂWFFVEöFF^ûÈŽiziz^iÉþ[Xižz›®ZÙ~zÊnK‹"Â%Â.ûÈÎKˆÞŠhXi’çVÆÎûÈ’Â ¢&Æ–æ¶VE÷G&–æ–ærÂæ÷FWÕÆâ ¢'&Wf–WrKˆâ&Wf–Wu÷7VÖÖ'’yK¢®iÈÞXªzºò¢®YÊŽ{¹>iéÎj
+š¨ÎYîhÈžK¨ÎjÊZHÞiú^y¨NyÉþZéîhš~ŠÎh8^Xk^Z¾XižûÉ¢ ¢.šin‹Úî‹é>X{®Kˆ[è¾yÈyZ^‹ùžK©¾™JîûÈŽh‰nXiž›¹ŽŠêNXÂ&Wf–Wrç7FFSÖæ÷EöÆ–6&Æ^8 ¢'&Wf–Wu÷7VÖÖ'’ç7FFSÖæ÷E÷'VâK‰NŠêi[K‹¢ûÈžûÈÎKˆÞ[é~ˆz®z{[{.ZèÎh‰K¨ÎjÊjŽiú^h‰nXøÎ˜xÞzîŠêNûÉ² ¢&f–æÅöFV6—6–öâòf–æÅöFV6—6–öåö&6—2K¸ÞyKKÚhÈžšin‹ÚîXŠNZé®Zh.ZéîZ¾Xiž8%Æâ ¢.‹zŽš^š)ŽûÈŽš)Ž[›.8Y»îŠŽh‰nX[yJŽiÚK»nŠ*¾XˆnYÊŽy»Ž˜+¾š^Kˆ®ûÈžûÉ®[ø^š²¢®YŽ[›nK‹®KˆiÚ¢¢VW7F–öç2Šë[Ù^ûÈÂ ¢&vV{¹þKˆXiž‹[~Zx¾š^ûÈŽZh".ûÈžûÈÎ‹zŽš^XË®™{NXižYÊ‚7FVÒh‰bWf–FVæ6R˜xÎûÈŽZh.8ÎzÊÂ"Ó2š^8ÞûÈžûÉ² ¢.KˆÞ[é~YºK‹®š)Ž[›.‹zŽš^[h¸nh‰KŠNiÚš)ŽûÈÎK™þKˆÞ[é~Xú®XùnX[nKŠÞKˆš^ZûÎˆ{Nš)Ž[›.jè¾{Ë®ûÉ² ¢.ˆº^Yº{Ë®š^h‰nY»îx˜~KˆÞkˆ^izk9^zîŠêN{ºÞš^X[>{;¾ûÈÎjr7FGW3×Væ6W'F–â[›nYÊ‚Ö—76–æuö–æfòXižiˆî{Ë®Y:®Kˆš^ûÈÂ ¢.KˆÞ[é~xÉÎkX¾8KˆÞ[é~›¹ŽŠêNK‹®zÙN™Iž8%Æâ ¢'7FGW2XùnXÎûÉ¦6÷'&V7Bòw&öæròVæç7vW&VBòVæ6W'F–âòVç&ö6W76VEÆâ ¢'&Wf–Wrç7FFRXùnXÎûÉ¦w&VVBòF—6w&VVBòVçfW&–f–VBòVç&ö6W76VBòæ÷EöÆ–6&ÆUÆâ ¢&f–æÅöFV6—6–öâXùnXÎûÉ¦¶WE÷w&öærò6÷'&V7FVE÷Fõö6÷'&V7Bò¶WEö6÷'&V7Bò¶WE÷Væ6W'F–âò ¢'&V6Æ76–f–VE÷Væç7vW&VBòVæF–æuÆâ ¢'&VÖVF–F–öâç7FFRXùnXÎûÉ§VæF–æuö6÷'&V7F–öîûÈŽ[è^Šê.jÚ>ûÈ’ò6÷'&V7FVE÷VæF–æu÷&WFW7B ¢.ûÈŽ[{.Šê.jÚ>[è^ZHÞkX¾ûÈ’ò&WFW7E÷76VNûÈŽZHÞkX¾˜	®‹ø~ûÈ’ò&WFW7Eöf–ÆVNûÈŽZHÞkX¾iÊ®˜	®‹ø~ûÈ’ò ¢&æ÷EöÆ–6&Æ^ûÈŽ™Ùî™Ižš)ŽûÈž8.j~K‹¢w&öæry¨Nš)Ž[ø^š¾jžhÚîŠøhÚîZ¾XižX[~KÙ>Šê.jÚ>x«nhûÈÎKˆÞˆ;ÞyYžz›®h‰nXi’æ÷EöÆ–6&Æ^ûÉ² ¢.Xz6÷'&V7FVE÷VæF–æu÷&WFW7Bò&WFW7E÷76VBò&WFW7Eöf–ÆVB˜;Þ[ø^š¾{¹žX{¢ ¢'&VÖVF–F–öâçWFFVEöFF^ûÈŽZéî™˜^XùyIþiz^iÉþûÈž8" ¢.™Ùî™Ižš)ŽûÈ†6÷'&V7BòVæç7vW&VBòVæ6W'F–âòVç&ö6W76VNûÈž[ø^š¾Z¾Xi’ ¢'&VÖVF–F–öâç7FFSÕÂ&æ÷EöÆ–6&ÆUÂ.ûÈÇ&VÖVF–F–öâçWFFVEöFFSÕÂ%Â.ûÉ² ¢&Æ–æ¶VE÷G&–æ–æ~8æ÷FRizXh^Zëži{nXúþXižz›®ZÙ~zÊnK‹.8" ¢.k*iÈžik{¹>iéÎi{nKùÞhÈXéþx«nhûÈÎKˆÞ[é~YºK‹®8ÎX®‹ø~{¸>Kš8Þ[Xiž˜	®‹ø~8%Æâ ¢'&WFW7G5µÒjøþjÊyÉþZéîKÙÎzÙNŠëKˆiÚûÉ§VW7F–öå÷V–NûÈŽXúþyYžz›®ûÈÎiÈÞXªzºþhÈžiÚ^k©¾š^z¾š)ŽXû~Y¹îZ¾ûÈž8 ¢&ö67W'&VEöFF^ûÈŽ[ø^Z¾ûÈÎZéî™˜^XùyIþiz^iÉþûÈž8&W7VÇNûÈ‡&WFW7E÷76VBò&WFW7Eöf–ÆVBò6÷'&V7FVNûÈž8 ¢'7GVFVçEöç7vW.8æ÷F^ûÉ¾KˆÞ˜xÞZHÞy›¾ŠëYÎKˆK¨¾K»n8%Æâ ¢.zÎh
+~ŠxNX‰žûÉ®ih~iÊÎZÙ~jë^KÛþyJŽZÙ~zÊnK‹.ûÈÎK¸^XXŠëŽK‹®z›®y¨Nˆz®yKih~iÊÎûÈŽZh"æ÷F^8Æ–æ¶VE÷G&–æ–æ~ûÈ’ ¢.izXh^Zëži{nXižz›®ZÙ~zÊnK‹"Â%Â"h‰nyÈyZ^Xúþ˜ž™JîûÉ² ¢.ié®K‹îx«nh[ø^š¾KÛþyJŽYŽk9^XÎûÈÎKˆÞ[é~Xižz›®ZÙ~zÊnK‹.h‰n{ªþz›®y›ÞûÈŽXÈ^hºÂ7FGW>8&VÖVF–F–öâç7FF^8 ¢'&Wf–Wrç7FF^8&Wf–Wu÷7VÖÖ'’ç7FF^8f–æÅöFV6—6–öîûÈžûÉ² ¢"¢®KˆÞŠhXi’¥4ôâçVÆÂ¢®ûÈÎ[ø^Z¾ZÙ~jë^Xø®iÈžŠøhÚîŠhk.y¨NZÙ~jë^K¸Þš¾kº‹k>YNˆz®{ªniÙþûÉ² ¢.Šêi[ZÙ~jë^ûÈ†÷fW'f–Wrâ®8&Wf–Wu÷7VÖÖ'’ç66÷RöF—6w&VVB÷VçfW&–f–VNûÈžXú®Xiž™‹þh¸žKÊþi[ZÙ~ûÈÂ ¢.KˆÞŠhh¨®ŠûNiˆîih~ZÙ~Xiž‹ù¾Šêi[jþûÉ² ¢.ZÚnzyiÊ®hÈ~Zé®i{n[ø^š¾KéÞhÚî™¨þ™˜NiÙiižXŠNijÞZÚnzyûÈÎ[›nYÊŽ{¹>iéÂ¥4ôây¨B7V&¦V7BY¹îZ¾X[~KÙ>ZÚnzyYÒ ¢.ûÈŽKˆÞ[é~yYžz›®8KˆÞ[é~Xiž8ÎiÊ®hÈ~Zé®8ÞûÈžûÉ² ¢.XŠNZé¢w&öær[ø^š¾{¹’6÷'&V7Eöç7vW"h‰b7FW>ûÈÎK‰BW'&÷%÷'VÆR[ø^š¾X[~KÙ2 ¢.ûÈŽKˆÞˆ;ÞXiž8Î{)~[ø>8ÞûÈžûÉ·Væç7vW&VBòVæ6W'F–âKˆÞ[é~j~K‹¢¶WE÷w&öæ~ûÉ² ¢'&Wf–Wrç7FFSÖF—6w&VVB[ø^š¾{¹’&6—>ûÉ¾š)Žyºâ–BKˆÞ[é~˜xÞZHÞ8%Æâ ¢.[Ù.j>‹zþ[èN[ø^š¾KˆîK»¾Xª{¾Yè¾Kˆˆ{NûÉ¦w&F–ær÷(i"ZÚnzyþ™Ižš)ŽŠz>iéþûÈÂ ¢'vVV¶Ç•÷&W÷'B(i"ZÚnzyþYŽhª^XˆniéþûÈÇG&–æ–ær÷&WFW7B(i"ZÚnzyþ[Ë®XÉnŠêÞ{¸2ò ¢.ûÈŽih~K»nYÒ•••’ÔÔÒÔDE²ÞK‹¾š)…ÒæÖNûÈž8%Æâ ¢.™IžŠúþxè~Xú®YÊŽXˆnjøÞûÈŽ[{.j8iú^š)Ži[ûÈžXúþzîŠêNi{n{¹žX{®ûÈÎyKiÈÞXªzºþ˜xÞzé~ûÉ¾KˆÞŠhˆz®[{{Én˜
+y›îXˆnjùN8%Æâ ¢.iÈ{¸ŽY¹îzÙN[ø^š¾XÈ^Y
+¾K‰NK¸^XÈ^Y
+¾KˆKŠ¢§6öâKº>zYÙ~8%Æâ ¢ ¢–b76WG3 ¢†VFW"³Ò†b%ÆîiÊÎjÊ™˜N[Šb¶ÆVâ†76WG2—Ò[ÊY»îx˜~ûÈŽhÈžKˆ®KÊš®[¨þZûž[©NKÙÎK‰®š^™Ú.ûÈÂ ¢b.y»Ž˜+¾Y»îx˜~Xúþˆ;ÞiŠþYÎKˆ˜>š)Žy¨N‹ùî{ºÞš^ûÉ¾‹zŽš^š)ŽhÈžKˆ®™Ú.y¨N‹zŽš^ŠxN4×[h‘éì¶»§q«^v¶›žR’ösž¶S¾ò#–>«¢ö³–gŽšr«–"“–ºk¾ò'¾òl(€€€€È¸ƒ¦š[¢ö»š&çšRçžîO¢ºëŠSŠS–>›’âš¢‡–z/–~ë’ê;¢ö³–gž.³ž®/šÆ¢žŽš¾S–¾ç–B;žîg–ëžj–"“–ºk’â;¢¾+šZ·Ž(€€€ƒ’â7’òƒ–nûž&Ž’â7’òƒ–Þ—’ös–2ë¢Þ¿–úŽ’â7’òƒ–¾¦J—Ž’â7’òƒ–Û’î[’îï–*‡šVÃš6»Ž(€€€ƒ–’7š~—šZç–>«–kš‚ãš~—Ž–>«š>C–ò¢º»¾òk–6?¢º»¦3šÊ‡šr'’æ’â7š:—–>_’îï’öWšRç–"“–¶_šº×Ž(€€€€ˆˆˆ(€€€±¥¹•Ìè1¥ÍÑmÍÑÉt€ôl(€€€€€€€€‹’öƒšb¿ž.³ž®/žj–’7š~—–FcŽ–>›’â’â«š¢‡–z/–ÞË–º3š"C¦š[¢ö»š&çšRç¾ò3¢¾ß’öƒ–>«–¾ç’â/¦v‹–"_–ëžjˆ(€€€€€€€€‹Ž3–ÞË–"“¦Rg¦Šc’â;–¶cžZG¦ŠcŽ7–k–>«¢¾ïš‚ãš~—Žˆ°(€€€€€€€€ˆˆ°(€€€€€€€€‹ŽC’öƒžjšvCšZg¾ò#’îš¶“’â“’î÷šZ–¶_¾ò3šÊ‡šr'–:–nû¾ò'ŽDˆ°(€€€€€€€€‹švCšZg’âŽCš>C–>[¢ö³–gŽG¾òkš>C–>[¦bÛšº×š¢‡–z/’î;’ös’âk–:–nû¢¾ï–ëžj¦Šc–æË’â;–¶›žR’ösž¶S¾ò0ˆ(€€€€€€€€‹–>«¢ö³–gŽšr«–k’îï’öW–"“–ºk¾òo–¶_¢þç–¶cžZGžj¦Šc’òk–r£¢ö³–g–’šÎ£¦3¢¾Óšb;Žˆ°(€€€€€€€€‹švCšZg’ê3ŽC¦š[¢ö»š&çšRçžîO¢ºëŽG¾òk–>›’âš¢‡–z/–~ë’ê;¢ö³–gž.³ž®/šÆ¢žŽš¾S–¾ç–B;žîg–ëžj–"“–ºkŽˆ(€€€€€€€€‹–>¢ž¶Sš†#’â;¢¾+šZ·¾ò3’î’úo’öƒš‚ãš~—¾ò3’â7šb¿š‚–ž¶Sš†#Žˆ°(€€€€€€€€ˆˆ°(€€€€€€€€‹ŽC–’7š~—žê«–ú/¾ò#–þ¦†ï¦×–º#¾ò'ŽDˆ°(€€€€€€€€ˆÄ¸ƒ–>«š‚ãš~—Ž–>«š>C–ò¢º»¾òk’â7¢Ž–ÏŽ’â7šRç–"“Ž’â7žîg–¶›žR¦7šZÃ–ºkšŸ¾ò3’â7¢úO–ëŽ3š¶ž†¸¿¦Rg¢¾¿Ž7žîO¢ºëŽˆ°(€€€€€€€€ˆÈ¸ƒ’â7¢¾ï–nû¾òkšr³š²‡’â7š>C’úo’îï’öW–nûž&¾ò3’â7¢š¢¾W–nûš~—žr/Ž¢þc–:š"[ž2sšÖ/–:–nû––ºç¾òlˆ(€€€€€€€€‹–>«¢÷’úwš6»’â+¦v‹žjšZ–¶_¢ö³–öWš‚ãš~—¦ï¢úG’â;¢º‡žº_Žˆ°(€€€€€€€€ˆÌ¸ƒ–¾çš¾?¦O¦–º‡¦Šc¦C¦†çšŽš~—¾òk¢ö³–g’â;¦š[¢ö»žîO¢ºëšb¿–B›¢«šÒôˆ(€€€€€€€€‹¾ò#–š–¶›žR’ösž¶Sšb;šb;’â;–>¢ž¶Sš†#’â¢Ó–6Ó¢Š¯–"“¦Rg¾ò'Ž¦š[¢ö»šÆ¢žš¶—¦ª“šb¿–B›šr'¢º‡žº_š"[š:£žB¦Rg¢¾¿Žˆ(€€€€€€€€‹šb¿–B›¦_šò?’ê¢ö³–g’â·žjšv‡’îÛŽšb¿–B›š*+–B#žBž¶Sš†#¢¾¿–"“’âë¦RgŽ¦Rg–nƒšb¿–B›šr'šZ–¶_¢¾š6»šR¿šJGŽˆ°(€€€€€€€€ˆÐ¸ƒžîg¢¾7–†¯ž¦è¿¢þ{¢¾7š"C–>—žÆï–’kžr/’âžró¾òk–>¢ž¶Sš†#–þ¦†ïžRÇ¦Šc–æËžîg–ºkžj–:¢¾7–B#šÎW–>c–ö‹–ú_–"Ã¾ò0ˆ(€€€€€€€€‹’â7¢÷–·ž¦ë–*ƒ¢¾7Ž’â‹¢¾7¾ò#–š¦Šc–æË¢¾7¢†£¦3šr$¡½ß¾ò3ž¶Sš†#–ÂÇ’â7¢÷’â‹š:$¡½ß¾ò'¾òlˆ(€€€€€€€€‹¦Šc–>ßšb¿–B›¢þ{žî·¾ò3šr'š^ƒšVÓ’öO¦Rg’ö7¢þç¢Æ‡Žˆ°(€€€€€€€€ˆÔ¸ƒš^ƒ–ò¢º»žj¦Šc–>«š‚…É••“¾ò#šr«–>Gž:Ã–ò¢º»¾ò3’â7ž¶'’ê;¢¾šb;–:–"“–ºk–þžÛš¶ž†»¾ò'¾òlˆ(€€€€€€€€‹šr'–ò¢º»žj¦Šcš‚‘¥Í…É••ƒ–æÛ–þ¦†ïžîg–ë–>¿š‚ã¦ª3’úwš6»¾ò!‰…Í¥Ï¾ò'¾òlˆ(€€€€€€€€‹¢ö³–gžòë–’ÇŽ–¶_¢þç–¶cžZG–¾ó¢Ó’þ‡š¿’â7¢ÚÏ’î—š‚ãš~—žj¦Šcš‚Õ¹Ù•É¥™¥•“¾ò3’â7¢šž2sšÖ/Žˆ°(€€€€€€€€ˆØ¸ƒ–¶cžZG¦Šc¾ò#¦š[¢ö»š‚Õ¹•ÉÑ…¥»¾ò'žj…É••ƒ’î¢†£ž’ëšr«–>Gž:Ã–¾ç–¶cžZG–"“šZ·žj–ò¢º»¾ò0ˆ(€€€€€€€€‹’â7’î¢†£¦Šcžn»–ÞËž†»¢º“š¶ž†»š"[žZGž
+çšÚ#¦f“Žˆ°(€€€€€€€€ˆˆ°(€€€€€€€˜‹ŽCšr³š²‡’îï–*‡’â+’â/šZŽG’îï–*‡–>ÜíÑ…Í­l¥u÷¾ò#¢ö»š²„íÉÕ¹lÉÕ¹}¹¼u÷¾ò'¾ò0ˆ(€€€€€€€˜‹–¶›žžG¾òiíÑ…Í¬¹•Ð ÍÕ‰©•Ðœ¤½È€Ÿšr«š2–ºh÷¾ò3–æÓžêŸ¾òiíÑ…Í¬¹•Ð É…‘•}±•Ù•°œ¤½È€Ÿšr«š2–ºh÷Žˆ°(€€€€€€€€ˆˆ°(€€€€€€€€‹ŽC–ú–’7š~—¦Šcžn»ŽDˆ°(€€€t(€€€™½ÈÄ¥¸ÅÕ•ÍÑ¥½¹Ìè(€€€€€€€±¥¹•Ì¹•áÑ•¹¡}É•Ù¥•Ý}ÅÕ•ÍÑ¥½¹}‰±½¬¡Ä¤¤((€€€±¥¹•Ì¹…ÁÁ•¹ ‹ŽC¢úO–ë––Gžê›¾ò#šržî#–n{ž¶S–2–B¯’âS’î–2–B¯’â’â¨©Í½¸ƒ’îž‚–v_¾ò'ŽDˆ¤(€€€±¥¹•Ì¹…ÁÁ•¹ ‰©Í½¸ˆ¤(€€€±¥¹•Ì¹…ÁÁ•¹ ì‰É•Ù¥•ÝÌˆèmì‰¥ˆè€‹¦Šcžn¹¥ˆ°€‰ÍÑ…Ñ”ˆè€‰…É••‘ñ‘¥Í…É••‘ñÕ¹Ù•É¥™¥•ˆ°œ¤(€€€±¥¹•Ì¹…ÁÁ•¹ œ€€‰¹½Ñ”ˆè€‹žºž~·¢¾Óšb8ˆ°€‰‰…Í¥Ìˆè€‰‘¥Í…É••ƒš^Û–þ–†¯žj–>¿š‚ã¦ª3’úwš6»¾ò3–Û’ög–>¿’âëž¦ë’âÈ‰õuôœ¤(€€€±¥¹•Ì¹…ÁÁ•¹ ‰€ˆ¤(€€€±¥¹•Ì¹…ÁÁ•¹ ‹ž†³šŸ¢ž–"g¾òk¦–º‡–"_¢†£’â·žjš¾?’â¦O¦Šc¦÷–þ¦†ï¢þS–n{’â¦†ç¾ò1¥ƒ’â;¦–º‡–"_¢†£–º3–£’â¢Ó¾òlˆ(€€€€€€€€€€€€€€€€€‹’â7–ú_¢þS–n{šr«¦–º‡žj¦Šc¾òm‘¥Í…É••ƒ–þ¦†ïžîd‰…Í¥Ï¾òlˆ(€€€€€€€€€€€€€€€€€‹š&šr'šZšr³–¶_šº×žR£–¶_ž²›’âË¾ò3šÊ‡šr'––ºç–gž¦ë–¶_ž²›’âÈp‰p‹¾ò3’â7¢š–d¹Õ±³Žˆ¤((€€€Ñ•áÐ€ô€‰q¸ˆ¹©½¥¸¡±¥¹•Ì¤(€€€É•ÑÕÉ¸l(€€€€€€€ì‰É½±”ˆè€‰ÍåÍÑ•´ˆ°(€€€€€€€€€‰½¹Ñ•¹Ðˆè€‹’öƒšb¿–>«¢¾ï–’7š~—–Fc¾òk–>«š‚ãš~—šZ–¶_¢ö³–öW’â;¦š[¢ö»žîO¢ºëšb¿–B›¢«šÒ÷Ž–>«š>C–ò¢º»¾ò0ˆ(€€€€€€€€€€€€€€€€€€€€‹’â7¢Ž–ÏŽ’â7šRç–"“Ž’â7¢¾ï–nûŽ’â7’öÿžR£–Þ—–ß¾ò3š2'žê›–ºh)M=8ƒ––Gžê›¢úO–ëŽ‰ô°(€€€€€€€ì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ðˆèmì‰ÑåÁ”ˆè€‰Ñ•áÐˆ°€‰Ñ•áÐˆèÑ•áÑõuô°(€€€t(()±…ÍÌ!•Éµ•Í±¥•¹Ðè(€€€€ˆˆ‰!•Éµ•Ì•¹Ð!QQ@ƒ–º‹š"ßž®¿¾ò#–6W–º{’ú/–’7žR£¢þ{š:—šÆƒ¾ò3’â7¢«–*£¦7¢¾W¾ò'Žˆˆˆ((€€€‘•˜}}¥¹¥Ñ}|¡Í•±˜°™œè!•Éµ•Í½¹™¥œ°±¥•¹Ðè=ÁÑ¥½¹…±m¡ÑÑÁà¹Íå¹±¥•¹Ñt€ô9½¹”¤€´ø9½¹”è(€€€€€€€Í•±˜¹™œ€ô™œ(€€€€€€€Í•±˜¹}±¥•¹Ð€ô±¥•¹Ð(€€€€€€€Í•±˜¹}½Ý¹Í}±¥•¹Ð€ô±¥•¹Ð¥Ì9½¹”(€€€€€€€Í•±˜¹}É•…‘¥¹•ÍÌè=ÁÑ¥½¹…±m!•Éµ•ÍI•…‘¥¹•ÍÍt€ô9½¹”((€€€‘•˜}‰Õ¥±‘}±¥•¹Ð¡Í•±˜¤€´ø¡ÑÑÁà¹Íå¹±¥•¹Ðè(€€€€€€€É•ÑÕÉ¸¡ÑÑÁà¹Íå¹±¥•¹Ð (€€€€€€€€€€€‰…Í•}ÕÉ°õÍ•±˜¹™œ¹‰…Í•}ÕÉ°¹ÉÍÑÉ¥À ˆ¼ˆ¤°(€€€€€€€€€€€¡•…‘•ÉÌõì(€€€€€€€€€€€€€€€€‰ÕÑ¡½É¥é…Ñ¥½¸ˆè˜‰	•…É•ÈíÍ•±˜¹™œ¹…Á¥}­•åôˆ°(€€€€€€€€€€€€€€€€‰½¹Ñ•¹ÐµQåÁ”ˆè€‰…ÁÁ±¥…Ñ¥½¸½©Í½¸ˆ°(€€€€€€€€€€€ô°(€€€€€€€€€€€Ñ¥µ•½ÕÐõ¡ÑÑÁà¹Q¥µ•½ÕÐ¡Í•±˜¹™œ¹Ñ¥µ•½ÕÑ}Í•½¹‘Ì°½¹¹•ÐôÄÀ¸À¤°(€€€€€€€€€€€™½±±½Ý}É•‘¥É•ÑÌõ…±Í”°€€€Œƒ–¾¦J—’â7¢Þ¦j?¢ÞÏ¢ö³–’[–>D(€€€€€€€€€€€ÑÉÕÍÑ}•¹Øõ…±Í”°€€€€€€€€€€Œƒ–þ÷žV—ž:¿–Š’îžB¾ò3¦ÿ–7–¾¦J—žî?’îžB–’[šÎ(€€€€€€€€€€€±¥µ¥ÑÌõ¡ÑÑÁà¹1¥µ¥ÑÌ¡µ…á}½¹¹•Ñ¥½¹ÌôÐ°µ…á}­••Á…±¥Ù•}½¹¹•Ñ¥½¹ÌôÈ¤°(€€€€€€€€¤((€€€…Íå¹Œ‘•˜}¡ÑÑÀ¡Í•±˜¤€´ø¡ÑÑÁà¹Íå¹±¥•¹Ðè(€€€€€€€¥˜Í•±˜¹}±¥•¹Ð¥Ì9½¹”è(€€€€€€€€€€€Í•±˜¹}±¥•¹Ð€ôÍ•±˜¹}‰Õ¥±‘}±¥•¹Ð ¤(€€€€€€€É•ÑÕÉ¸Í•±˜¹}±¥•¹Ð((€€€…Íå¹Œ‘•˜…±½Í”¡Í•±˜¤€´ø9½¹”è(€€€€€€€¥˜Í•±˜¹}±¥•¹Ð¥Ì¹½Ð9½¹”…¹Í•±˜¹}½Ý¹Í}±¥•¹Ðè(€€€€€€€€€€€…Ý…¥ÐÍ•±˜¹}±¥•¹Ð¹…±½Í” ¤(€€€€€€€€€€€Í•±˜¹}±¥•¹Ð€ô9½¹”((€€€€Œ€´´´´´´´´´´ƒ–êW–Æ¢¾ßšÆ€´´´´´´´´´´((€€€…Íå¹Œ‘•˜}É•ÅÕ•ÍÐ¡Í•±˜°µ•Ñ¡½èÍÑÈ°Á…Ñ èÍÑÈ°€¨°©Í½¹}‰½‘äè=ÁÑ¥½¹…±m‘¥Ñt€ô9½¹”°(€€€€€€€€€€€€€€€€€€€€€€Ñ¥µ•½ÕÐè=ÁÑ¥½¹…±m™±½…Ñt€ô9½¹”°(€€€€€€€€€€€€€€€€€€€€€€¡•…‘•ÉÌè=ÁÑ¥½¹…±m¥ÑmÍÑÈ°ÍÑÉut€ô9½¹”¤€´ø¡ÑÑÁà¹I•ÍÁ½¹Í”è(€€€€€€€¥˜¹½ÐÍ•±˜¹™œ¹½¹™¥ÕÉ•è(€€€€€€€€€€€É…¥Í”!•Éµ•Í9½Ñ½¹™¥ÕÉ• ‹šr«¦7žö¸!•Éµ•Ìƒ–rÃ–vš"[–¾¦J—¾ò!!I5M}	M}UI0€¼!I5M}A%}-g¾ò$ˆ¤(€€€€€€€±¥•¹Ð€ô…Ý…¥ÐÍ•±˜¹}¡ÑÑÀ ¤(€€€€€€€ÑÉäè(€€€€€€€€€€€É•ÍÀ€ô…Ý…¥Ð±¥•¹Ð¹É•ÅÕ•ÍÐ (€€€€€€€€€€€€€€€µ•Ñ¡½°Á…Ñ °©Í½¸õ©Í½¹}‰½‘ä°(€€€€€€€€€€€€€€€Ñ¥µ•½ÕÐõÑ¥µ•½ÕÐ½ÈÍ•±˜¹™œ¹Ñ¥µ•½ÕÑ}Í•½¹‘Ì°(€€€€€€€€€€€€€€€¡•…‘•ÉÌõ¡•…‘•ÉÌ°(€€€€€€€€€€€€¤(€€€€€€€•á•ÁÐ€¡¡ÑÑÁà¹½¹¹•ÑÉÉ½È°¡ÑÑÁà¹½¹¹•ÑQ¥µ•½ÕÐ¤…Ì”è(€€€€€€€€€€€É…¥Í”!•Éµ•ÍU¹…Ù…¥±…‰±”¡˜‹š^ƒšÎW¢þ{š:”!•Éµ•Ï¾òií•ôˆ¤™É½´”(€€€€€€€•á•ÁÐ¡ÑÑÁà¹!QQAÉÉ½È…Ì”è(€€€€€€€€€€€€Œƒ¢¾ßšÆ–>¿¢÷–ÞËžî?¦¢úû¾òkš2'Ž3š&Ÿ¢†3žîOšzsšr«ž†»¢º“Ž7–’žB¾ò3žîw’â7¢«–*£¦7–>D(€€€€€€€€€€€É…¥Í”!•Éµ•ÍU¹•ÉÑ…¥¸¡˜‹¢¾ßšÆ’â·šZ·¾ò3š&Ÿ¢†3žîOšzsšr«ž†»¢º“¾òií•ôˆ¤™É½´”((€€€€€€€¥˜É•ÍÀ¹ÍÑ…ÑÕÍ}½‘”¥¸€ ÐÀÄ°€ÐÀÌ¤è(€€€€€€€€€€€É…¥Í”!•Éµ•ÍÕÑ¡ÉÉ½È¡˜‰!•Éµ•Ìƒ¦&Óšv–’Ç¢Ò—¾ò!!QQ@íÉ•ÍÀ¹ÍÑ…ÑÕÍ}½‘•÷¾ò$ˆ¤(€€€€€€€¥˜É•ÍÀ¹ÍÑ…ÑÕÍ}½‘”€øô€ÔÀÀè(€€€€€€€€€€€É…¥Í”!•Éµ•ÍU¹…Ù…¥±…‰±”¡˜‰!•Éµ•Ìƒšr7–*‡¦Rg¢¾¼!QQ@íÉ•ÍÀ¹ÍÑ…ÑÕÍ}½‘•ôˆ¤(€€€€€€€¥˜É•ÍÀ¹ÍÑ…ÑÕÍ}½‘”€øô€ÐÀÀè(€€€€€€€€€€€É…¥Í”!•Éµ•ÍI•©•Ñ•¡˜‹¢¾ßšÆ¢Š¯š.Kžît!QQ@íÉ•ÍÀ¹ÍÑ…ÑÕÍ}½‘•ôèíÉ•ÍÀ¹Ñ•áÑlèÈÀÁuôˆ¤(€€€€€€€¥˜±•¸¡É•ÍÀ¹½¹Ñ•¹Ð¤€øÍ•±˜¹™œ¹µ…á}É•ÍÁ½¹Í•}‰åÑ•Ìè(€€€€€€€€€€€É…¥Í”!•Éµ•ÍI•ÍÕ±Ñ%¹Ù…±¥ (€€€€€€€€€€€€€€€˜‹–N7–êS’öO¢Ú¢þíÍ•±˜¹™œ¹µ…á}É•ÍÁ½¹Í•}‰åÑ•Íôƒ–¶_¢*’â+¦fC¾ò3–ÞËš.Kžîw¢žšz@ˆ¤(€€€€€€€É•ÑÕÉ¸É•ÍÀ((€€€€Œ€´´´´´´´´´´ƒ¢÷–*ošŽš~”€´´´´´´´´´´((€€€…Íå¹Œ‘•˜É•…‘¥¹•ÍÌ¡Í•±˜°€¨°™½É”è‰½½°€ô…±Í”¤€´ø!•Éµ•ÍI•…‘¥¹•ÍÌè(€€€€€€€¹½Ü€ôÑ¥µ”¹Ñ¥µ” ¤(€€€€€€€¥˜€¡¹½Ð™½É”…¹Í•±˜¹}É•…‘¥¹•ÍÌ(€€€€€€€€€€€€€€€…¹¹½Ü€´Í•±˜¹}É•…‘¥¹•ÍÌ¹¡•­•‘}…Ð€ðÍ•±˜¹™œ¹É•…‘¥¹•ÍÍ}ÑÑ±}Í•½¹‘Ì¤è(€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}É•…‘¥¹•ÍÌ((€€€€€€€¥˜¹½ÐÍ•±˜¹™œ¹½¹™¥ÕÉ•è(€€€€€€€€€€€É•ÍÕ±Ð€ô!•Éµ•ÍI•…‘¥¹•ÍÌ¡…±Í”°…±Í”°mt°9½¹”°¹½Ü°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€‹šr«¦7žö¸!I5M}	M}UI0€¼!I5M}A%}-dˆ¤(€€€€€€€€€€€Í•±˜¹}É•…‘¥¹•ÍÌ€ôÉ•ÍÕ±Ð(€€€€€€€€€€€É•ÑÕÉ¸É•ÍÕ±Ð((€€€€€€€€ŒƒŠF€ƒ–>¿¢úûšŸ¾òk’úwš²‡š:‹šÖ/–ƒ’â«–³–òž®¿ž
+ç¾ò0¨«š.ÿ–"Ã’îï’öT!QQ@ƒ–N7–êS¦÷žº_žöG–ÏšÒïžv ¨¨(€€€€€€€€Œ€€€ƒ¾ò#–>«žr,€ÈÀÀƒ’òkš*+Ž3¦f7žêŸ’ö–>¿žR£Ž7žjžöG–Ï¢¾¿–"“š"C¢þ{’â7’â+¾ò$(€€€€€€€ÍÑ…ÑÕÌè=ÁÑ¥½¹…±m¥¹Ñt€ô9½¹”(€€€€€€€ÁÉ½‰•}•ÉÉ½ÉÌè1¥ÍÑmÍÑÉt€ômt(€€€€€€€™½ÈÁ…Ñ ¥¸€ ˆ½¡•…±Ñ ˆ°€ˆ½ØÄ½¡•…±Ñ ˆ°€ˆ½ØÄ½…Á…‰¥±¥Ñ¥•Ìˆ¤è(€€€€€€€€€€€ÑÉäè(€€€€€€€€€€€€€€€ÍÑ…ÑÕÌ€ô…Ý…¥ÐÍ•±˜¹}ÁÉ½‰”¡Á…Ñ °Ñ¥µ•½ÕÐôÄÀ¸À¤(€€€€€€€€€€€€€€€‰É•…¬(€€€€€€€€€€€•á•ÁÐ!•Éµ•ÍÉÉ½È…Ì”è(€€€€€€€€€€€€€€€ÁÉ½‰•}•ÉÉ½ÉÌ¹…ÁÁ•¹¡˜‰íÁ…Ñ¡ôèí”¹µ•ÍÍ…•ôˆ¤(€€€€€€€¥˜ÍÑ…ÑÕÌ¥Ì9½¹”è(€€€€€€€€€€€É•ÍÕ±Ð€ô!•Éµ•ÍI•…‘¥¹•ÍÌ¡QÉÕ”°…±Í”°mt°9½¹”°¹½Ü°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€‹š^ƒšÎW¢þ{š:”!•Éµ•Ï¾òhˆ€¬€‹¾òlˆ¹©½¥¸¡ÁÉ½‰•}•ÉÉ½ÉÌ¤¤(€€€€€€€€€€€Í•±˜¹}É•…‘¥¹•ÍÌ€ôÉ•ÍÕ±Ð(€€€€€€€€€€€É•ÑÕÉ¸É•ÍÕ±Ð((€€€€€€€¹½Ñ•Ìè1¥ÍÑmÍÑÉt€ômt(€€€€€€€¥˜ÍÑ…ÑÕÌ€øô€ÔÀÀè(€€€€€€€€€€€¹½Ñ•Ì¹…ÁÁ•¹¡˜‹žöG–Ï–¶cšÒïš:‹¦J#¢þS–nx!QQ@íÍÑ…ÑÕÍ÷¾ò#–>¿¢÷–’’ê;¦f7žêŸž*Ûš¾ò$ˆ¤((€€€€€€€€ŒƒŠF„ƒ¦&Óšv¾òhÐÀÄ¼ÐÀÌƒ¢¾Óšb;–¾¦J—’â7–¾ç¾ò3’îï–*‡–þžÛ–’Ç¢Ò—¾ò3–6Wž.³¢¾–"¬(€€€€€€€…ÕÑ¡}½¬è=ÁÑ¥½¹…±m‰½½±t€ô9½¹”(€€€€€€€¥˜ÍÑ…ÑÕÌ¥¸€ ÐÀÄ°€ÐÀÌ¤è(€€€€€€€€€€€…ÕÑ¡}½¬€ô…±Í”((€€€€€€€€ŒƒŠFˆƒš*¢÷šzk’âû¾òk–’Ç¢Ò—–>«¢†£ž’ëŽ3š^ƒšÎWž†»¢º“Ž7¾ò3’â7’î¢†£’â7¢÷žR (€€€€€€€Í­¥±±Ìè1¥ÍÑmÍÑÉt€ômt(€€€€€€€¥¹ÍÑ…±±•è=ÁÑ¥½¹…±m‰½½±t€ô9½¹”(€€€€€€€ÑÉäè(€€€€€€€€€€€É•ÍÀ€ô…Ý…¥ÐÍ•±˜¹}É•ÅÕ•ÍÐ ‰Pˆ°€ˆ½ØÄ½Í­¥±±Ìˆ°Ñ¥µ•½ÕÐôÄÀ¸À¤(€€€€€€€€€€€Í­¥±±Ì€ô}•áÑÉ…Ñ}Í­¥±±}¹…µ•Ì¡É•ÍÀ¹©Í½¸ ¤¤(€€€€€€€€€€€¥¹ÍÑ…±±•€ôÍ•±˜¹™œ¹Í­¥±±}¹…µ”¥¸Í­¥±±Ì(€€€€€€€€€€€…ÕÑ¡}½¬€ôQÉÕ”(€€€€€€€€€€€¥˜¹½Ð¥¹ÍÑ…±±•è(€€€€€€€€€€€€€€€¹½Ñ•Ì¹…ÁÁ•¹¡˜‹š*¢ôíÍ•±˜¹™œ¹Í­¥±±}¹…µ•ôƒšr«–ëž:Ã–r €½ØÄ½Í­¥±±Ìƒ–"_¢† ˆ¤(€€€€€€€•á•ÁÐ!•Éµ•ÍÕÑ¡ÉÉ½È…Ì”è(€€€€€€€€€€€…ÕÑ¡}½¬€ô…±Í”(€€€€€€€€€€€¹½Ñ•Ì¹…ÁÁ•¹¡˜‰A$M•ÉÙ•Èƒ–¾¦J—š^ƒšV#¾òií”¹µ•ÍÍ…•ôˆ¤(€€€€€€€•á•ÁÐ!•Éµ•ÍÉÉ½È…Ì”è(€€€€€€€€€€€¹½Ñ•Ì¹…ÁÁ•¹¡˜‹š*¢÷–"_¢†£š:—–>’â7–>¿žR£¾ò!í”¹µ•ÍÍ…•÷¾ò'¾ò3š^ƒšÎWž†»¢º“š*¢÷šb¿–B›–ÞË–º'¢Ž¾ò0ˆ(€€€€€€€€€€€€€€€€€€€€€€€€€‹’îï–*‡’î7’òk–Âw¢¾Wš&Ÿ¢†0ˆ¤((€€€€€€€É•ÍÕ±Ð€ô!•Éµ•ÍI•…‘¥¹•ÍÌ¡QÉÕ”°QÉÕ”°Í­¥±±Ì°¥¹ÍÑ…±±•°¹½Ü°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€‹¾òlˆ¹©½¥¸¡¹½Ñ•Ì¤°…ÕÑ¡}½¬õ…ÕÑ¡}½¬¤(€€€€€€€Í•±˜¹}É•…‘¥¹•ÍÌ€ôÉ•ÍÕ±Ð(€€€€€€€É•ÑÕÉ¸É•ÍÕ±Ð((€€€…Íå¹Œ‘•˜}ÁÉ½‰”¡Í•±˜°Á…Ñ èÍÑÈ°Ñ¥µ•½ÕÐè™±½…Ð¤€´ø¥¹Ðè(€€€€€€€€ˆˆ‹–>«–"“šZ·Ž3šr'šÊ‡šr'–N7–êSŽ7¾ò3’â7š*+¦vx€Éáàƒ–öOš"C¢þ{’â7’â+Žˆˆˆ(€€€€€€€¥˜¹½ÐÍ•±˜¹™œ¹½¹™¥ÕÉ•è(€€€€€€€€€€€É…¥Í”!•Éµ•Í9½Ñ½¹™¥ÕÉ• ‹šr«¦7žö¸!•Éµ•Ìƒ–rÃ–vš"[–¾¦J”ˆ¤(€€€€€€€±¥•¹Ð€ô…Ý…¥ÐÍ•±˜¹}¡ÑÑÀ ¤(€€€€€€€ÑÉäè(€€€€€€€€€€€É•ÍÀ€ô…Ý…¥Ð±¥•¹Ð¹•Ð¡Á…Ñ °Ñ¥µ•½ÕÐõÑ¥µ•½ÕÐ¤(€€€€€€€•á•ÁÐ€¡¡ÑÑÁà¹½¹¹•ÑÉÉ½È°¡ÑÑÁà¹½¹¹•ÑQ¥µ•½ÕÐ¤…Ì”è(€€€€€€€€€€€É…¥Í”!•Éµ•ÍU¹…Ù…¥±…‰±”¡˜‹š^ƒšÎW¢þ{š:”!•Éµ•Ï¾òií•ôˆ¤™É½´”(€€€€€€€•á•ÁÐ¡ÑÑÁà¹!QQAÉÉ½È…Ì”è(€€€€€€€€€€€É…¥Í”!•Éµ•ÍU¹…Ù…¥±…‰±”¡˜‹¢¾ßšÆ–’Ç¢Ò—¾òií•ôˆ¤™É½´”(€€€€€€€É•ÑÕÉ¸É•ÍÀ¹ÍÑ…ÑÕÍ}½‘”((€€€€Œ€´´´´´´´´´´ƒš&Ÿ¢†0€´´´´´´´´´´((€€€…Íå¹Œ‘•˜ÉÕ¹}Ñ…Í¬¡Í•±˜°µ•ÍÍ…•Ìè1¥ÍÑm¥ÑmÍÑÈ°¹åut°(€€€€€€€€€€€€€€€€€€€€€€Í•ÍÍ¥½¹}¥èÍÑÈ¤€´ø¥ÑmÍÑÈ°¹åtè(€€€€€€€€ˆˆ‹š&Ÿ¢†3’â¢ö»–¶›’æƒ’îï–*‡¾ò3¢þS–nxíÉ•ÍÕ±Ð°µ½‘•°°ÕÍ…”°É…Ý}•á•ÉÁÑ÷Žˆˆˆ(€€€€€€€¥˜¹½ÐÍ•±˜¹™œ¹½¹™¥ÕÉ•è(€€€€€€€€€€€É…¥Í”!•Éµ•Í9½Ñ½¹™¥ÕÉ• ‹šr«¦7žö¸!•Éµ•Ìƒ–rÃ–vš"[–¾¦J—¾ò!!I5M}	M}UI0€¼!I5M}A%}-g¾ò$ˆ¤(€€€€€€€Á…å±½…€ôì(€€€€€€€€€€€€‰µ½‘•°ˆèÍ•±˜¹™œ¹…•¹Ñ}µ½‘•°°(€€€€€€€€€€€€‰µ•ÍÍ…•Ìˆèµ•ÍÍ…•Ì°(€€€€€€€€€€€€‰ÍÑÉ•…´ˆè…±Í”°(€€€€€€€€€€€€‰Ñ•µÁ•É…ÑÕÉ”ˆè€À¸È°(€€€€€€€ô(€€€€€€€±¥•¹Ð€ô…Ý…¥ÐÍ•±˜¹}¡ÑÑÀ ¤(€€€€€€€ÍÑ…ÉÑ•€ôÑ¥µ”¹Ñ¥µ” ¤(€€€€€€€±½œ¹¥¹™¼ ‹¢ÂžR !•Éµ•Ìƒš*¢ôÍ•ÍÍ¥½¸ô•Ìµ½‘•°ô•ÌÑ¥µ•½ÕÐô•ÍÌˆ°(€€€€€€€€€€€€€€€€Í•ÍÍ¥½¹}¥°Í•±˜¹™œ¹…•¹Ñ}µ½‘•°°Í•±˜¹™œ¹Ñ¥µ•½ÕÑ}Í•½¹‘Ì¤(€€€€€€€ÑÉäè(€€€€€€€€€€€É•ÍÀ€ô…Ý…¥Ð±¥•¹Ð¹Á½ÍÐ ˆ½ØÄ½¡…Ð½½µÁ±•Ñ¥½¹Ìˆ°©Í½¸õÁ…å±½…°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¡•…‘•ÉÌõì‰`µ!•Éµ•ÌµM•ÍÍ¥½¸µ%ˆèÍ•ÍÍ¥½¹}¥‘ô¤(€€€€€€€•á•ÁÐ€¡¡ÑÑÁà¹½¹¹•ÑÉÉ½È°¡ÑÑÁà¹½¹¹•ÑQ¥µ•½ÕÐ¤…Ì”è(€€€€€€€€€€€É…¥Í”!•Éµ•ÍU¹…Ù…¥±…‰±”¡˜‹š^ƒšÎW¢þ{š:”!•Éµ•Ï¾òií•ôˆ¤™É½´”(€€€€€€€•á•ÁÐ¡ÑÑÁà¹!QQAÉÉ½È…Ì”è(€€€€€€€€€€€É…¥Í”!•Éµ•ÍU¹•ÉÑ…¥¸¡˜‹¢¾ßšÆ’â·šZ·¾ò3š&Ÿ¢†3žîOšzsšr«ž†»¢º“¾òií•ôˆ¤™É½´”(€€€€€€€™¥¹…±±äè(€€€€€€€€€€€•±…ÁÍ•€ôÑ¥µ”¹Ñ¥µ” ¤€´ÍÑ…ÉÑ•(€€€€€€€€€€€¥˜•±…ÁÍ•€ø€ÌÀè(€€€€€€€€€€€€€€€±½œ¹¥¹™¼ ‰!•Éµ•Ìƒ¢¾ßšÆ¢_š^Ø€”¸Á™ÌÍ•ÍÍ¥½¸ô•Ìˆ°•±…ÁÍ•°Í•ÍÍ¥½¹}¥¤((€€€€€€€¥˜É•ÍÀ¹ÍÑ…ÑÕÍ}½‘”¥¸€ ÐÀÄ°€ÐÀÌ¤è(€€€€€€€€€€€É…¥Í”!•Éµ•ÍÕÑ¡ÉÉ½È¡˜‰!•Éµ•Ìƒ¦&Óšv–’Ç¢Ò—¾ò!!QQ@íÉ•ÍÀ¹ÍÑ…ÑÕÍ}½‘•÷¾ò$ˆ¤(€€€€€€€¥˜É•ÍÀ¹ÍÑ…ÑÕÍ}½‘”€øô€ÔÀÀè(€€€€€€€€€€€É…¥Í”!•Éµ•ÍU¹…Ù…¥±…‰±”¡˜‰!•Éµ•Ìƒšr7–*‡¦Rg¢¾¼!QQ@íÉ•ÍÀ¹ÍÑ…ÑÕÍ}½‘•ôˆ¤(€€€€€€€¥˜É•ÍÀ¹ÍÑ…ÑÕÍ}½‘”€øô€ÐÀÀè(€€€€€€€€€€€É…¥Í”!•Éµ•ÍI•©•Ñ•¡˜‹¢¾ßšÆ¢Š¯š.Kžît!QQ@íÉ•ÍÀ¹ÍÑ…ÑÕÍ}½‘•ôèíÉ•ÍÀ¹Ñ•áÑlèÈÀÁuôˆ¤(€€€€€€€¥˜±•¸¡É•ÍÀ¹½¹Ñ•¹Ð¤€øÍ•±˜¹™œ¹µ…á}É•ÍÁ½¹Í•}‰åÑ•Ìè(€€€€€€€€€€€É…¥Í”!•Éµ•ÍI•ÍÕ±Ñ%¹Ù…±¥ (€€€€€€€€€€€€€€€˜‹–N7–êS’öO¢Ú¢þíÍ•±˜¹™œ¹µ…á}É•ÍÁ½¹Í•}‰åÑ•Íôƒ–¶_¢*’â+¦fC¾ò3–ÞËš.Kžîw¢žšz@ˆ¤((€€€€€€€ÑÉäè(€€€€€€€€€€€‘…Ñ„€ôÉ•ÍÀ¹©Í½¸ ¤(€€€€€€€•á•ÁÐY…±Õ•ÉÉ½È…Ì”è(€€€€€€€€€€€É…¥Í”!•Éµ•ÍI•ÍÕ±Ñ%¹Ù…±¥¡˜‹–N7–êS’â7šb¿–B#šÎT)M=8èí•ôˆ¤™É½´”((€€€€€€€¡½¥•Ì€ô‘…Ñ„¹•Ð ‰¡½¥•Ìˆ¤½Èmt(€€€€€€€¥˜¹½Ð¡½¥•Ìè(€€€€€€€€€€€É…¥Í”!•Éµ•ÍI•ÍÕ±Ñ%¹Ù…±¥ ‹–N7–êSžòë–ÂD¡½¥•Ìˆ¤(€€€€€€€µ•ÍÍ…”€ô¡½¥•ÍlÁt¹•Ð ‰µ•ÍÍ…”ˆ¤½Èíô(€€€€€€€Ñ•áÐ€ôµ•ÍÍ…”¹•Ð ‰½¹Ñ•¹Ðˆ¤½È€ˆˆ(€€€€€€€É•…Í½¹¥¹œ€ôÑ¡¥¹­¥¹œ¹•áÑÉ…Ñ}É•…Í½¹¥¹œ¡µ•ÍÍ…”¤(€€€€€€€Ñ¡¥¹­¥¹œ¹±½}Ñ¡¥¹­¥¹œ (€€€€€€€€€€€˜‰¡•Éµ•Ï’âïšÖž¢,Í•ÍÍ¥½¸õíÍ•ÍÍ¥½¹}¥‘ôµ½‘•°õí‘…Ñ„¹•Ð µ½‘•°œ¤½ÈÍ•±˜¹™œ¹…•¹Ñ}µ½‘•±ôˆ°(€€€€€€€€€€€É•…Í½¹¥¹œ¤(€€€€€€€É…Ü€ô•áÑÉ…Ñ}É•ÍÕ±Ñ}©Í½¸¡Ñ•áÐ¤(€€€€€€€É•ÍÕ±Ð€ôÙ…±¥‘…Ñ•}É•ÍÕ±Ð¡É…Ü¤(€€€€€€€ÕÍ…”€ô‘…Ñ„¹•Ð ‰ÕÍ…”ˆ¤½Èíô(€€€€€€€•±…ÁÍ•€ôÑ¥µ”¹Ñ¥µ” ¤€´ÍÑ…ÉÑ•(€€€€€€€±½œ¹¥¹™¼ ‰!•Éµ•Ìƒ–º3š"@Í•ÍÍ¥½¸ô•Ìµ½‘•°ô•ÌÑ½­•¹Ìô•Ì¼•Ìƒ¢_š^Øô”¸Å™Ìˆ°(€€€€€€€€€€€€€€€€Í•ÍÍ¥½¹}¥°‘…Ñ„¹•Ð ‰µ½‘•°ˆ¤½ÈÍ•±˜¹™œ¹…•¹Ñ}µ½‘•°°(€€€€€€€€€€€€€€€€ÕÍ…”¹•Ð ‰ÁÉ½µÁÑ}Ñ½­•¹Ìˆ°€ˆüˆ¤°ÕÍ…”¹•Ð ‰½µÁ±•Ñ¥½¹}Ñ½­•¹Ìˆ°€ˆüˆ¤°(€€€€€€€€€€€€€€€€•±…ÁÍ•¤(€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€€‰É•ÍÕ±ÐˆèÉ•ÍÕ±Ð°(€€€€€€€€€€€€‰µ½‘•°ˆè‘…Ñ„¹•Ð ‰µ½‘•°ˆ¤½ÈÍ•±˜¹™œ¹…•¹Ñ}µ½‘•°°(€€€€€€€€€€€€ŒƒžöG–Ïš*—–F+žj–:–ž/¢ê¯’î÷¾ò#’â7–n{–†¯¢¾ßšÆ–ó¾òožòë–’Ç’þwš2ž¦ë’âË¾ò3žRÇžò[š:K–Æ–"“Ž3¢ê¯’î÷šr«ž~—Ž7¾ò$(€€€€€€€€€€€€‰É•Á½ÉÑ•‘}µ½‘•°ˆèÍÑÈ¡‘…Ñ„¹•Ð ‰µ½‘•°ˆ¤½È€ˆˆ¤¹ÍÑÉ¥À ¤°(€€€€€€€€€€€€‰É•Á½ÉÑ•‘}ÁÉ½Ù¥‘•ÈˆèÍÑÈ¡‘…Ñ„¹•Ð ‰ÁÉ½Ù¥‘•Èˆ¤½È€ˆˆ¤¹ÍÑÉ¥À ¤°(€€€€€€€€€€€€‰ÕÍ…”ˆèÕÍ…”°(€€€€€€€€€€€€‰É…Ý}•á•ÉÁÐˆèÑ•áÑlèÈÀÀÁt°(€€€€€€€€€€€€‰É•…Í½¹¥¹}½¹Ñ•¹ÐˆèÉ•…Í½¹¥¹œ°(€€€€€€€ô((€€€…Íå¹Œ‘•˜É•Ù¥•Ý}ÅÕ•ÍÑ¥½¹Ì¡Í•±˜°µ•ÍÍ…•Ìè1¥ÍÑm¥ÑmÍÑÈ°¹åut°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€Í•ÍÍ¥½¹}¥èÍÑÈ°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€Ñ¥µ•½ÕÐè=ÁÑ¥½¹…±m™±½…Ñt€ô9½¹”°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€½Ù•É…”èÍÑÈ€ô€ˆˆ¤€´ø¥ÑmÍÑÈ°¹åtè(€€€€€€€€ˆˆ‹žR£¦7žö»žj–’7š~—š¢‡–z/š&Ÿ¢†3’âš²‡–>«¢¾ï–’7š~—Ž((€€€€€€€ƒ¢þS–nxíÉ•Ù¥•ÝÌ°µ½‘•±}É•ÅÕ•ÍÑ•°É•Á½ÉÑ•‘}µ½‘•°°É•Á½ÉÑ•‘}ÁÉ½Ù¥‘•È°ÕÍ…”°É…Ý}•á•ÉÁÑ÷Ž(€€€€€€€€´ƒž.³ž®/’òk¢¾w–’Ð`µ!•Éµ•ÌµM•ÍÍ¥½¸µ%“¾ò#’â7–’7žR£¦š[¢ö»’òk¢¾wžjš¢‡–z/¦R¾ò'Ž(€€€€€€€€´ƒ¢¾ßšÆ’öO–â˜µ½‘•°€¬ƒ–>¿¦$ÁÉ½Ù¥‘•È€¬ƒ–>¿¦$µ½‘•±}½ÁÑ¥½¹Ï¾ò#žöG–Ïš2'š¶“¢Þ¿žRÇ–"Ãž²³’ê3š¢‡–z/¾ò'Ž(€€€€€€€€´ƒ’â7¢«–*£¦7¢¾W¾òo¦Rg¢¾¿–"žÆïšÊÿžR }É•ÅÕ•ÍÓ¾ò#¦&Óšv¿š.Kžît¿’â7–>¿¢úø¿šr«ž†»¢º“¾ò'Ž(€€€€€€€€´½Ù•É…”ô‰É•É•…ˆƒš^Û–¾ç–’7š~—¢úO–ë–k¢ö³–g¢¾·’æ'–¾ç¢Ò˜(€€€€€€€€€ƒ¾ò!ÑÉ…¹ÍÉ¥ÁÑ}½¬õ™…±Í”ƒ–þ¦†ï¦4‘¥Í…É••“¾òm¹Õ±°ƒ–>«¢÷¦4Õ¹Ù•É¥™¥•“¾ò'Ž(€€€€€€€€ˆˆˆ(€€€€€€€¥˜¹½ÐÍ•±˜¹™œ¹½¹™¥ÕÉ•è(€€€€€€€€€€€É…¥Í”!•Éµ•Í9½Ñ½¹™¥ÕÉ• ‹šr«¦7žö¸!•Éµ•Ìƒ–rÃ–vš"[–¾¦J—¾ò!!I5M}	M}UI0€¼!I5M}A%}-g¾ò$ˆ¤(€€€€€€€¥˜¹½ÐÍ•±˜¹™œ¹É•Ù¥•Ý}µ½‘•°¹ÍÑÉ¥À ¤è(€€€€€€€€€€€É…¥Í”!•Éµ•ÍI•©•Ñ• ‹šr«¦7žö»–’7š~—š¢‡–z/¾ò!¡•Éµ•Ì¹É•Ù¥•Ý}µ½‘•³¾ò$ˆ¤((€€€€€€€É•Ù¥•Ý}µ½‘•°€ôÍ•±˜¹™œ¹É•Ù¥•Ý}µ½‘•°¹ÍÑÉ¥À ¤(€€€€€€€Á…å±½…è¥ÑmÍÑÈ°¹åt€ôì(€€€€€€€€€€€€‰µ½‘•°ˆèÉ•Ù¥•Ý}µ½‘•°°(€€€€€€€€€€€€‰µ•ÍÍ…•Ìˆèµ•ÍÍ…•Ì°(€€€€€€€€€€€€‰ÍÑÉ•…´ˆè…±Í”°(€€€€€€€€€€€€‰Ñ•µÁ•É…ÑÕÉ”ˆè€À°(€€€€€€€ô(€€€€€€€¥˜Í•±˜¹™œ¹É•Ù¥•Ý}ÁÉ½Ù¥‘•È¹ÍÑÉ¥À ¤è(€€€€€€€€€€€Á…å±½…‘l‰ÁÉ½Ù¥‘•È‰t€ôÍ•±˜¹™œ¹É•Ù¥•Ý}ÁÉ½Ù¥‘•È¹ÍÑÉ¥À ¤(€€€€€€€¥˜Í•±˜¹™œ¹É•Ù¥•Ý}µ½‘•±}½ÁÑ¥½¹Ìè(€€€€€€€€€€€Á…å±½…‘l‰µ½‘•±}½ÁÑ¥½¹Ì‰t€ôÍ•±˜¹™œ¹É•Ù¥•Ý}µ½‘•±}½ÁÑ¥½¹Ì((€€€€€€€É•ÅÕ•ÍÑ•€ôÉ•Ù¥•Ý}µ½‘•°€¬€ (€€€€€€€€€€€˜‹¾ò!ÁÉ½Ù¥‘•ÈõíÍ•±˜¹™œ¹É•Ù¥•Ý}ÁÉ½Ù¥‘•È¹ÍÑÉ¥À ¥÷¾ò$ˆ(€€€€€€€€€€€¥˜Í•±˜¹™œ¹É•Ù¥•Ý}ÁÉ½Ù¥‘•È¹ÍÑÉ¥À ¤•±Í”€ˆˆ¤(€€€€€€€ÍÑ…ÉÑ•€ôÑ¥µ”¹Ñ¥µ” ¤(€€€€€€€±½œ¹¥¹™¼ ‹¢ÂžR£–’7š~—š¢‡–z,Í•ÍÍ¥½¸ô•Ìµ½‘•°ô•ÌÑ¥µ•½ÕÐô•ÍÌˆ°(€€€€€€€€€€€€€€€€Í•ÍÍ¥½¹}¥°É•ÅÕ•ÍÑ•°Ñ¥µ•½ÕÐ½ÈÍ•±˜¹™œ¹É•Ù¥•Ý}Ñ¥µ•½ÕÑ}Í•½¹‘Ì¤(€€€€€€€É•ÍÀ€ô…Ý…¥ÐÍ•±˜¹}É•ÅÕ•ÍÐ (€€€€€€€€€€€€‰A=MPˆ°€ˆ½ØÄ½¡…Ð½½µÁ±•Ñ¥½¹Ìˆ°©Í½¹}‰½‘äõÁ…å±½…°(€€€€€€€€€€€Ñ¥µ•½ÕÐõÑ¥µ•½ÕÐ½ÈÍ•±˜¹™œ¹É•Ù¥•Ý}Ñ¥µ•½ÕÑ}Í•½¹‘Ì°(€€€€€€€€€€€¡•…‘•ÉÌõì‰`µ!•Éµ•ÌµM•ÍÍ¥½¸µ%ˆèÍ•ÍÍ¥½¹}¥‘ô¤(€€€€€€€•±…ÁÍ•€ôÑ¥µ”¹Ñ¥µ” ¤€´ÍÑ…ÉÑ•(€€€€€€€¥˜•±…ÁÍ•€ø€ÌÀè(€€€€€€€€€€€±½œ¹¥¹™¼ ‹–’7š~—¢¾ßšÆ¢_š^Ø€”¸Á™ÌÍ•ÍÍ¥½¸ô•Ìˆ°•±…ÁÍ•°Í•ÍÍ¥½¹}¥¤((€€€€€€€ÑÉäè(€€€€€€€€€€€‘…Ñ„€ôÉ•ÍÀ¹©Í½¸ ¤(€€€€€€€•á•ÁÐY…±Õ•ÉÉ½È…Ì”è(€€€€€€€€€€€É…¥Í”!•Éµ•ÍI•ÍÕ±Ñ%¹Ù…±¥¡˜‹–’7š~—–N7–êS’â7šb¿–B#šÎT)M=8èí•ôˆ¤™É½´”((€€€€€€€¡½¥•Ì€ô‘…Ñ„¹•Ð ‰¡½¥•Ìˆ¤½Èmt(€€€€€€€¥˜¹½Ð¡½¥•Ìè(€€€€€€€€€€€É…¥Í”!•Éµ•ÍI•ÍÕ±Ñ%¹Ù…±¥ ‹–’7š~—–N7–êSžòë–ÂD¡½¥•Ìˆ¤(€€€€€€€µ•ÍÍ…”€ô¡½¥•ÍlÁt¹•Ð ‰µ•ÍÍ…”ˆ¤½Èíô(€€€€€€€Ñ•áÐ€ôµ•ÍÍ…”¹•Ð ‰½¹Ñ•¹Ðˆ¤½È€ˆˆ(€€€€€€€É•…Í½¹¥¹œ€ôÑ¡¥¹­¥¹œ¹•áÑÉ…Ñ}É•…Í½¹¥¹œ¡µ•ÍÍ…”¤(€€€€€€€Ñ¡¥¹­¥¹œ¹±½}Ñ¡¥¹­¥¹œ (€€€€€€€€€€€˜‰¡•Éµ•Ï–’7š~”Í•ÍÍ¥½¸õíÍ•ÍÍ¥½¹}¥‘ôµ½‘•°õíÉ•Ù¥•Ý}µ½‘•±ôˆ°É•…Í½¹¥¹œ¤(€€€€€€€É…Ü€ô•áÑÉ…Ñ}É•ÍÕ±Ñ}©Í½¸¡Ñ•áÐ¤(€€€€€€€É•ÍÁ½¹Í”€ôÙ…±¥‘…Ñ•}É•Ù¥•Ý}É•ÍÁ½¹Í”¡É…Ü°½Ù•É…”õ½Ù•É…”¤(€€€€€€€É•Á½ÉÑ•‘}µ½‘•°€ôÍÑÈ¡‘…Ñ„¹•Ð ‰µ½‘•°ˆ¤½È€ˆˆ¤¹ÍÑÉ¥À ¤(€€€€€€€ÕÍ…”€ô‘…Ñ„¹•Ð ‰ÕÍ…”ˆ¤½Èíô(€€€€€€€±½œ¹¥¹™¼ ‹–’7š~—–º3š"@Í•ÍÍ¥½¸ô•Ìƒ¦ŠcšVÀô•ƒžöG–Ïš*—–F+š¢‡–z,ô•ÌÑ½­•¹Ìô•Ì¼•Ìˆ°(€€€€€€€€€€€€€€€€Í•ÍÍ¥½¹}¥°±•¸¡É•ÍÁ½¹Í”¹É•Ù¥•ÝÌ¤°É•Á½ÉÑ•‘}µ½‘•°½È€‹¾ò#šr«š*—–F+¾ò$ˆ°(€€€€€€€€€€€€€€€€ÕÍ…”¹•Ð ‰ÁÉ½µÁÑ}Ñ½­•¹Ìˆ°€ˆüˆ¤°ÕÍ…”¹•Ð ‰½µÁ±•Ñ¥½¹}Ñ½­•¹Ìˆ°€ˆüˆ¤¤(€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€€‰É•Ù¥•ÝÌˆèmÈ¹µ½‘•±}‘ÕµÀ ¤™½ÈÈ¥¸É•ÍÁ½¹Í”¹É•Ù¥•ÝÍt°(€€€€€€€€€€€€‰µ½‘•±}É•ÅÕ•ÍÑ•ˆèÉ•ÅÕ•ÍÑ•°(€€€€€€€€€€€€‰É•Á½ÉÑ•‘}µ½‘•°ˆèÉ•Á½ÉÑ•‘}µ½‘•°°(€€€€€€€€€€€€‰É•Á½ÉÑ•‘}ÁÉ½Ù¥‘•ÈˆèÍÑÈ¡‘…Ñ„¹•Ð ‰ÁÉ½Ù¥‘•Èˆ¤½È€ˆˆ¤¹ÍÑÉ¥À ¤°(€€€€€€€€€€€€‰ÕÍ…”ˆèÕÍ…”°(€€€€€€€€€€€€‰É…Ý}•á•ÉÁÐˆèÑ•áÑlèÈÀÀÁt°(€€€€€€€€€€€€‰É•…Í½¹¥¹}½¹Ñ•¹ÐˆèÉ•…Í½¹¥¹œ°(€€€€€€€ô(()‘•˜}•áÑÉ…Ñ}Í­¥±±}¹…µ•Ì¡Á…å±½…è¹ä¤€´ø1¥ÍÑmÍÑÉtè(€€€€ˆˆ‹–ó–ºä€½ØÄ½Í­¥±±Ìƒžj–ƒžž7–âã¢ž¢þS–n{žîOšzŽˆˆˆ(€€€¥Ñ•µÌè1¥ÍÑm¹åt€ômt(€€€¥˜¥Í¥¹ÍÑ…¹”¡Á…å±½…°‘¥Ð¤è(€€€€€€€™½È­•ä¥¸€ ‰Í­¥±±Ìˆ°€‰‘…Ñ„ˆ°€‰¥Ñ•µÌˆ¤è(€€€€€€€€€€€Ù…±Õ”€ôÁ…å±½…¹•Ð¡­•ä¤(€€€€€€€€€€€¥˜¥Í¥¹ÍÑ…¹”¡Ù…±Õ”°±¥ÍÐ¤è(€€€€€€€€€€€€€€€¥Ñ•µÌ€ôÙ…±Õ”(€€€€€€€€€€€€€€€‰É•…¬(€€€•±¥˜¥Í¥¹ÍÑ…¹”¡Á…å±½…°±¥ÍÐ¤è(€€€€€€€¥Ñ•µÌ€ôÁ…å±½…(€€€¹…µ•Ìè1¥ÍÑmÍÑÉt€ômt(€€€™½È¥Ñ•´¥¸¥Ñ•µÌè(€€€€€€€¥˜¥Í¥¹ÍÑ…¹”¡¥Ñ•´°ÍÑÈ¤è(€€€€€€€€€€€¹…µ•Ì¹…ÁÁ•¹¡¥Ñ•´¤(€€€€€€€•±¥˜¥Í¥¹ÍÑ…¹”¡¥Ñ•´°‘¥Ð¤è(€€€€€€€€€€€¹…µ”€ô¥Ñ•´¹•Ð ‰¹…µ”ˆ¤½È¥Ñ•´¹•Ð ‰¥ˆ¤½È¥Ñ•´¹•Ð ‰Í­¥±°ˆ¤(€€€€€€€€€€€¥˜¥Í¥¹ÍÑ…¹”¡¹…µ”°ÍÑÈ¤è(€€€€€€€€€€€€€€€¹…µ•Ì¹…ÁÁ•¹¡¹…µ”¤(€€€É•ÑÕÉ¸Í½ÉÑ•¡Í•Ð¡¹…µ•Ì¤¤(

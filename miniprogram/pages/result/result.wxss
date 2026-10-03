@@ -95,3 +95,5 @@
 
 .q-actions { display: flex; flex-wrap: wrap; margin-top: 12rpx; }
 .q-actions button { margin: 0 16rpx 12rpx 0; }
+.orientation-preview { height: 650rpx; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.orientation-preview image { width: 70%; height: 70%; }

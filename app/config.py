@@ -52,6 +52,9 @@ class ProviderConfig(BaseModel):
     price_output_per_1m: float = 0.0
     enabled: bool = True
 
+    # 明确不支持直接图像输入的 provider 不用于判向或转写。
+    supports_vision: bool = True
+
 
 class StagedGradingConfig(BaseModel):
     """分阶段批改配置：提取→独立求解→比对→诊断。
@@ -77,6 +80,9 @@ class StagedGradingConfig(BaseModel):
     extract_image_min_long_side: int = 2048
     # 长边超过该值则缩小（防超大图 token 爆炸）；0=不限制
     extract_image_max_long_side: int = 4096
+    # OSD 不确定时只做一次视觉判向；为空时选模型链中首个支持图像的模型。
+    orientation_provider: str = ""
+    orientation_visual_fallback: bool = True
     # 首轮转写后，对字迹存疑/空白的题自动做一遍局部放大复核
     extract_zoom_reread: bool = True
     # 局部图网格：2 = 每页切 2x2=4 张重叠局部图

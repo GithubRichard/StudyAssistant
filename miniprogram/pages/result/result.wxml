@@ -33,7 +33,21 @@
     <button size="mini" bindtap="retry">返回重新发起</button>
   </view>
 
-  <block wx:if="{{result}}">
+  <view wx:if="{{orientationPages.length}}" class="card">
+    <text class="sec-title">确认页面方向</text>
+    <text class="muted">图片已保留。请旋转到文字朝上，再继续批改。</text>
+    <view wx:for="{{orientationPages}}" wx:key="page">
+      <text>第 {{item.page}} 页</text>
+      <view class="orientation-preview">
+        <image src="{{item.src}}" mode="aspectFit" style="transform: rotate({{item.rotation}}deg)" />
+      </view>
+      <button size="mini" data-page="{{item.page}}" bindtap="rotateOrientation" disabled="{{!orientationReady || submitting}}">顺时针旋转 90°</button>
+    </view>
+    <button type="primary" bindtap="confirmOrientation" disabled="{{!orientationReady || submitting}}" loading="{{submitting}}">文字方向正确，继续批改</button>
+    <button size="mini" bindtap="refresh" wx:if="{{!orientationReady}}">重新读取预览</button>
+  </view>
+
+  <block wx:if="{{result && !orientationPages.length}}">
     <view wx:if="{{result.legacy || result.schema_note}}" class="card warn">
       <text>{{result.schema_note || '旧版本结果：未记录二次核查，也不含五态判定与交付状态。'}}</text>
     </view>

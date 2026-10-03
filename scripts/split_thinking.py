@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import sys
 
-HEADER = re.compile(r"^(?:.*?\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}.*?)?【模型思考过程】(.*)$")
+HEADER = re.compile(r"^(?:.*?\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}.*?)?【(模型思考过程|任务阶段)】(.*)$")
 SESSION = re.compile(r"(?:^|\s)session(?:_id)?=([^\s]+)")
 
 
@@ -17,6 +17,7 @@ def split_log(source: Path, output: Path) -> tuple[int, int, int]:
     groups: dict[str, list[str]] = {}
     active: str | None = None
     calls = incomplete = 0
+    records = 0
     # newline='' 保留 CRLF；严格解码，避免静默丢失字符。
     with source.open(encoding="utf-8-sig", newline="") as stream:
         for line in stream:
@@ -24,19 +25,20 @@ def split_log(source: Path, output: Path) -> tuple[int, int, int]:
             if header:
                 if active is not None:
                     incomplete += 1
-                calls += 1
-                session = SESSION.search(header.group(1))
-                active = "session:" + session.group(1) if session else f"call:{calls:06d}"
+                records += 1
+                calls += header.group(1) == "模型思考过程"
+                session = SESSION.search(header.group(2))
+                active = "session:" + session.group(1) if session else f"call:{records:06d}"
                 groups.setdefault(active, []).append(line)
             elif active is not None:
                 groups[active].append(line)
-                if line.strip() == "【思考过程结束】":
+                if line.strip() in ("【思考过程结束】", "【任务阶段结束】"):
                     active = None
             else:
                 groups.setdefault("unassigned", []).append(line)
     if active is not None:
         incomplete += 1
-    if not calls:
+    if not records:
         raise ValueError("没有找到【模型思考过程】起始标记，请检查输入文件。")
     output.mkdir(parents=True, exist_ok=False)
     for index, (key, lines) in enumerate(groups.items(), 1):

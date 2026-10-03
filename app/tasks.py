@@ -1,882 +1,5 @@
-"""æŒä¹…åŒ–å­¦ä¹ ä»»åŠ¡ï¼šå¹‚ç­‰åˆ›å»ºã€æ•°æ®åº“è®¤é¢†æ‰§è¡Œã€è½®æ¬¡ä¸ç»“æœè½åº“ã€‚
-
-å¯é æ‰§è¡Œçº¦å®šï¼š
-- ä»»åŠ¡å…ˆå…¥åº“å†ç”±æ‰§è¡Œå™¨ã€Œè®¤é¢†ã€ï¼ˆclaim + ç§Ÿçº¦ï¼‰ï¼Œä¸ä¾èµ–è¿›ç¨‹å†…åå°ä»»åŠ¡å­˜æ´»ã€‚
-- å·²ç»å¼€å§‹æ´¾å‘çš„è½®æ¬¡åœ¨é‡å¯åæ ‡è®° interruptedï¼Œä¸è‡ªåŠ¨é‡æ”¾ï¼Œé¿å…é‡å¤å½’æ¡£æˆ–é‡å¤å‰¯ä½œç”¨ã€‚
-- é…é¢é¢„ç•™åªç»“ç®—ä¸€æ¬¡ï¼šç¡®è®¤æœªæ‰§è¡Œæ‰é€€æ¬¾ï¼Œç»“æœæœªç¡®è®¤æ—¶ä¿æŒé¢„ç•™å¹¶å¦‚å®ä¸ŠæŠ¥ã€‚
-"""
-from __future__ import annotations
-
-import asyncio
-import json
-import logging
-import time
-import uuid
-from typing import Any, Dict, List, Optional
-
-from . import db, git_sync, grading, hermes, review, scope, staged, workspace
-from .config import Settings, provider_chain
-from .hermes import HermesClient, HermesError, HermesUncertain
-from .schemas import (fill_question_uids, grading_result_to_v3, normalize_result,
-                      request_hash)
-from .staged import StageError
-from .staged import StageError
-
-log = logging.getLogger(__name__)
-
-TERMINAL_STATUSES = ("done", "failed", "waiting_input", "interrupted")
-FOLLOWUP_ALLOWED = ("done", "waiting_input", "failed", "interrupted")
-
-
-class TaskError(Exception):
-    def __init__(self, message: str, status_code: int = 400) -> None:
-        super().__init__(message)
-        self.message = message
-        self.status_code = status_code
-
-
-def _new_id() -> str:
-    return uuid.uuid4().hex[:16]
-
-
-# --------------------------- åˆ›å»º ---------------------------
-
-
-async def create_study_task(settings: Settings, openid: str, payload: Dict[str, Any],
-                            idempotency_key: str = "") -> Dict[str, Any]:
-    """åˆ›å»ºå­¦ä¹ ä»»åŠ¡ï¼ˆå«å›¾ç‰‡ä¸æ–‡å­—ï¼‰ã€‚å¹‚ç­‰é”®ç›¸åŒä¸”å†…å®¹ä¸€è‡´æ—¶è¿”å›åŸä»»åŠ¡ã€‚"""
-    asset_ids: List[str] = list(payload.get("asset_ids") or [])
-    if not (payload.get("text") or "").strip() and not asset_ids:
-        raise TaskError("å¿…é¡»æä¾›æ–‡å­—è¯´æ˜æˆ–è‡³å°‘ä¸€å¼ å›¾ç‰‡")
-    if len(asset_ids) > settings.limits.max_assets_per_task:
-        raise TaskError(f"å•æ¬¡ä»»åŠ¡æœ€å¤š {settings.limits.max_assets_per_task} å¼ å›¾ç‰‡", 413)
-
-    assets = await _load_owned_assets(settings, openid, asset_ids)
-    total_bytes = sum(a["bytes"] for a in assets)
-    if total_bytes > settings.limits.max_total_upload_mb * 1024 * 1024:
-        raise TaskError(f"å›¾ç‰‡æ€»å¤§å°è¶…è¿‡ {settings.limits.max_total_upload_mb}MB", 413)
-
-    if await db.get_daily_cost(settings.db_path) >= settings.budget.daily_max_cny:
-        raise TaskError("ä»Šæ—¥æœåŠ¡é¢åº¦å·²ç”¨å®Œï¼Œè¯·æ˜å¤©å†è¯•", 503)
-
-    task_id = _new_id()
-    decision = scope.compute_scope(
-        task_type=payload.get("task_type") or "grading",
-        training_kind=payload.get("training_kind") or "",
-        scope_start=payload.get("scope_start") or "",
-        scope_end=payload.get("scope_end") or "",
-        term_start_date=await _term_start_date(settings, openid),
-    )
-    task = {
-        "id": task_id,
-        "openid": openid,
-        # å­¦ç§‘æœªæŒ‡å®šæ—¶ä¿ç•™ç©ºä¸²ï¼Œç”±æ¨¡å‹æŒ‰ææ–™åˆ¤æ–­ï¼›ä¸æ“…è‡ªæ›¿ç”¨æˆ·å‡å®šå­¦ç§‘
-        "subject": (payload.get("subject") or "").strip(),
-        "grade_level": payload.get("grade_level") or "",
-        "task_type": payload.get("task_type") or "grading",
-        "input_text": payload.get("text") or "",
-        "image_path": assets[0]["path"] if assets else "",
-        "status": "pending",
-        "created_at": time.time(),
-        "exam_scope": payload.get("exam_scope") or "",
-        "training_kind": payload.get("training_kind") or "",
-    }
-    # åŒºé—´ç”±æœåŠ¡ç«¯æŒ‰è§„èŒƒè®¡ç®—åæŒä¹…åŒ–ï¼Œæ‰§è¡Œé˜¶æ®µä¸å†ä¾èµ–å®¢æˆ·ç«¯é‡å¤ä¼ å‚
-    task["scope_start"] = decision.start_date
-    task["scope_end"] = decision.end_date
-
-    idem = None
-    if idempotency_key:
-        idem = {
-            "key": idempotency_key[:128],
-            "openid": openid,
-            "endpoint": "study_task",
-            "request_hash": request_hash({
-                "openid": openid, "payload": payload, "assets": asset_ids,
-            }),
-        }
-
-    result = await db.create_task_atomic(
-        settings.db_path, task,
-        daily_free=settings.quota.daily_free,
-        max_per_day=settings.quota.max_per_day,
-        idempotency=idem,
-    )
-    if result.get("conflict"):
-        raise TaskError("ç›¸åŒå¹‚ç­‰é”®æäº¤äº†ä¸åŒå†…å®¹ï¼Œè¯·æ›´æ¢ Idempotency-Key", 409)
-    if not result.get("ok"):
-        raise TaskError(result.get("reason", "åˆ›å»ºä»»åŠ¡å¤±è´¥"), 429)
-
-    final_task_id = result["task_id"]
-    if result.get("duplicate"):
-        existing = await db.get_task(settings.db_path, final_task_id)
-        return {"task_id": final_task_id, "status": (existing or {}).get("status", "pending"),
-                "duplicate": True, "runs": 0, "scope": decision.as_dict()}
-
-    run = _new_run(task_id=final_task_id, run_no=1, kind="initial",
-                   input_text=task["input_text"])
-    await db.create_run(settings.db_path, run)
-    await db.link_task_assets(settings.db_path, final_task_id, run["id"], asset_ids)
-    await db.update_task(settings.db_path, final_task_id, run_count=1)
-    log.info("åˆ›å»ºå­¦ä¹ ä»»åŠ¡ task_id=%s type=%s kind=%s scope=%s~%s assets=%d",
-             final_task_id, task["task_type"], task.get("training_kind", ""),
-             decision.start_date or "-", decision.end_date or "-", len(asset_ids))
-    return {"task_id": final_task_id, "status": "pending", "duplicate": False, "runs": 1,
-            "scope": decision.as_dict()}
-
-
-async def _term_start_date(settings: Settings, openid: str) -> str:
-    """å­¦æœŸèµ·å§‹æ—¥æœŸï¼šä¼˜å…ˆå°ç¨‹åºè®¾ç½®é¡µä¿å­˜å€¼ï¼Œå…¶æ¬¡é…ç½®æ–‡ä»¶é»˜è®¤å€¼ï¼›éƒ½æ²¡æœ‰åˆ™è¿”å›ç©ºã€‚"""
-    stored = await db.get_family_settings(settings.db_path, openid)
-    if stored and (stored.get("term_start_date") or "").strip():
-        return str(stored["term_start_date"]).strip()
-    return (settings.family.term_start_date or "").strip()
-
-
-async def add_followup(settings: Settings, openid: str, task_id: str,
-                       payload: Dict[str, Any]) -> Dict[str, Any]:
-    """å¯¹å·²å®Œæˆæˆ–å¾…è¡¥å……ä»»åŠ¡è¿½åŠ ææ–™ï¼Œåˆ›å»ºæ–°çš„æ‰§è¡Œè½®æ¬¡ã€‚"""
-    task = await db.get_task(settings.db_path, task_id)
-    if not task or task["openid"] != openid:
-        raise TaskError("ä»»åŠ¡ä¸å­˜åœ¨", 404)
-    if task["status"] not in FOLLOWUP_ALLOWED:
-        raise TaskError(f"ä»»åŠ¡å½“å‰çŠ¶æ€ï¼ˆ{task['status']}ï¼‰ä¸æ¥å—è¡¥å……ææ–™", 409)
-    if await db.has_unconfirmed_run(settings.db_path, task_id):
-        raise TaskError("ä¸Šä¸€æ¬¡æ‰§è¡Œç»“æœå°šæœªç¡®è®¤ï¼Œè¯·ç¨åé‡è¯•æˆ–è”ç³»ç®¡ç†å‘˜", 409)
-    if task.get("run_count", 0) >= settings.limits.max_runs_per_task:
-        raise TaskError(f"è¯¥ä»»åŠ¡æœ€å¤šè¿½åŠ  {settings.limits.max_runs_per_task} è½®", 429)
-
-    asset_ids = list(payload.get("asset_ids") or [])
-    assets = await _load_owned_assets(settings, openid, asset_ids)
-    if len(asset_ids) > settings.limits.max_assets_per_task:
-        raise TaskError(f"å•æ¬¡æœ€å¤š {settings.limits.max_assets_per_task} å¼ å›¾ç‰‡", 413)
-
-    run_no = int(task.get("run_count", 0)) + 1
-    run = _new_run(task_id=task_id, run_no=run_no, kind="followup",
-                   input_text=payload.get("text") or "")
-    await db.create_run(settings.db_path, run)
-    await db.link_task_assets(settings.db_path, task_id, run["id"], asset_ids)
-    await db.update_task(settings.db_path, task_id, status="pending", run_count=run_no,
-                         error="", claim_owner="", claim_expires_at=0)
-    log.info("ä»»åŠ¡è¡¥å……ææ–™ task_id=%s run_no=%d", task_id, run_no)
-    return {"task_id": task_id, "run_id": run["id"], "run_no": run_no, "status": "pending"}
-
-
-def _new_run(task_id: str, run_no: int, kind: str, input_text: str) -> Dict[str, Any]:
-    return {
-        "id": _new_id(),
-        "task_id": task_id,
-        "run_no": run_no,
-        "kind": kind,
-        "input_text": input_text,
-        "status": "queued",
-        "created_at": time.time(),
-    }
-
-
-async def _load_owned_assets(settings: Settings, openid: str,
-                             asset_ids: List[str]) -> List[Dict[str, Any]]:
-    if not asset_ids:
-        return []
-    rows = await db.list_assets(settings.db_path, asset_ids)
-    by_id = {r["id"]: r for r in rows}
-    ordered: List[Dict[str, Any]] = []
-    for asset_id in asset_ids:
-        row = by_id.get(asset_id)
-        if not row:
-            raise TaskError(f"é™„ä»¶ä¸å­˜åœ¨: {asset_id}", 404)
-        if row["openid"] != openid:
-            raise TaskError("æ— æƒä½¿ç”¨è¯¥é™„ä»¶", 404)
-        ordered.append(row)
-    return ordered
-
-
-# --------------------------- æ‰§è¡Œå™¨ ---------------------------
-
-
-class TaskRunner:
-    """å•è¿›ç¨‹å•å¹¶å‘æ‰§è¡Œå™¨ï¼šä»æ•°æ®åº“è®¤é¢†å¾…æ‰§è¡Œä»»åŠ¡ã€‚"""
-
-    def __init__(self, settings: Settings, client: HermesClient) -> None:
-        self.settings = settings
-        self.client = client
-        self.owner = f"worker-{uuid.uuid4().hex[:6]}"
-        self._stop = asyncio.Event()
-        self._task: Optional[asyncio.Task] = None
-        self._sem = asyncio.Semaphore(1)
-
-    async def start(self) -> None:
-        if not self.settings.limits.worker_enabled:
-            log.warning("æ‰§è¡Œå™¨å·²æŒ‰é…ç½®åœç”¨ï¼ˆlimits.worker_enabled=falseï¼‰")
-            return
-        recovered = await db.recover_interrupted(self.settings.db_path)
-        if recovered:
-            log.warning("æ£€æµ‹åˆ° %d ä¸ªæœªç¡®è®¤ä»»åŠ¡ï¼Œå·²æ ‡è®° interrupted: %s",
-                        len(recovered), ", ".join(recovered))
-        self._task = asyncio.create_task(self._loop())
-
-    async def stop(self) -> None:
-        self._stop.set()
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-
-    async def _loop(self) -> None:
-        poll = self.settings.limits.worker_poll_seconds
-        while not self._stop.is_set():
-            try:
-                async with self._sem:
-                    task = await db.claim_next_task(
-                        self.settings.db_path, self.owner,
-                        lease_seconds=self.settings.limits.claim_lease_seconds)
-                    if task:
-                        await self.execute(task)
-                        continue
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 - worker ä¸åº”å› å•æ¬¡å¼‚å¸¸é€€å‡º
-                log.exception("æ‰§è¡Œå™¨å¾ªç¯å¼‚å¸¸")
-            await asyncio.sleep(poll)
-
-    async def execute(self, task: Dict[str, Any]) -> None:
-        s = self.settings
-        task_id = task["id"]
-        run = await self._current_run(task)
-        if run is None:
-            await db.update_task(s.db_path, task_id, status="failed",
-                                 error="ä»»åŠ¡ç¼ºå°‘å¯æ‰§è¡Œè½®æ¬¡")
-            return
-
-        output_dir = workspace.run_output_dir(s, task_id, run["run_no"])
-        await db.update_run(s.db_path, run["id"], status="running", started_at=time.time())
-        session_id = f"study-{task_id}-{run['run_no']}"
-
-        try:
-            assets = await self._collect_assets(task, run)
-            budget = min(s.hermes.timeout_seconds, s.limits.max_task_minutes * 60)
-            deadline = time.monotonic() + budget
-            log.info("å¼€å§‹æ‰§è¡Œ task_id=%s run_no=%d budget=%.0fs assets=%d",
-                     task_id, run["run_no"], budget, len(assets))
-            prev_result: Optional[Dict[str, Any]] = None
-            staged_chain = provider_chain(s) if (
-                (task.get("task_type") or "grading") == "grading"
-                and s.staged_grading.enabled) else []
-            if run.get("kind") == "followup" and (staged_chain or s.is_hermes):
-                # ä¿®è®¢åŸºå‡†ï¼šä¸Šä¸€è½®å·²è½åº“çš„æ‰¹é˜…ç»“æœï¼›è¡¥å……è½®æ¬¡åšå¢é‡ä¿®è®¢ï¼Œä¸æ˜¯é‡æ–°æ‰¹é˜…
-                # ï¼ˆlegacy ä¿æŒåŸè¡Œä¸ºï¼šprev_result ä¸º Noneï¼Œä¸åšè¦†ç›–æ ¡éªŒï¼‰
-                prev_result = normalize_result(task.get("result_json"))
-            if staged_chain:
-                # åˆ†é˜¶æ®µæ‰¹æ”¹ä¼˜å…ˆï¼šæå–â†’ç‹¬ç«‹æ±‚è§£â†’æ¯”å¯¹â†’è¯Šæ–­ï¼Œå‡†ç¡®ç‡é«˜äºå•æ¬¡å¤§è°ƒç”¨
-                payload = await asyncio.wait_for(
-                    self._run_staged(task, run, assets, staged_chain, prev_result),
-                    timeout=budget)
-            elif s.is_hermes:
-                scope_info = scope.describe_scope(task, await _term_start_date(s, task["openid"]))
-                messages = hermes.build_messages(
-                    s, {**task, "scope_note": scope_info["note"],
-                        "scope_missing": scope_info["missing"]},
-                    {**run, "output_dir": str(output_dir)}, assets, prev_result)
-                payload = await asyncio.wait_for(
-                    self.client.run_task(messages, session_id), timeout=budget)
-            else:
-                payload = await asyncio.wait_for(
-                    self._run_legacy(task, assets), timeout=budget)
-        except asyncio.TimeoutError:
-            await self._mark_uncertain(task, run, "æ‰§è¡Œè¶…æ—¶ï¼Œç»“æœæœªç¡®è®¤")
-            return
-        except StageError as e:
-            # é˜¶æ®µå†…æ‰€æœ‰æ¨¡å‹éƒ½å¤±è´¥ï¼šä»»åŠ¡æœªäº§å‡ºç»“æœï¼Œé€€æ¬¾å¹¶æ ‡å¤±è´¥ï¼Œç”¨æˆ·å¯é‡è¯•
-            await self._mark_failed(task, run, f"åˆ†é˜¶æ®µæ‰¹æ”¹å¤±è´¥: {e.message}",
-                                   certain_not_executed=True)
-            return
-        except HermesUncertain as e:
-            await self._mark_uncertain(task, run, str(e))
-            return
-        except HermesError as e:
-            await self._mark_failed(task, run, str(e),
-                                   certain_not_executed=getattr(e, "certain_not_executed", False))
-            return
-        except workspace.WorkspaceError as e:
-            await self._mark_failed(task, run, f"ææ–™è¯»å–å¤±è´¥: {e}", certain_not_executed=True)
-            return
-        except Exception as e:  # noqa: BLE001
-            log.exception("ä»»åŠ¡æ‰§è¡Œå¼‚å¸¸ task_id=%s", task_id)
-            await self._mark_uncertain(task, run, f"å†…éƒ¨é”™è¯¯ï¼Œç»“æœæœªç¡®è®¤: {e}")
-            return
-
-        # é¦–è½®é¢„å¤„ç†ï¼ˆå¤æŸ¥ä¸å½’æ¡£å…±ç”¨ï¼‰ï¼šå­¦ç§‘å›å¡«ã€uidã€è¡¥å……è½®æ¬¡è¦†ç›–æ ¡éªŒã€åŒºé—´ä¸ç¼ºå£
-        result = await self._prepare_result(task, run, payload, prev_result)
-        if result is None:
-            return
-
-        # æœåŠ¡ç«¯äºŒæ¬¡å¤æŸ¥ï¼ˆç¬¬äºŒæ¨¡å‹ï¼‰ï¼šåªå†™å¤æŸ¥å­—æ®µï¼Œå¤±è´¥ä¸åé¦–è½®æˆæœ
-        if s.is_hermes:
-            if (payload.get("provider") == "staged"
-                    and s.hermes.review_configured
-                    and not any(review.is_candidate(q)
-                                for q in result.get("questions") or [])):
-                # åˆ†é˜¶æ®µå·²åšç‹¬ç«‹æ±‚è§£ä¸æ¯”å¯¹åˆ¤å®šï¼Œæœ¬æ¬¡åˆæ— é”™é¢˜/å­˜ç–‘é¢˜ï¼š
-                # å¤æŸ¥ä¸ä¼šæœ‰æ–°çš„ä¿¡æ¯å¢ç›Šï¼Œè·³è¿‡ä»¥çœä¸€æ¬¡æ¨¡å‹è°ƒç”¨ï¼Œå¦‚å®æ ‡æ³¨
-                result = review.apply_skipped_after_staged(result)
-            else:
-                result = await self._run_review(task, run, result, deadline, payload,
-                                                assets)
-
-        await self._finish(task, run, payload, result, output_dir, prev_result)
-
-    async def _current_run(self, task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        runs = await db.list_runs(self.settings.db_path, task["id"])
-        for run in runs:
-            if run["status"] in ("queued", "running"):
-                return run
-        return runs[-1] if runs else None
-
-    async def _collect_assets(self, task: Dict[str, Any],
-                              run: Dict[str, Any]) -> List[Dict[str, Any]]:
-        rows = await db.list_task_assets(self.settings.db_path, task["id"], run["id"])
-        if not rows and run["kind"] == "initial":
-            rows = await db.list_task_assets(self.settings.db_path, task["id"])
-        if not rows and task.get("image_path"):
-            legacy = task["image_path"]
-            rows = [{"id": "legacy", "path": legacy, "mime": "image/jpeg", "bytes": 0}]
-        assets: List[Dict[str, Any]] = []
-        for row in rows:
-            assets.append({**row, "data_url": workspace.load_asset_data_url(row)})
-        return assets
-
-    async def _run_legacy(self, task: Dict[str, Any],
-                          assets: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """æ˜¾å¼çš„æ—§æ¨¡å¼ï¼šå•å›¾ + å¤šæ¨¡å‹ç›´è¿ã€‚ç»“æœæŒ‰æ–°åè®®è½¬æ¢ï¼Œå¹¶å¦‚å®æ ‡æ³¨æœªæ‰§è¡ŒäºŒæ¬¡æ ¸æŸ¥ã€‚"""
-        if not assets:
-            raise TaskError("æ—§æ¨¡å¼éœ€è¦ä¸€å¼ ä½œä¸šå›¾ç‰‡")
-        data_url = assets[0]["data_url"]
-        mime = assets[0].get("mime", "image/jpeg")
-        import base64
-
-        raw = base64.b64decode(data_url.split(",", 1)[1])
-        result, provider, model, itok, otok, cost = await grading.grade_image(
-            raw, mime, task.get("subject", ""), task.get("grade_level", ""), self.settings)
-        await db.add_daily_cost(self.settings.db_path, cost)
-        return {
-            "result": grading_result_to_v3(
-                result, task.get("subject", ""), task.get("grade_level", ""), provider),
-            "model": f"{provider}/{model}",
-            "usage": {"prompt_tokens": itok, "completion_tokens": otok},
-        }
-
-    async def _prepare_result(self, task: Dict[str, Any], run: Dict[str, Any],
-                              payload: Dict[str, Any],
-                              prev_result: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """é¦–è½®ç»“æœé¢„å¤„ç†ï¼šå­¦ç§‘å›å¡«ã€uidã€è¡¥å……è½®æ¬¡è¦†ç›–æ ¡éªŒã€åŒºé—´ä¸ç¼ºå£åˆå¹¶ã€‚
-
-        åœ¨å¤æŸ¥ä¸å½’æ¡£ä¹‹å‰å®Œæˆï¼Œä¿è¯å¤æŸ¥ä¸å½’æ¡£çœ‹åˆ°çš„æ˜¯åŒä¸€ä»½å·²å›å¡«ç»“æœã€‚
-        è¡¥å……è½®æ¬¡è¦†ç›–æ ¡éªŒå¤±è´¥æ—¶æ ‡ä»»åŠ¡å¤±è´¥å¹¶è¿”å› Noneã€‚
-        """
-
-        s = self.settings
-        result = payload["result"]
-
-        # å­¦ç§‘ï¼šä¼˜å…ˆç”¨æ¨¡å‹æŒ‰ææ–™åˆ¤æ–­å‡ºçš„å­¦ç§‘ï¼›æ¨¡å‹æ²¡ç»™æ—¶å›è½åˆ°ä»»åŠ¡ä¸Šçš„å­¦ç§‘
-        if not (result.get("subject") or "").strip() and (task.get("subject") or "").strip():
-            result["subject"] = task["subject"]
-
-        # æœåŠ¡ç«¯å›å¡«ç¨³å®šå»é‡é”®ï¼Œå¹¶æŠŠåŒºé—´ç¼ºå£ä¸è€ƒè¯•èŒƒå›´è¯´æ˜å¦‚å®å¹¶å…¥ missing_info
-        scope_info = scope.describe_scope(task, await _term_start_date(s, task["openid"]))
-        result = fill_question_uids(result, time.strftime("%Y-%m-%d"))
-
-        if run.get("kind") == "followup" and prev_result:
-            # ä¿®è®¢æ¨¡å¼ uid è¦†ç›–æ ¡éªŒï¼šæ¨¡å‹ä¸¢é¢˜è¯´æ˜æŠŠè¡¥å……ææ–™å½“æˆäº†æ–°ä½œä¸šï¼Œ
-            # æ­¤æ—¶ç»ä¸èƒ½è¦†ç›–ä¸Šä¸€è½®ç»“æœï¼›æ ‡å¤±è´¥å¹¶é€€è¿˜æ¬¡æ•°ï¼Œç”¨æˆ·å¯é‡æ–°è¡¥å……
-            gaps = revision_coverage_gaps(prev_result, result)
-            if gaps:
-                sample = "ã€".join(gaps[:5]) + ("â€¦" if len(gaps) > 5 else "")
-                await self._mark_failed(
-                    task, run,
-                    f"è¡¥å……è½®æ¬¡ç»“æœç¼ºå¤±ä¸Šä¸€è½® {len(gaps)} é“é¢˜ï¼ˆ{sample}ï¼‰ï¼Œ"
-                    f"å·²æ‹’ç»è¦†ç›–å†™å…¥ï¼Œæ¬¡æ•°å·²é€€è¿˜",
-                    certain_not_executed=True)
-                return None
-            # å½’æ¡£æ²¿ç”¨ä¸Šä¸€è½®è·¯å¾„å¹¶è¿½åŠ ç« èŠ‚æ ‡é¢˜ï¼ŒåŒä¸€ä»»åŠ¡çš„å½’æ¡£ä¿æŒåœ¨åŒä¸€æ–‡æ¡£
-            arch = result.setdefault("archive", {})
-            prev_path = (prev_result.get("archive") or {}).get("suggested_path", "")
-            if prev_path:
-                arch["suggested_path"] = prev_path
-            md = (arch.get("content_markdown") or "").strip()
-            if md and not md.startswith("## è¡¥å……ææ–™"):
-                arch["content_markdown"] = f"## è¡¥å……ææ–™ï¼ˆç¬¬ {run['run_no']} è½®ï¼‰\n\n{md}"
-        missing = result.setdefault("missing_info", [])
-        for item in scope_info["missing"]:
-            if item not in missing:
-                missing.append(item)
-        result_scope = dict(result.get("scope") or {})
-        result_scope.setdefault("sources", [])
-        if not result_scope.get("start_date"):
-            result_scope["start_date"] = task.get("scope_start", "")
-        if not result_scope.get("end_date"):
-            result_scope["end_date"] = task.get("scope_end", "")
-        result["scope"] = result_scope
-        if not result.get("exam_scope"):
-            result["exam_scope"] = task.get("exam_scope", "")
-        if not result.get("training_kind"):
-            result["training_kind"] = task.get("training_kind", "")
-        return result
-
-    async def _run_staged(self, task: Dict[str, Any], run: Dict[str, Any],
-                          assets: List[Dict[str, Any]], chain: List[str],
-                          prev_result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """åˆ†é˜¶æ®µæ‰¹æ”¹ï¼šæå– â†’ ç‹¬ç«‹æ±‚è§£ â†’ æ¯”å¯¹åˆ¤å®š â†’ é”™å› è¯Šæ–­ã€‚
-
-        å…¨éƒ¨å›¾ç‰‡ä¸€æ¬¡é€å…¥æå–é˜¶æ®µï¼ˆlegacy åªå–ç¬¬ä¸€å¼ ï¼‰ï¼›æ¯é˜¶æ®µäº§å‡ºç»
-        on_stage å›è°ƒå†™å…¥ run.stage / run.stages_jsonï¼Œæ”¯æŒæ–­ç‚¹è§‚å¯Ÿä¸æŒ‰é˜¶æ®µé‡è¯•ã€‚
-        """
-        import base64
-
-        images: List[tuple] = []
-        for a in assets:
-            data_url = a.get("data_url") or ""
-            if "," not in data_url:
-                continue
-            raw = base64.b64decode(data_url.split(",", 1)[1])
-            images.append((raw, a.get("mime", "image/jpeg")))
-        if not images:
-            raise TaskError("åˆ†é˜¶æ®µæ‰¹æ”¹éœ€è¦ä½œä¸šå›¾ç‰‡")
-        log.info("åˆ†é˜¶æ®µæ‰¹æ”¹ task_id=%s run_no=%d images=%d followup=%s",
-                 task["id"], run["run_no"], len(images),
-                 bool(prev_result) and run.get("kind") == "followup")
-
-        stages_store: Dict[str, Any] = {}
-
-        async def on_stage(name: str, data: Any) -> None:
-            stages_store[name] = data
-            if name == "extract":
-                # ç¬¬ä¸€æ­¥äº§å‡ºç›´æ¥æ‰“æ—¥å¿—ï¼šä½¿ç”¨è€…å¯æ ¸å¯¹ AI æ˜¯å¦è¯»å¯¹äº†é¢˜ç›®ä¸å­¦ç”Ÿç­”æ¡ˆ
-                log.info("ã€æå–é˜¶æ®µè½¬å†™ã€‘task_id=%s run_no=%d\n%s",
-                         task["id"], run["run_no"],
-                         staged.format_extraction_log(data))
-            await db.update_run(
-                self.settings.db_path, run["id"], stage=name,
-                stages_json=json.dumps(stages_store, ensure_ascii=False))
-
-        # è¡¥å……è½®æ¬¡ç”¨æœ¬è½®æ–‡å­—ï¼ˆe745431 ä¿®å¤ï¼šä¸ç”¨ä»»åŠ¡åˆ›å»ºæ—¶çš„æ–‡å­—ï¼‰
-        run_text = (run.get("input_text") or "").strip()
-        input_text = run_text or (task.get("input_text") or "").strip()
-        is_followup = run.get("kind") == "followup" and prev_result is not None
-
-        outcome = await staged.grade_staged(
-            images,
-            task.get("subject", "") or "", task.get("grade_level", "") or "",
-            input_text, self.settings, chain=chain,
-            prev_result=prev_result if is_followup else None,
-            followup_no=run["run_no"] if is_followup else 0,
-            on_stage=on_stage)
-        await db.add_daily_cost(self.settings.db_path, outcome.cost)
-        await db.update_run(self.settings.db_path, run["id"], stage="done")
-        return {
-            "result": outcome.result,
-            "provider": "staged",
-            "model": f"staged:{outcome.model}",
-            "usage": {"prompt_tokens": outcome.input_tokens,
-                      "completion_tokens": outcome.output_tokens},
-        }
-
-    async def _run_review(self, task: Dict[str, Any], run: Dict[str, Any],
-                          result: Dict[str, Any], deadline: float,
-                          first_payload: Dict[str, Any],
-                          assets: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-        """æœåŠ¡ç«¯äºŒæ¬¡å¤æŸ¥ç¼–æ’ï¼ˆç¬¬äºŒæ¨¡å‹ï¼‰ï¼šæ¯è½®æœ€å¤šä¸€æ¬¡è°ƒç”¨ã€‚
-
-        å¤æŸ¥åˆ†ä¸¤æ­¥ï¼ˆä¸€æ¬¡è°ƒç”¨å†…å®Œæˆï¼‰ï¼šå…ˆå¯¹ç…§ä½œä¸šåŸå›¾åšè½¬å†™äºŒæ¬¡ç¡®è®¤
-        ï¼ˆé‡è¯»å­¦ç”Ÿä½œç­”ï¼ŒæŠ“"å·é¢æ˜¯ Aã€è½¬å†™æˆ B"è¿™ç±»è¯†åˆ«é”™è¯¯ï¼‰ï¼Œå†åšé€»è¾‘æ ¸æŸ¥ã€‚
-        åªå†™ review / review_summary ç­‰æœåŠ¡ç«¯ç®¡ç†å­—æ®µï¼›è°ƒç”¨å¤±è´¥ã€èº«ä»½ä¸å¯ä¿¡ã€
-        è¦†ç›–å¯¹è´¦ä¸è¿‡ã€åˆå¹¶æ ¡éªŒå¤±è´¥éƒ½åªå½±å“å¤æŸ¥å­—æ®µï¼ˆå¦‚å®æ ‡æ³¨ï¼‰ï¼Œä¸åé¦–è½®æˆæœã€‚
-        å–æ¶ˆå¼‚å¸¸åŸæ ·ä¸ŠæŠ›ï¼ˆæœåŠ¡åœæ­¢ä»æŒ‰æ—¢æœ‰ã€Œç»“æœæœªç¡®è®¤ã€çºªå¾‹å¤„ç†ï¼‰ã€‚
-        """
-        s = self.settings
-        h = s.hermes
-        task_id, run_no = task["id"], run["run_no"]
-
-        if not h.review_configured:
-            return review.apply_not_configured(result)
-        targets, overflow = review.select_review_targets(
-            result.get("questions") or [], h.review_max_questions)
-        if not targets:
-            return review.apply_not_required(result)
-
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            log.warning("å¤æŸ¥æœªæ´¾å‘ï¼šä»»åŠ¡é¢„ç®—å·²è€—å°½ task_id=%s", task_id)
-            return review.apply_not_run(result, "ä»»åŠ¡æ—¶é—´é¢„ç®—å·²è€—å°½ï¼Œå¤æŸ¥æœªæ´¾å‘")
-
-        # è½¬å†™äºŒæ¬¡ç¡®è®¤ï¼šæŠŠä½œä¸šåŸå›¾é™„ç»™å¤æŸ¥æ¨¡å‹ï¼Œå…ˆé‡è¯»å­¦ç”Ÿä½œç­”æ ¸å¯¹è½¬å†™ï¼Œ
-        # å†æ ¸æŸ¥é¦–è½®ç»“è®ºï¼›æ‹¿ä¸åˆ°åŸå›¾æ—¶é€€åŒ–ä¸ºçº¯æ–‡å­—æ ¸æŸ¥ã€‚
-        # è¡¥å……è½®æ¬¡å¤æŸ¥è¦†ç›–å…¨é‡å€™é€‰é¢˜ï¼šå–ä»»åŠ¡å…¨éƒ¨å›¾ç‰‡ï¼ˆä¸æ­¢æœ¬è½®æ–°å¢çš„ï¼‰ã€‚
-        review_assets = assets or []
-        if run.get("kind") == "followup":
-            rows = await db.list_task_assets(s.db_path, task_id)
-            review_assets = [{**r, "data_url": workspace.load_asset_data_url(r)}
-                             for r in rows]
-        images = [a.get("data_url") for a in review_assets if a.get("data_url")]
-        coverage = "reread" if images else "transcript_only"
-
-        timeout = min(h.review_timeout_seconds, remaining)
-        log.info("å¼€å§‹å¤æŸ¥ task_id=%s run_no=%d é€å®¡=%d è¶…é™=%d timeout=%.0fs coverage=%s images=%d",
-                 task_id, run_no, len(targets), len(overflow), timeout, coverage, len(images))
-        try:
-            messages = hermes.build_review_messages(s, task, run, targets,
-                                                    images or None)
-            payload = await asyncio.wait_for(
-                self.client.review_questions(
-                    messages, f"review-{task_id}-{run_no}", timeout=timeout,
-                    coverage=coverage),
-                timeout=timeout)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # noqa: BLE001 - å¤æŸ¥å¤±è´¥ä¸å½±å“é¦–è½®æˆæœ
-            log.warning("å¤æŸ¥è°ƒç”¨å¤±è´¥ task_id=%s: %s", task_id, e)
-            return review.apply_failed(
-                result, targets, overflow, f"å¤æŸ¥è°ƒç”¨å¤±è´¥ï¼š{e}")
-
-        # usage ç´¯è®¡ï¼šä¸¤æ¬¡çœŸå®è°ƒç”¨çš„æ¶ˆè€—å¦‚å®å…¥è´¦ï¼ˆè¿œç«¯æ²¡è¿”å›çš„ä¸ç¼–é€ ï¼‰
-        usage = dict(first_payload.get("usage") or {})
-        for key in ("prompt_tokens", "completion_tokens"):
-            usage[key] = (int(usage.get(key, 0) or 0)
-                          + int((payload.get("usage") or {}).get(key, 0) or 0))
-        first_payload["usage"] = usage
-
-        meta = {
-            "model_requested": payload.get("model_requested", ""),
-            "model_reported": payload.get("reported_model", ""),
-            "model_identity": "",
-            "coverage": coverage,
-        }
-        identity, identity_note = review.check_model_identity(
-            payload, first_payload,
-            h.review_expected_model, h.review_expected_provider)
-        meta["model_identity"] = identity
-        if identity not in review.IDENTITY_ACCEPTED:
-            log.warning("å¤æŸ¥æ¨¡å‹èº«ä»½%s task_id=%s: %s", identity, task_id, identity_note)
-            label = "æœªç¡®è®¤" if identity == review.IDENTITY_UNKNOWN else "ä¸ç¬¦"
-            return review.apply_failed(
-                result, targets, overflow,
-                f"å¤æŸ¥æ¨¡å‹èº«ä»½{label}ï¼š{identity_note}", meta)
-        if identity == review.IDENTITY_MODEL_ONLY:
-            # ç½‘å…³ä¸å› providerï¼šæ¨¡å‹åå·²æ ¸å¯¹ï¼Œé‡‡çº³æœ¬æ¬¡å¤æŸ¥ï¼Œä½†å¦‚å®è®°å½•æ ¸éªŒèŒƒå›´
-            log.warning("å¤æŸ¥æ¨¡å‹èº«ä»½ä»…æ ¸å¯¹åˆ°æ¨¡å‹å task_id=%s: %s", task_id, identity_note)
-
-        reviews_by_id, problems = review.reconcile_reviews(
-            targets, payload.get("reviews") or [])
-        if problems:
-            log.warning("å¤æŸ¥è¾“å‡ºå¯¹è´¦å¤±è´¥ task_id=%s: %s", task_id, "ï¼›".join(problems))
-            return review.apply_failed(
-                result, targets, overflow,
-                "å¤æŸ¥è¾“å‡ºæœªé€šè¿‡è¦†ç›–å¯¹è´¦ï¼š" + "ï¼›".join(problems), meta)
-
-        merged = review.apply_review_result(result, targets, reviews_by_id, overflow, meta)
-        try:
-            hermes.validate_result(merged)
-        except hermes.HermesResultInvalid as e:
-            # é˜²å¾¡å¼å›é€€ï¼šåˆå¹¶ç»“æœä¸åˆæ³•æ—¶é€€å›è§„èŒƒåŒ–åŸºçº¿ï¼Œä¸æŠŠéæ³•æ•°æ®å†™åº“
-            log.warning("å¤æŸ¥åˆå¹¶ç»“æœæœªé€šè¿‡æ ¡éªŒï¼Œå›é€€åŸºçº¿ task_id=%s: %s", task_id, e)
-            fallback = review.apply_failed(
-                result, targets, overflow,
-                f"å¤æŸ¥åˆå¹¶ç»“æœæœªé€šè¿‡åè®®æ ¡éªŒï¼š{e}", meta)
-            hermes.validate_result(fallback)
-            return fallback
-        summary = merged.get("review_summary") or {}
-        log.info("å¤æŸ¥å®Œæˆ task_id=%s run_no=%d state=%s disagreed=%d unverified=%d",
-                 task_id, run_no, summary.get("state"),
-                 summary.get("disagreed", 0), summary.get("unverified", 0))
-        return merged
-
-    async def _finish(self, task: Dict[str, Any], run: Dict[str, Any],
-                      payload: Dict[str, Any], result: Dict[str, Any], output_dir,
-                      prev_result: Optional[Dict[str, Any]] = None) -> None:
-        s = self.settings
-        task_id = task["id"]
-
-        # æœåŠ¡ç«¯äºŒæ¬¡å¤æŸ¥é™„è®°éšæœ¬è½®å½’æ¡£ä¸€æ¬¡å†™å…¥ï¼šä¸ç»“æœ JSON åŒæºï¼ˆåŒä¸€ä»½ resultï¼‰ï¼Œ
-        # å½’æ¡£æ­£æ–‡ä¸ç»“æ„åŒ–å­—æ®µä¸ä¼šå„è¯´å„è¯ï¼›æ²¡æœ‰åˆæ³•å½’æ¡£æ—¶æ²¿ç”¨æ—¢æœ‰è·³è¿‡è¯­ä¹‰ã€‚
-        review_md = review.build_review_markdown(result)
-        if review_md:
-            arch = result.setdefault("archive", {})
-            md = (arch.get("content_markdown") or "").strip()
-            arch["content_markdown"] = f"{md}\n\n{review_md}" if md else review_md
-
-        archive = await workspace.apply_archive(s, task, run, result)
-
-        # å½’æ¡£æˆåŠŸåæ‰§è¡Œå—æ§ Git åŒæ­¥ï¼ˆä»…æäº¤æœ¬æ¬¡æˆæƒæ–‡ä»¶ï¼‰ï¼›æœªå¯ç”¨æˆ–å¤±è´¥éƒ½å¦‚å®è®°å½•
-        git_result: Optional[Dict[str, Any]] = None
-        if s.git_sync_enabled:
-            git_result = await git_sync.sync_workspace(
-                s, task=task, run=run, archive=archive, result=result)
-            await db.log_git_sync(s.db_path, {**git_result, "task_id": task_id})
-        result["delivery"] = workspace.summarize_delivery(s, result, archive, git_result)
-
-        # å°è´¦ï¼šé”™é¢˜ä¸å­˜ç–‘é¢˜æŒ‰å»é‡é”®å†™å…¥/æ›´æ–°ï¼Œå¤æµ‹äº‹ä»¶åªè¿½åŠ ä¸æ”¹å†™å†å²
-        ledger_count = await _write_ledger(s, task, result, archive, prev_result)
-
-        artifact_row = workspace.archive_artifact(s, task_id, archive)
-        if artifact_row:
-            artifact_row["run_id"] = run["id"]
-            await db.add_artifact(s.db_path, artifact_row)
-        for row in workspace.collect_artifacts(s, task_id, run["run_no"]):
-            row["run_id"] = run["id"]
-            await db.add_artifact(s.db_path, row)
-
-        status = "waiting_input" if result.get("missing_info") else "done"
-        await db.update_run(
-            s.db_path, run["id"], status=status, finished_at=time.time(),
-            result_json=json.dumps(result, ensure_ascii=False),
-            hermes_session_id=f"study-{task_id}-{run['run_no']}",
-        )
-        await db.update_task(
-            s.db_path, task_id, status=status,
-            result_json=json.dumps(result, ensure_ascii=False),
-            provider=payload.get("provider", "hermes"), model=payload.get("model", ""),
-            input_tokens=int((payload.get("usage") or {}).get("prompt_tokens", 0) or 0),
-            output_tokens=int((payload.get("usage") or {}).get("completion_tokens", 0) or 0),
-            error="", claim_owner="", claim_expires_at=0,
-            archive_path=archive.get("path", "") or "",
-            git_status=(git_result or {}).get("status", "") if s.git_sync_enabled else "not_configured",
-        )
-        await db.settle_reservation(s.db_path, task_id)
-        log.info("ä»»åŠ¡å®Œæˆ task_id=%s run_no=%d status=%s archive=%s git=%s ledger=%d",
-                 task_id, run["run_no"], status, archive.get("status"),
-                 (git_result or {}).get("status", "-"), ledger_count)
-
-
-    async def _mark_failed(self, task: Dict[str, Any], run: Dict[str, Any], message: str,
-                           certain_not_executed: bool) -> None:
-        s = self.settings
-        await db.update_run(s.db_path, run["id"], status="failed",
-                            finished_at=time.time(), error=message[:500])
-        await db.update_task(s.db_path, task["id"], status="failed", error=message[:500],
-                            claim_owner="", claim_expires_at=0)
-        if certain_not_executed:
-            await db.release_reservation(s.db_path, task["id"], refund=True)
-        log.error("ä»»åŠ¡å¤±è´¥ task_id=%s: %s", task["id"], message)
-
-    async def _mark_uncertain(self, task: Dict[str, Any], run: Dict[str, Any],
-                              message: str) -> None:
-        s = self.settings
-        note = f"{message}ï¼ˆè¿œç«¯å¯èƒ½å·²æ‰§è¡Œï¼Œæœªè‡ªåŠ¨é‡è¯•ï¼Œä¹Ÿæœªé€€è¿˜æ¬¡æ•°ï¼‰"
-        await db.update_run(s.db_path, run["id"], status="interrupted",
-                            finished_at=time.time(), error=note[:500])
-        await db.update_task(s.db_path, task["id"], status="interrupted", error=note[:500],
-                            claim_owner="", claim_expires_at=0)
-        log.warning("ä»»åŠ¡ç»“æœæœªç¡®è®¤ task_id=%s: %s", task["id"], message)
-
-# --------------------------- è§†å›¾ ---------------------------
-
-
-def _parse_stages_json(raw: Any) -> Dict[str, Any]:
-    """è§£æ task_runs.stages_jsonï¼›ç©ºæˆ–éæ³•æ—¶è¿”å› {}ï¼ˆä¸æŠ›é”™ï¼‰ã€‚"""
-    if not raw:
-        return {}
-    try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-async def build_task_view(settings: Settings, task: Dict[str, Any]) -> Dict[str, Any]:
-    """ç»Ÿä¸€ä»»åŠ¡è§†å›¾ï¼šæ–°æ—§ç»“æœéƒ½èƒ½è¯»ï¼ŒçŠ¶æ€ä¸ç¼ºå£å¦‚å®å‘ˆç°ã€‚"""
-    runs = await db.list_runs(settings.db_path, task["id"])
-    artifacts = await db.list_artifacts(settings.db_path, task["id"])
-    result = normalize_result(task.get("result_json"))
-
-    ledger = await db.list_ledger_by_task(settings.db_path, task["openid"], task["id"])
-    return {
-        "id": task["id"],
-        "status": task["status"],
-        "task_type": task.get("task_type", "grading"),
-        # å­¦ç§‘æœªæŒ‡å®šæ—¶ç”¨æ¨¡å‹æŒ‰ææ–™åˆ¤æ–­å‡ºçš„å­¦ç§‘å±•ç¤ºï¼Œé¿å…é¡µé¢å‡ºç°ç©ºå­¦ç§‘
-        "subject": task.get("subject") or (result or {}).get("subject", "") or "",
-        "grade_level": task.get("grade_level", ""),
-        "exam_scope": task.get("exam_scope", ""),
-        "training_kind": task.get("training_kind", ""),
-        "scope_start": task.get("scope_start", ""),
-        "scope_end": task.get("scope_end", ""),
-        "git_status": task.get("git_status", ""),
-        "archive_path": workspace.workspace_relative_path(settings, task.get("archive_path", "")),
-        "ledger": [
-            {
-                "id": row["id"], "question_uid": row.get("question_uid", ""),
-                "no": row.get("question_no", ""), "source": row.get("source", ""),
-                "page": row.get("page", ""), "status": row.get("status", ""),
-                "knowledge_point": row.get("knowledge_point", ""),
-                "remediation_state": row.get("remediation_state", ""),
-            }
-            for row in ledger
-        ],
-        "provider": task.get("provider", ""),
-        "model": task.get("model", ""),
-        "error": task.get("error", ""),
-        "created_at": task.get("created_at"),
-        "updated_at": task.get("updated_at"),
-        "run_count": task.get("run_count", 0),
-        "runs": [
-            {
-                "id": r["id"], "run_no": r["run_no"], "kind": r["kind"],
-                "status": r["status"], "error": r.get("error", ""),
-                "started_at": r.get("started_at"), "finished_at": r.get("finished_at"),
-                # åˆ†é˜¶æ®µè¿›åº¦ä¸å„é˜¶æ®µäº§å‡ºï¼ˆå« extract è½¬å†™ï¼šAI è¯»åˆ°çš„é¢˜ç›®ä¸å­¦ç”Ÿç­”æ¡ˆï¼‰
-                "stage": r.get("stage", ""),
-                "stages": _parse_stages_json(r.get("stages_json")),
-            }
-            for r in runs
-        ],
-        "artifacts": [
-            {"id": a["id"], "kind": a["kind"], "bytes": a["bytes"],
-             "download_url": f"/api/tasks/{task['id']}/artifacts/{a['id']}"}
-            for a in artifacts
-        ],
-        "result": result,
-        "result_unknown": task.get("result_json") is not None and result is None,
-    }
-
-
-# --------------------------- é”™é¢˜å°è´¦ ---------------------------
-
-# è®°å…¥å°è´¦çš„é¢˜ç›®çŠ¶æ€ï¼šåªè®°éœ€è¦è·Ÿè¿›çš„é”™é¢˜ä¸å­˜ç–‘é¢˜ï¼Œç­”å¯¹é¢˜ä¸å…¥å°è´¦
-LEDGER_STATUSES = ("wrong", "uncertain")
-
-
-def _ledger_state_for_event(result: str) -> str:
-    """å¤æµ‹/è®¢æ­£äº‹ä»¶å¯¹åº”çš„å°è´¦çŠ¶æ€ï¼›æ— æ³•è¯†åˆ«æ—¶ä¿æŒåŸçŠ¶æ€ï¼ˆä¸çŒœæµ‹ï¼‰ã€‚"""
-    return {
-        "retest_passed": "retest_passed",
-        "retest_failed": "retest_failed",
-        "corrected": "corrected_pending_retest",
-    }.get(result, "")
-
-
-def revision_coverage_gaps(prev_result: Optional[Dict[str, Any]],
-                           result: Dict[str, Any]) -> List[str]:
-    """è¡¥å……è½®æ¬¡ uid è¦†ç›–æ£€æŸ¥ï¼šè¿”å›ä¸Šä¸€è½®æœ‰ã€æœ¬è½®ç¼ºå¤±çš„é¢˜ç›® uid åˆ—è¡¨ã€‚
-
-    ä¿®è®¢æ¨¡å¼è¦æ±‚æ¨¡å‹åŸæ ·ä¿ç•™ä¸Šä¸€è½®æ‰€æœ‰é¢˜ç›®çš„ uidï¼›ç¼ºå¤±è¯´æ˜æ¨¡å‹æŠŠè¡¥å……ææ–™
-    å½“æˆäº†æ–°ä½œä¸šä»å¤´æ‰¹é˜…ï¼Œè¿™æ—¶ç»ä¸èƒ½ç”¨æ–°ç»“æœè¦†ç›–æ—§ç»“æœã€‚
-    """
-    if not prev_result:
-        return []
-    prev_uids = [str(q.get("uid") or "").strip()
-                 for q in (prev_result.get("questions") or [])]
-    prev_uids = [u for u in prev_uids if u]
-    if not prev_uids:
-        return []
-    new_uids = {str(q.get("uid") or "").strip()
-                for q in (result.get("questions") or [])}
-    return [u for u in prev_uids if u not in new_uids]
-
-
-async def _record_revision_corrections(settings: Settings, task: Dict[str, Any],
-                                       result: Dict[str, Any],
-                                       prev_result: Dict[str, Any],
-                                       archive_rel: str) -> None:
-    """ä¿®è®¢è¾¹ç•Œï¼šä¸Šä¸€è½®é”™é¢˜åœ¨æœ¬è½®è¢«è®¢æ­£ä¸ºå¯¹ï¼Œå°è´¦è®°ä¸€æ¡è®¢æ­£äº‹ä»¶å¹¶æ›´æ–°çŠ¶æ€ã€‚
-
-    åªè¿½åŠ äº‹ä»¶ã€ä¸åˆ å†å²ï¼›çŠ¶æ€æµè½¬åˆ° corrected_pending_retestï¼ˆå·²è®¢æ­£å¾…å¤æµ‹ï¼‰ï¼Œ
-    é¿å…æ—§çš„ã€Œå¾…è®¢æ­£ã€æ¡ç›®å˜æˆåƒµå°¸æ•°æ®ã€‚
-    """
-    openid = task["openid"]
-    subject = result.get("subject") or task.get("subject") or ""
-    prev_by_uid = {str(q.get("uid") or "").strip(): q
-                   for q in (prev_result.get("questions") or [])}
-    new_by_uid = {str(q.get("uid") or "").strip(): q
-                  for q in (result.get("questions") or [])}
-    today = time.strftime("%Y-%m-%d")
-    for uid, prev_q in prev_by_uid.items():
-        if not uid or prev_q.get("status") not in LEDGER_STATUSES:
-            continue
-        new_q = new_by_uid.get(uid)
-        if not new_q:
-            continue  # ç¼ºé¢˜å·²è¢«è¦†ç›–æ ¡éªŒæ‹¦æˆªï¼Œæ­£å¸¸èµ°ä¸åˆ°è¿™é‡Œ
-        corrected = (new_q.get("status") == "correct"
-                     or (new_q.get("final_decision") or "") == "corrected_to_correct")
-        if not corrected:
-            continue
-        entry = await db.get_ledger_by_uid(settings.db_path, openid, uid)
-        if not entry:
-            continue
-        await db.add_question_event(settings.db_path, openid, {
-            "question_uid": uid,
-            "subject": subject,
-            "event_type": "correction",
-            "result": "corrected",
-            "occurred_date": today,
-            "student_answer": new_q.get("student_answer", ""),
-            "note": "è¡¥å……ææ–™åè®¢æ­£ä¸ºå¯¹",
-            "source_task_id": task["id"],
-            "archive_path": archive_rel,
-        })
-        state = _ledger_state_for_event("corrected")
-        if state:
-            await db.update_ledger_state(
-                settings.db_path, openid, entry["id"],
-                remediation_state=state, archive_path=archive_rel)
-
-
-
-async def _write_ledger(settings: Settings, task: Dict[str, Any], result: Dict[str, Any],
-                        archive: Dict[str, Any],
-                        prev_result: Optional[Dict[str, Any]] = None) -> int:
-    """æŠŠæœ¬æ¬¡ç»“æœå†™å…¥å°è´¦ï¼šé¢˜ç›®æŒ‰ uid å»é‡ï¼Œå¤æµ‹äº‹ä»¶è¿½åŠ å¹¶æ›´æ–°å¯¹åº”çŠ¶æ€ã€‚"""
-    subject = result.get("subject") or task.get("subject") or ""
-    archive_rel = workspace.workspace_relative_path(settings, archive.get("path", ""))
-    openid = task["openid"]
-    written = 0
-
-    for question in result.get("questions") or []:
-        uid = str(question.get("uid") or "").strip()
-        if not uid or question.get("status") not in LEDGER_STATUSES:
-            continue
-        await db.upsert_ledger_question(settings.db_path, openid, {
-            "question_uid": uid,
-            "task_id": task["id"],
-            "question_no": question.get("no", ""),
-            "subject": subject,
-            "source": question.get("source", ""),
-            "page": question.get("page", ""),
-            "stem": question.get("stem", ""),
-            "student_answer": question.get("student_answer", ""),
-            "correct_answer": question.get("correct_answer", ""),
-            "error_rule": question.get("error_rule", ""),
-            "knowledge_point": question.get("knowledge_point", ""),
-            "status": question.get("status", ""),
-            "remediation_state": (question.get("remediation") or {}).get("state", ""),
-            "archive_path": archive_rel,
-        })
-        written += 1
-
-    for event in result.get("retests") or []:
-        uid = str(event.get("question_uid") or "").strip()
-        if not uid:
-            continue
-        await db.add_question_event(settings.db_path, openid, {
-            "question_uid": uid,
-            "subject": subject,
-            "event_type": "retest",
-            "result": event.get("result", ""),
-            "occurred_date": event.get("occurred_date", ""),
-            "student_answer": event.get("student_answer", ""),
-            "note": event.get("note", ""),
-            "source_task_id": task["id"],
-            "archive_path": archive_rel,
-        })
-        state = _ledger_state_for_event(event.get("result", ""))
-        entry = await db.get_ledger_by_uid(settings.db_path, openid, uid)
-        if entry and state:
-            await db.update_ledger_state(
-                settings.db_path, openid, entry["id"],
-                remediation_state=state, archive_path=archive_rel)
-
-    if prev_result:
-        # ä¿®è®¢è¾¹ç•Œï¼šä¸Šä¸€è½®é”™é¢˜åœ¨æœ¬è½®è¢«è®¢æ­£ä¸ºå¯¹ï¼Œè®°è®¢æ­£äº‹ä»¶å¹¶æ›´æ–°å°è´¦çŠ¶æ€
-        await _record_revision_corrections(settings, task, result, prev_result, archive_rel)
-
-    return written
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éí×øõ:-jZ.¶›­–)Ş³R"".hÈK˜^XÉnZÚnKšK»¾XªûÉ®[˜.zØX‰¾[»®8i[hÚî[©>ŠêNš(nhš~ŠÎ8‹ÚîjÊKˆî{¹>iéÎ‰Ş[©>8  ®Xúş™Úhš~ŠÎ{ªnZé®ûÉ ¢ÒK»¾XªXXXZ^[©>XhŞyKhš~ŠÎYš8ÎŠêNš(n8ŞûÈ†6Æ–Ò²zyş{ªnûÈûÈÎKˆŞKéŞ‹Yn‹ù¾zˆ¾Xh^YîXûK»¾XªZÙkK¾8 ¢Ò[{.{¸ş[ÈZx¾kKîXùy¨N‹ÚîjÊYÊ˜xŞY
+şYîj~Šë–çFW''WFVNûÈÎKˆŞˆz®Xª˜xŞiKîûÈÎ˜şXXŞ˜xŞZHŞ[Ù.j>h‰n˜xŞZHŞXšşKÙÎyJ8 ¢Ò˜XŞš)Şš(NyYXú®{¹>zé~KˆjÊûÉ®zîŠêNiÊ®hš~ŠÎh˜Ş˜jËîûÈÎ{¹>iéÎiÊ®zîŠêNi{nKùŞhÈš(NyY[›nZh.ZéîKˆ®hª^8 ¢"" ¦g&öÒõögWGW&Uõò–×÷'Bææ÷FF–öç0 ¦–×÷'B7–æ6–ğ¦–×÷'B§6öà¦–×÷'BÆövv–æp¦–×÷'BF–ÖP¦–×÷'BWV–@¦g&öÒG—–ær–×÷'Bç’ÂF–7BÂÆ—7BÂ÷F–öæÀ ¦g&öÒâ–×÷'BF"Âv—E÷7–æ2Âw&F–ærÂ†W&ÖW2Â&Wf–WrÂ66÷RÂ7FvVBÂv÷&·76RÂ÷&–VçFF–öâÂF†–æ¶–æp¦g&öÒæ6öæf–r–×÷'B6WGF–æw2Â&÷f–FW%ö6†–à¦g&öÒæ†W&ÖW2–×÷'B†W&ÖW46Æ–VçBÂ†W&ÖW4W'&÷"Â†W&ÖW5Væ6W'F–à¦g&öÒç66†VÖ2–×÷'B†f–ÆÅ÷VW7F–öå÷V–G2Âw&F–æu÷&W7VÇE÷Fõ÷c2Âæ÷&ÖÆ—¦U÷&W7VÇBÀ¢&WVW7Eö†6‚¦g&öÒç7FvVB–×÷'B7FvTW'&÷  ¦ÆörÒÆövv–ærævWDÆövvW"…õöæÖUõò ¥DU$Ô”äÅõ5DEU4U2Ò‚&FöæR"Â&f–ÆVB"Â'v—F–æuö–çWB"Â&–çFW''WFVB"¤dôÄÄõuUôÄÄõtTBÒ‚&FöæR"Â'v—F–æuö–çWB"Â&f–ÆVB"Â&–çFW''WFVB"  ¦6Æ72F6´W'&÷"„W†6WF–öâ“ ¢FVbõö–æ—Eõò‡6VÆbÂÖW76vS¢7G"Â7FGW5ö6öFS¢–çBÒC’ÓâæöæS ¢7WW"‚’åõö–æ—Eõò†ÖW76vR¢6VÆbæÖW76vRÒÖW76vP¢6VÆbç7FGW5ö6öFRÒ7FGW5ö6öFP  ¦FVböæWuö–B‚’Óâ7G# ¢&WGW&âWV–BçWV–CB‚’æ†W…³£eĞ  ¢2ÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒX‰¾[»¢ÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒĞ  ¦7–æ2FVb7&VFU÷7GVG•÷F6²‡6WGF–æw3¢6WGF–æw2Â÷Væ–C¢7G"Â–ÆöC¢F–7E·7G"Âç•ÒÀ¢–FV×÷FVæ7•ö¶W“¢7G"Ò""’ÓâF–7E·7G"Âç•Ó ¢"".X‰¾[»®ZÚnKšK»¾XªûÈY
+¾Y»îx˜~Kˆîih~ZÙ~ûÈ8.[˜.zØ™Jîy»YÎK‰NXh^ZëKˆˆ{Ni{n‹ùNY¹îXéşK»¾Xª8""" ¢76WEö–G3¢Æ—7E·7G%ÒÒÆ—7B‡–ÆöBævWB‚&76WEö–G2"’÷"µÒ¢–bæ÷B‡–ÆöBævWB‚'FW‡B"’÷"""’ç7G&—‚’æBæ÷B76WEö–G3 ¢&—6RF6´W'&÷"‚.[ø^š¾hùKé¾ih~ZÙ~ŠûNiˆîh‰nˆ{>[	Kˆ[ÊY»îx˜r"¢–bÆVâ†76WEö–G2’â6WGF–æw2æÆ–Ö—G2æÖ…ö76WG5÷W%÷F6³ ¢&—6RF6´W'&÷"†b.XÙ^jÊK»¾XªiÈZI¢·6WGF–æw2æÆ–Ö—G2æÖ…ö76WG5÷W%÷F6·Ò[ÊY»îx˜r"ÂC2 ¢76WG2Òv—BöÆöEö÷væVEö76WG2‡6WGF–æw2Â÷Væ–BÂ76WEö–G2¢F÷FÅö'—FW2Ò7VÒ†²&'—FW2%Òf÷"–â76WG2¢–bF÷FÅö'—FW2â6WGF–æw2æÆ–Ö—G2æÖ…÷F÷FÅ÷WÆöEöÖ"¢#B¢#C ¢&—6RF6´W'&÷"†b.Y»îx˜~h¾ZJ~[ş‹h^‹ør·6WGF–æw2æÆ–Ö—G2æÖ…÷F÷FÅ÷WÆöEöÖ'ÔÔ""ÂC2 ¢–bv—BF"ævWEöF–Ç•ö6÷7B‡6WGF–æw2æF%÷F‚’ãÒ6WGF–æw2æ'VFvWBæF–Ç•öÖ…ö6ç“ ¢&—6RF6´W'&÷"‚.K¸®iz^iÈŞXªš)Ş[ªn[{.yJZèÎûÈÎŠû~iˆîZJXhŞŠùR"ÂS2 ¢F6µö–BÒöæWuö–B‚¢FV6—6–öâÒ66÷Ræ6ö×WFU÷66÷R€¢F6µ÷G—S×–ÆöBævWB‚'F6µ÷G—R"’÷"&w&F–ær"À¢G&–æ–æuö¶–æC×–ÆöBævWB‚'G&–æ–æuö¶–æB"’÷"""À¢66÷U÷7F'C×–ÆöBævWB‚'66÷U÷7F'B"’÷"""À¢66÷UöVæC×–ÆöBævWB‚'66÷UöVæB"’÷"""À¢FW&Õ÷7F'EöFFSÖv—B÷FW&Õ÷7F'EöFFR‡6WGF–æw2Â÷Væ–B’À¢¢F6²Ò°¢&–B#¢F6µö–BÀ¢&÷Væ–B#¢÷Væ–BÀ¢2ZÚnzyiÊ®hÈ~Zé®i{nKùŞyYz›®K‹.ûÈÎyKjŠYè¾hÈiÙiiXŠNijŞûÉ¾KˆŞi8^ˆz®i»şyJh‹~X~Zé®ZÚnzy¢'7V&¦V7B#¢‡–ÆöBævWB‚'7V&¦V7B"’÷"""’ç7G&—‚’À¢&w&FUöÆWfVÂ#¢–ÆöBævWB‚&w&FUöÆWfVÂ"’÷"""À¢'F6µ÷G—R#¢–ÆöBævWB‚'F6µ÷G—R"’÷"&w&F–ær"À¢&–çWE÷FW‡B#¢–ÆöBævWB‚'FW‡B"’÷"""À¢&–ÖvU÷F‚#¢76WG5³Õ²'F‚%Ò–b76WG2VÇ6R""À¢'7FGW2#¢'VæF–ær"À¢&7&VFVEöB#¢F–ÖRçF–ÖR‚’À¢&W†Õ÷66÷R#¢–ÆöBævWB‚&W†Õ÷66÷R"’÷"""À¢'G&–æ–æuö¶–æB#¢–ÆöBævWB‚'G&–æ–æuö¶–æB"’÷"""À¢Ğ¢2XË®™{NyKiÈŞXªzºşhÈŠxNˆÈ>Šêzé~YîhÈK˜^XÉnûÈÎhš~ŠÎ™‹një^KˆŞXhŞKéŞ‹YnZê.h‹~zºş˜xŞZHŞKÊXø ¢F6µ²'66÷U÷7F'B%ÒÒFV6—6–öâç7F'EöFFP¢F6µ²'66÷UöVæB%ÒÒFV6—6–öâæVæEöFFP ¢–FVÒÒæöæP¢–b–FV×÷FVæ7•ö¶W“ ¢–FVÒÒ°¢&¶W’#¢–FV×÷FVæ7•ö¶W•³£#…ÒÀ¢&÷Væ–B#¢÷Væ–BÀ¢&VæGö–çB#¢'7GVG•÷F6²"À¢'&WVW7Eö†6‚#¢&WVW7Eö†6‚‡°¢&÷Væ–B#¢÷Væ–BÂ'–ÆöB#¢–ÆöBÂ&76WG2#¢76WEö–G2À¢Ò’À¢Ğ ¢&W7VÇBÒv—BF"æ7&VFU÷F6µöFöÖ–2€¢6WGF–æw2æF%÷F‚ÂF6²À¢F–Ç•ög&VS×6WGF–æw2çV÷FæF–Ç•ög&VRÀ¢Ö…÷W%öF“×6WGF–æw2çV÷FæÖ…÷W%öF’À¢–FV×÷FVæ7“Ö–FVÒÀ¢¢–b&W7VÇBævWB‚&6öæfÆ–7B"“ ¢&—6RF6´W'&÷"‚.y»YÎ[˜.zØ™JîhùKªNK¨nKˆŞYÎXh^ZëûÈÎŠû~i»NhÚ"–FV×÷FVæ7’Ô¶W’"ÂC’¢–bæ÷B&W7VÇBævWB‚&ö²"“ ¢&—6RF6´W'&÷"‡&W7VÇBævWB‚'&V6öâ"Â.X‰¾[»®K»¾XªZK‹JR"’ÂC#’ ¢f–æÅ÷F6µö–BÒ&W7VÇE²'F6µö–B%Ğ¢–b&W7VÇBævWB‚&GWÆ–6FR"“ ¢W†—7F–ærÒv—BF"ævWE÷F6²‡6WGF–æw2æF%÷F‚Âf–æÅ÷F6µö–B¢&WGW&â²'F6µö–B#¢f–æÅ÷F6µö–BÂ'7FGW2#¢†W†—7F–ær÷"·Ò’ævWB‚'7FGW2"Â'VæF–ær"’À¢&GWÆ–6FR#¢G'VRÂ''Vç2#¢Â'66÷R#¢FV6—6–öâæ5öF–7B‚—Ğ ¢'VâÒöæWu÷'Vâ‡F6µö–CÖf–æÅ÷F6µö–BÂ'VåöæóÓÂ¶–æCÒ&–æ—F–Â"À¢–çWE÷FW‡C×F6µ²&–çWE÷FW‡B%Ò¢v—BF"æ7&VFU÷'Vâ‡6WGF–æw2æF%÷F‚Â'Vâ¢v—BF"æÆ–æµ÷F6µö76WG2‡6WGF–æw2æF%÷F‚Âf–æÅ÷F6µö–BÂ'Vå²&–B%ÒÂ76WEö–G2¢v—BF"çWFFU÷F6²‡6WGF–æw2æF%÷F‚Âf–æÅ÷F6µö–BÂ'Våö6÷VçCÓ¢Æöræ–æfò‚.X‰¾[»®ZÚnKšK»¾XªF6µö–CÒW2G—SÒW2¶–æCÒW266÷SÒW7âW276WG3ÒVB"À¢f–æÅ÷F6µö–BÂF6µ²'F6µ÷G—R%ÒÂF6²ævWB‚'G&–æ–æuö¶–æB"Â""’À¢FV6—6–öâç7F'EöFFR÷""Ò"ÂFV6—6–öâæVæEöFFR÷""Ò"ÂÆVâ†76WEö–G2’¢&WGW&â²'F6µö–B#¢f–æÅ÷F6µö–BÂ'7FGW2#¢'VæF–ær"Â&GWÆ–6FR#¢fÇ6RÂ''Vç2#¢À¢'66÷R#¢FV6—6–öâæ5öF–7B‚—Ğ  ¦7–æ2FVb÷FW&Õ÷7F'EöFFR‡6WGF–æw3¢6WGF–æw2Â÷Væ–C¢7G"’Óâ7G# ¢"".ZÚniÉş‹[~Zx¾iz^iÉşûÉ®KÉXX[şzˆ¾[¨şŠëî{Úîš^KùŞZÙXÎûÈÎX[njÊ˜XŞ{Úîih~K»n›¹ŠêNXÎûÉ¾˜;Şk*iÈX‰‹ùNY¹îz›®8""" ¢7F÷&VBÒv—BF"ævWEöfÖ–Ç•÷6WGF–æw2‡6WGF–æw2æF%÷F‚Â÷Væ–B¢–b7F÷&VBæB‡7F÷&VBævWB‚'FW&Õ÷7F'EöFFR"’÷"""’ç7G&—‚“ ¢&WGW&â7G"‡7F÷&VE²'FW&Õ÷7F'EöFFR%Ò’ç7G&—‚¢&WGW&â‡6WGF–æw2æfÖ–Ç’çFW&Õ÷7F'EöFFR÷"""’ç7G&—‚  ¦7–æ2FVbFEöföÆÆ÷wW‡6WGF–æw3¢6WGF–æw2Â÷Væ–C¢7G"ÂF6µö–C¢7G"À¢–ÆöC¢F–7E·7G"Âç•Ò’ÓâF–7E·7G"Âç•Ó ¢"".Zû[{.ZèÎh‰h‰n[è^Š^XX^K»¾Xª‹ûŞXªiÙiiûÈÎX‰¾[»®iky¨Nhš~ŠÎ‹ÚîjÊ8""" ¢F6²Òv—BF"ævWE÷F6²‡6WGF–æw2æF%÷F‚ÂF6µö–B¢–bæ÷BF6²÷"F6µ²&÷Væ–B%ÒÒ÷Væ–C ¢&—6RF6´W'&÷"‚.K»¾XªKˆŞZÙYÊ‚"ÂCB¢–bF6µ²'7FGW2%Òæ÷B–âdôÄÄõuUôÄÄõtTC ¢&—6RF6´W'&÷"†b.K»¾Xª[Ù>X˜Şx«nhûÈ‡·F6µ²w7FGW2u×ŞûÈKˆŞhê^Xù~Š^XX^iÙii’"ÂC’¢'Vç2Òv—BF"æÆ—7E÷'Vç2‡6WGF–æw2æF%÷F‚ÂF6µö–B¢–b'Vç2æB'Vç5²ÓÒævWB‚'7FvR"’ÓÒ&÷&–VçFF–öâ"æBF6µ²'7FGW2%ÒÓÒ'v—F–æuö–çWB# ¢&—6RF6´W'&÷"‚.Šû~XXzîŠêNš^™Ú.ikY	ûÈÎXéşY»îx˜~[{.KùŞyYûÈÎiz™ÈŠ^KªB"ÂC’¢–bv—BF"æ†5÷Væ6öæf—&ÖVE÷'Vâ‡6WGF–æw2æF%÷F‚ÂF6µö–B“ ¢&—6RF6´W'&÷"‚.Kˆ®KˆjÊhš~ŠÎ{¹>iéÎ[	®iÊ®zîŠêNûÈÎŠû~zˆŞYî˜xŞŠù^h‰nˆN{;¾zêynY‚"ÂC’¢–bF6²ævWB‚''Våö6÷VçB"Â’ãÒ6WGF–æw2æÆ–Ö—G2æÖ…÷'Vç5÷W%÷F6³ ¢&—6RF6´W'&÷"†b.Šú^K»¾XªiÈZI®‹ûŞXª·6WGF–æw2æÆ–Ö—G2æÖ…÷'Vç5÷W%÷F6·Ò‹Úâ"ÂC#’ ¢76WEö–G2ÒÆ—7B‡–ÆöBævWB‚&76WEö–G2"’÷"µÒ¢76WG2Òv—BöÆöEö÷væVEö76WG2‡6WGF–æw2Â÷Væ–BÂ76WEö–G2¢–bÆVâ†76WEö–G2’â6WGF–æw2æÆ–Ö—G2æÖ…ö76WG5÷W%÷F6³ ¢&—6RF6´W'&÷"†b.XÙ^jÊiÈZI¢·6WGF–æw2æÆ–Ö—G2æÖ…ö76WG5÷W%÷F6·Ò[ÊY»îx˜r"ÂC2 ¢'VåöæòÒ–çB‡F6²ævWB‚''Våö6÷VçB"Â’’²¢'VâÒöæWu÷'Vâ‡F6µö–C×F6µö–BÂ'Våöæó×'VåöæòÂ¶–æCÒ&föÆÆ÷wW"À¢–çWE÷FW‡C×–ÆöBævWB‚'FW‡B"’÷"""¢v—BF"æ7&VFU÷'Vâ‡6WGF–æw2æF%÷F‚Â'Vâ¢v—BF"æÆ–æµ÷F6µö76WG2‡6WGF–æw2æF%÷F‚ÂF6µö–BÂ'Vå²&–B%ÒÂ76WEö–G2¢v—BF"çWFFU÷F6²‡6WGF–æw2æF%÷F‚ÂF6µö–BÂ7FGW3Ò'VæF–ær"Â'Våö6÷VçC×'VåöæòÀ¢W'&÷#Ò""Â6Æ–Õö÷væW#Ò""Â6Æ–ÕöW‡—&W5öCÓ¢Æöræ–æfò‚.K»¾XªŠ^XX^iÙii’F6µö–CÒW2'VåöæóÒVB"ÂF6µö–BÂ'Våöæò¢&WGW&â²'F6µö–B#¢F6µö–BÂ''Våö–B#¢'Vå²&–B%ÒÂ''Våöæò#¢'VåöæòÂ'7FGW2#¢'VæF–ær'Ğ  ¦FVböæWu÷'Vâ‡F6µö–C¢7G"Â'Våöæó¢–çBÂ¶–æC¢7G"Â–çWE÷FW‡C¢7G"’ÓâF–7E·7G"Âç•Ó ¢&WGW&â°¢&–B#¢öæWuö–B‚’À¢'F6µö–B#¢F6µö–BÀ¢''Våöæò#¢'VåöæòÀ¢&¶–æB#¢¶–æBÀ¢&–çWE÷FW‡B#¢–çWE÷FW‡BÀ¢'7FGW2#¢'VWVVB"À¢&7&VFVEöB#¢F–ÖRçF–ÖR‚’À¢Ğ  ¦7–æ2FVböÆöEö÷væVEö76WG2‡6WGF–æw3¢6WGF–æw2Â÷Væ–C¢7G"À¢76WEö–G3¢Æ—7E·7G%Ò’ÓâÆ—7E´F–7E·7G"Âç•ÕÓ ¢–bæ÷B76WEö–G3 ¢&WGW&âµĞ¢&÷w2Òv—BF"æÆ—7Eö76WG2‡6WGF–æw2æF%÷F‚Â76WEö–G2¢'•ö–BÒ·%²&–B%Ó¢"f÷""–â&÷w7Ğ¢÷&FW&VC¢Æ—7E´F–7E·7G"Âç•ÕÒÒµĞ¢f÷"76WEö–B–â76WEö–G3 ¢&÷rÒ'•ö–BævWB†76WEö–B¢–bæ÷B&÷s ¢&—6RF6´W'&÷"†b.™˜NK»nKˆŞZÙYÊƒ¢¶76WEö–GÒ"ÂCB¢–b&÷u²&÷Væ–B%ÒÒ÷Væ–C ¢&—6RF6´W'&÷"‚.iziØ>KÛşyJŠú^™˜NK»b"ÂCB¢÷&FW&VBæVæB‡&÷r¢&WGW&â÷&FW&V@  ¢2ÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒhš~ŠÎYš‚ÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒĞ  ¦6Æ72F6µ'VææW# ¢"".XÙ^‹ù¾zˆ¾XÙ^[›nXùhš~ŠÎYšûÉ®K¸îi[hÚî[©>ŠêNš(n[è^hš~ŠÎK»¾Xª8"""  ¢FVbõö–æ—Eõò‡6VÆbÂ6WGF–æw3¢6WGF–æw2Â6Æ–VçC¢†W&ÖW46Æ–VçB’ÓâæöæS ¢6VÆbç6WGF–æw2Ò6WGF–æw0¢6VÆbæ6Æ–VçBÒ6Æ–Vç@¢6VÆbæ÷væW"Òb'v÷&¶W"×·WV–BçWV–CB‚’æ†W…³£e×Ò ¢6VÆbå÷7F÷Ò7–æ6–òäWfVçB‚¢6VÆbå÷F6³¢÷F–öæÅ¶7–æ6–òåF6µÒÒæöæP¢6VÆbå÷6VÒÒ7–æ6–òå6VÖ†÷&Rƒ ¢7–æ2FVb7F'B‡6VÆb’ÓâæöæS ¢–bæ÷B6VÆbç6WGF–æw2æÆ–Ö—G2çv÷&¶W%öVæ&ÆVC ¢Æörçv&æ–ær‚.hš~ŠÎYš[{.hÈ˜XŞ{ÚîXÎyJûÈ†Æ–Ö—G2çv÷&¶W%öVæ&ÆVCÖfÇ6^ûÈ’"¢&WGW&à¢&V6÷fW&VBÒv—BF"ç&V6÷fW%ö–çFW''WFVB‡6VÆbç6WGF–æw2æF%÷F‚¢–b&V6÷fW&VC ¢Æörçv&æ–ær‚.j8kX¾X‹VBKŠ®iÊ®zîŠêNK»¾XªûÈÎ[{.j~Šë–çFW''WFVC¢W2"À¢ÆVâ‡&V6÷fW&VB’Â"Â"æ¦ö–â‡&V6÷fW&VB’¢6VÆbå÷F6²Ò7–æ6–òæ7&VFU÷F6²‡6VÆbåöÆö÷‚’ ¢7–æ2FVb7F÷‡6VÆb’ÓâæöæS ¢6VÆbå÷7F÷ç6WB‚¢–b6VÆbå÷F6³ ¢6VÆbå÷F6²æ6æ6VÂ‚¢G'“ ¢v—B6VÆbå÷F6°¢W†6WB7–æ6–òä6æ6VÆÆVDW'&÷# ¢70 ¢7–æ2FVböÆö÷‡6VÆb’ÓâæöæS ¢öÆÂÒ6VÆbç6WGF–æw2æÆ–Ö—G2çv÷&¶W%÷öÆÅ÷6V6öæG0¢v†–ÆRæ÷B6VÆbå÷7F÷æ—5÷6WB‚“ ¢G'“ ¢7–æ2v—F‚6VÆbå÷6VÓ ¢F6²Òv—BF"æ6Æ–ÕöæW‡E÷F6²€¢6VÆbç6WGF–æw2æF%÷F‚Â6VÆbæ÷væW"À¢ÆV6U÷6V6öæG3×6VÆbç6WGF–æw2æÆ–Ö—G2æ6Æ–ÕöÆV6U÷6V6öæG2¢–bF6³ ¢v—B6VÆbæW†V7WFR‡F6²¢6öçF–çVP¢W†6WB7–æ6–òä6æ6VÆÆVDW'&÷# ¢&—6P¢W†6WBW†6WF–öã¢2æ÷¢$ÄSÒv÷&¶W"KˆŞ[©NYºXÙ^jÊ[È.[‹˜X{ ¢ÆöræW†6WF–öâ‚.hš~ŠÎYš[ê®xêş[È.[‹‚"¢v—B7–æ6–òç6ÆVW‡öÆÂ ¢7–æ2FVbW†V7WFR‡6VÆbÂF6³¢F–7E·7G"Âç•Ò’ÓâæöæS ¢v—F‚F†–æ¶–ærçF6µö6öçFW‡B‡F6µ²&–B%ÒÂ–çB‡F6²ævWB‚''Våö6÷VçB"’÷"’“ ¢v—B6VÆbåöW†V7WFR‡F6² ¢7–æ2FVböW†V7WFR‡6VÆbÂF6³¢F–7E·7G"Âç•Ò’ÓâæöæS ¢2Ò6VÆbç6WGF–æw0¢F6µö–BÒF6µ²&–B%Ğ¢'VâÒv—B6VÆbåö7W'&VçE÷'Vâ‡F6²¢–b'Vâ—2æöæS ¢v—BF"çWFFU÷F6²‡2æF%÷F‚ÂF6µö–BÂ7FGW3Ò&f–ÆVB"À¢W'&÷#Ò.K»¾Xª{Ë®[	Xúşhš~ŠÎ‹ÚîjÊ"¢&WGW&à ¢÷WGWEöF—"Òv÷&·76Rç'Våö÷WGWEöF—"‡2ÂF6µö–BÂ'Vå²''Våöæò%Ò¢v—BF"çWFFU÷'Vâ‡2æF%÷F‚Â'Vå²&–B%ÒÂ7FGW3Ò''Vææ–ær"Â7F'FVEöC×F–ÖRçF–ÖR‚’¢6W76–öåö–BÒb'7GVG’×·F6µö–GÒ×·'Vå²w'Våöæòu×Ò  ¢G'“ ¢76WG2Òv—B6VÆbåö6öÆÆV7Eö76WG2‡F6²Â'Vâ¢'VFvWBÒÖ–â‡2æ†W&ÖW2çF–ÖV÷WE÷6V6öæG2Â2æÆ–Ö—G2æÖ…÷F6µöÖ–çWFW2¢c¢FVFÆ–æRÒF–ÖRæÖöæ÷Föæ–2‚’²'VFvW@¢Æöræ–æfò‚.[ÈZx¾hš~ŠÂF6µö–CÒW2'VåöæóÒVB'VFvWCÒRãg276WG3ÒVB"À¢F6µö–BÂ'Vå²''Våöæò%ÒÂ'VFvWBÂÆVâ†76WG2’¢&We÷&W7VÇC¢÷F–öæÅ´F–7E·7G"Âç•ÕÒÒæöæP¢7FvVEö6†–âÒ&÷f–FW%ö6†–â‡2’–b€¢‡F6²ævWB‚'F6µ÷G—R"’÷"&w&F–ær"’ÓÒ&w&F–ær ¢æB2ç7FvVEöw&F–æræVæ&ÆVB’VÇ6RµĞ¢–b'VâævWB‚&¶–æB"’ÓÒ&föÆÆ÷wW"æB‡7FvVEö6†–â÷"2æ—5ö†W&ÖW2“ ¢2KúîŠê.Yû®XxnûÉ®Kˆ®Kˆ‹Úî[{.‰Ş[©>y¨Nh›™ˆ^{¹>iéÎûÉ¾Š^XX^‹ÚîjÊX®Z)î˜xşKúîŠê.ûÈÎKˆŞiŠş˜xŞikh›™ˆP¢2ûÈ†ÆVv7’KùŞhÈXéşŠÎK‹®ûÉ§&We÷&W7VÇBK‹¢æöæ^ûÈÎKˆŞX®Šhny¹nj
+š¨ÎûÈ¢&We÷&W7VÇBÒæ÷&ÖÆ—¦U÷&W7VÇB‡F6²ævWB‚'&W7VÇEö§6öâ"’¢–b7FvVEö6†–ã ¢2Xˆn™‹një^h›iKKÉXXûÉ®hùXùn(i.xºÎz¸¾k.Šz>(i.jùNZû(i.Šø®ijŞûÈÎXxnzîxè~š¹K¨îXÙ^jÊZJ~‹>yJ€¢–ÆöBÒv—B7–æ6–òçv—Eöf÷"€¢6VÆbå÷'Vå÷7FvVB‡F6²Â'VâÂ76WG2Â7FvVEö6†–âÂ&We÷&W7VÇB’À¢F–ÖV÷WCÖ'VFvWB¢VÆ–b2æ—5ö†W&ÖW3 ¢66÷Uö–æfòÒ66÷RæFW67&–&U÷66÷R‡F6²Âv—B÷FW&Õ÷7F'EöFFR‡2ÂF6µ²&÷Væ–B%Ò’¢ÖW76vW2Ò†W&ÖW2æ'V–ÆEöÖW76vW2€¢2Â²¢§F6²Â'66÷Uöæ÷FR#¢66÷Uö–æfõ²&æ÷FR%ÒÀ¢'66÷UöÖ—76–ær#¢66÷Uö–æfõ²&Ö—76–ær%×ÒÀ¢²¢§'VâÂ&÷WGWEöF—"#¢7G"†÷WGWEöF—"—ÒÂ76WG2Â&We÷&W7VÇB¢–ÆöBÒv—B7–æ6–òçv—Eöf÷"€¢6VÆbæ6Æ–VçBç'Vå÷F6²†ÖW76vW2Â6W76–öåö–B’ÂF–ÖV÷WCÖ'VFvWB¢VÇ6S ¢–ÆöBÒv—B7–æ6–òçv—Eöf÷"€¢6VÆbå÷'VåöÆVv7’‡F6²Â76WG2’ÂF–ÖV÷WCÖ'VFvWB¢W†6WB7–æ6–òåF–ÖV÷WDW'&÷# ¢v—B6VÆbåöÖ&µ÷Væ6W'F–â‡F6²Â'VâÂ.hš~ŠÎ‹h^i{nûÈÎ{¹>iéÎiÊ®zîŠêB"¢&WGW&à¢W†6WB÷&–VçFF–öâä6öæf—&ÖF–öå&WV—&VB2S ¢v—BF"çWFFU÷'Vâ‡2æF%÷F‚Â'Vå²&–B%ÒÂ7FGW3Ò'v—F–æuö–çWB"ÂW'&÷#×7G"†R’¢v—BF"çWFFU÷F6²‡2æF%÷F‚ÂF6µö–BÂ7FGW3Ò'v—F–æuö–çWB"ÂW'&÷#×7G"†R’À¢6Æ–Õö÷væW#Ò""Â6Æ–ÕöW‡—&W5öCÓ¢&WGW&à¢W†6WB7FvTW'&÷"2S ¢2™‹një^Xh^h˜iÈjŠYè¾˜;ŞZK‹J^ûÉ®K»¾XªiÊ®Kª~X{®{¹>iéÎûÈÎ˜jËî[›nj~ZK‹J^ûÈÎyJh‹~Xúş˜xŞŠùP¢v—B6VÆbåöÖ&µöf–ÆVB‡F6²Â'VâÂb.Xˆn™‹një^h›iKZK‹JS¢¶RæÖW76vWÒ"À¢6W'F–åöæ÷EöW†V7WFVCÕG'VR¢&WGW&à¢W†6WB†W&ÖW5Væ6W'F–â2S ¢v—B6VÆbåöÖ&µ÷Væ6W'F–â‡F6²Â'VâÂ7G"†R’¢&WGW&à¢W†6WB†W&ÖW4W'&÷"2S ¢v—B6VÆbåöÖ&µöf–ÆVB‡F6²Â'VâÂ7G"†R’À¢6W'F–åöæ÷EöW†V7WFVCÖvWFGG"†RÂ&6W'F–åöæ÷EöW†V7WFVB"ÂfÇ6R’¢&WGW&à¢W†6WBv÷&·76Råv÷&·76TW'&÷"2S ¢v—B6VÆbåöÖ&µöf–ÆVB‡F6²Â'VâÂb.iÙiiŠû¾XùnZK‹JS¢¶WÒ"Â6W'F–åöæ÷EöW†V7WFVCÕG'VR¢&WGW&à¢W†6WBW†6WF–öâ2S¢2æ÷¢$ÄS¢ÆöræW†6WF–öâ‚.K»¾Xªhš~ŠÎ[È.[‹‚F6µö–CÒW2"ÂF6µö–B¢v—B6VÆbåöÖ&µ÷Væ6W'F–â‡F6²Â'VâÂb.Xh^˜:™IŠúşûÈÎ{¹>iéÎiÊ®zîŠêC¢¶WÒ"¢&WGW&à ¢2šin‹Úîš(NZHNynûÈZHŞiú^Kˆî[Ù.j>X[yJûÈûÉ®ZÚnzyY¹îZ¾8V–N8Š^XX^‹ÚîjÊŠhny¹nj
+š¨Î8XË®™{NKˆî{Ë®Xú0¢&W7VÇBÒv—B6VÆbå÷&W&U÷&W7VÇB‡F6²Â'VâÂ–ÆöBÂ&We÷&W7VÇB¢–b&W7VÇB—2æöæS ¢&WGW&à ¢2iÈŞXªzºşK¨ÎjÊZHŞiú^ûÈzÊÎK¨ÎjŠYè¾ûÈûÉ®Xú®XiZHŞiú^ZÙ~jë^ûÈÎZK‹J^KˆŞY	îšin‹Úîh‰iéÀ¢–b2æ—5ö†W&ÖW3 ¢–b‡–ÆöBævWB‚'&÷f–FW""’ÓÒ'7FvVB ¢æB2æ†W&ÖW2ç&Wf–Wuö6öæf–wW&V@¢æBæ÷Bç’‡&Wf–Wræ—5ö6æF–FFR‡¢f÷"–â&W7VÇBævWB‚'VW7F–öç2"’÷"µÒ’“ ¢2Xˆn™‹një^[{.X®xºÎz¸¾k.Šz>KˆîjùNZûXŠNZé®ûÈÎiÊÎjÊXøiz™Iš)‚şZÙyiš)ûÉ ¢2ZHŞiú^KˆŞKÉ®iÈiky¨NKúhşZ)îy¸®ûÈÎ‹{>‹ø~Kº^yÈKˆjÊjŠYè¾‹>yJûÈÎZh.Zéîj~k:€¢&W7VÇBÒ&Wf–WræÇ•÷6¶—VEögFW%÷7FvVB‡&W7VÇB¢VÇ6S ¢&W7VÇBÒv—B6VÆbå÷'Vå÷&Wf–Wr‡F6²Â'VâÂ&W7VÇBÂFVFÆ–æRÂ–ÆöBÀ¢76WG2 ¢v—B6VÆbåöf–æ—6‚‡F6²Â'VâÂ–ÆöBÂ&W7VÇBÂ÷WGWEöF—"Â&We÷&W7VÇB ¢7–æ2FVbö7W'&VçE÷'Vâ‡6VÆbÂF6³¢F–7E·7G"Âç•Ò’Óâ÷F–öæÅ´F–7E·7G"Âç•ÕÓ ¢'Vç2Òv—BF"æÆ—7E÷'Vç2‡6VÆbç6WGF–æw2æF%÷F‚ÂF6µ²&–B%Ò¢f÷"'Vâ–â'Vç3 ¢–b'Vå²'7FGW2%Ò–â‚'VWVVB"Â''Vææ–ær"“ ¢&WGW&â'Và¢&WGW&â'Vç5²ÓÒ–b'Vç2VÇ6RæöæP ¢7–æ2FVbö6öÆÆV7Eö76WG2‡6VÆbÂF6³¢F–7E·7G"Âç•ÒÀ¢'Vã¢F–7E·7G"Âç•Ò’ÓâÆ—7E´F–7E·7G"Âç•ÕÓ ¢&÷w2Òv—BF"æÆ—7E÷F6µö76WG2‡6VÆbç6WGF–æw2æF%÷F‚ÂF6µ²&–B%ÒÂ'Vå²&–B%Ò¢–bæ÷B&÷w2æB'Vå²&¶–æB%ÒÓÒ&–æ—F–Â# ¢&÷w2Òv—BF"æÆ—7E÷F6µö76WG2‡6VÆbç6WGF–æw2æF%÷F‚ÂF6µ²&–B%Ò¢–bæ÷B&÷w2æBF6²ævWB‚&–ÖvU÷F‚"“ ¢ÆVv7’ÒF6µ²&–ÖvU÷F‚%Ğ¢&÷w2Ò·²&–B#¢&ÆVv7’"Â'F‚#¢ÆVv7’Â&Ö–ÖR#¢&–ÖvRö§Vr"Â&'—FW2#¢ÕĞ¢76WG3¢Æ—7E´F–7E·7G"Âç•ÕÒÒµĞ¢f÷"&÷r–â&÷w3 ¢76WG2æVæB‡²¢§&÷rÂ&FF÷W&Â#¢v÷&·76RæÆöEö76WEöFF÷W&Â‡&÷r—Ò¢&WGW&â76WG0 ¢7–æ2FVb÷'VåöÆVv7’‡6VÆbÂF6³¢F–7E·7G"Âç•ÒÀ¢76WG3¢Æ—7E´F–7E·7G"Âç•ÕÒ’ÓâF–7E·7G"Âç•Ó ¢"".i‹î[Èşy¨Niz~jŠ[ÈşûÉ®XÙ^Y»â²ZI®jŠYè¾y»N‹ùî8.{¹>iéÎhÈikXØşŠêî‹ÚÎhÚ.ûÈÎ[›nZh.Zéîj~k:iÊ®hš~ŠÎK¨ÎjÊjiú^8""" ¢–bæ÷B76WG3 ¢&—6RF6´W'&÷"‚.iz~jŠ[Èş™ÈŠhKˆ[ÊKÙÎK‰®Y»îx˜r"¢FF÷W&ÂÒ76WG5³Õ²&FF÷W&Â%Ğ¢Ö–ÖRÒ76WG5³ÒævWB‚&Ö–ÖR"Â&–ÖvRö§Vr"¢–×÷'B&6Sc@ ¢&rÒ&6ScBæ#cFFV6öFR†FF÷W&Âç7Æ—B‚"Â"Â•³Ò¢&W7VÇBÂ&÷f–FW"ÂÖöFVÂÂ—Fö²Â÷Fö²Â6÷7BÒv—Bw&F–æræw&FUö–ÖvR€¢&rÂÖ–ÖRÂF6²ævWB‚'7V&¦V7B"Â""’ÂF6²ævWB‚&w&FUöÆWfVÂ"Â""’Â6VÆbç6WGF–æw2¢v—BF"æFEöF–Ç•ö6÷7B‡6VÆbç6WGF–æw2æF%÷F‚Â6÷7B¢&WGW&â°¢'&W7VÇB#¢w&F–æu÷&W7VÇE÷Fõ÷c2€¢&W7VÇBÂF6²ævWB‚'7V&¦V7B"Â""’ÂF6²ævWB‚&w&FUöÆWfVÂ"Â""’Â&÷f–FW"’À¢&ÖöFVÂ#¢b'·&÷f–FW'Ò÷¶ÖöFVÇÒ"À¢'W6vR#¢²'&ö×E÷Fö¶Vç2#¢—Fö²Â&6ö×ÆWF–öå÷Fö¶Vç2-÷ãÛh‘éì¶»§q«^t€€€€€¥µ…•Ì¹…ÁÁ•¹¡ÕÉ°¤(€€€€€€€½Ù•É…”€ô€‰É•É•…ˆ¥˜¥µ…•Ì•±Í”€‰ÑÉ…¹ÍÉ¥ÁÑ}½¹±äˆ((€€€€€€€Ñ¥µ•½ÕĞ€ôµ¥¸¡ ¹É•Ù¥•İ}Ñ¥µ•½ÕÑ}Í•½¹‘Ì°É•µ…¥¹¥¹œ¤(€€€€€€€±½œ¹¥¹™¼ ‹–ò–/–’7š~”Ñ…Í­}¥ô•ÌÉÕ¹}¹¼ô•ƒ¦–º„ô•ƒ¢Ú¦f@ô•Ñ¥µ•½ÕĞô”¸Á™Ì½Ù•É…”ô•Ì¥µ…•Ìô•ˆ°(€€€€€€€€€€€€€€€€Ñ…Í­}¥°ÉÕ¹}¹¼°±•¸¡Ñ…É•ÑÌ¤°±•¸¡½Ù•É™±½Ü¤°Ñ¥µ•½ÕĞ°½Ù•É…”°±•¸¡¥µ…•Ì¤¤(€€€€€€€ÑÉäè(€€€€€€€€€€€µ•ÍÍ…•Ì€ô¡•Éµ•Ì¹‰Õ¥±‘}É•Ù¥•İ}µ•ÍÍ…•Ì¡Ì°Ñ…Í¬°ÉÕ¸°Ñ…É•ÑÌ°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¥µ…•Ì½È9½¹”¤(€€€€€€€€€€€Á…å±½…€ô…İ…¥Ğ…Íå¹¥¼¹İ…¥Ñ}™½È (€€€€€€€€€€€€€€€Í•±˜¹±¥•¹Ğ¹É•Ù¥•İ}ÅÕ•ÍÑ¥½¹Ì (€€€€€€€€€€€€€€€€€€€µ•ÍÍ…•Ì°˜‰É•Ù¥•ÜµíÑ…Í­}¥‘ôµíÉÕ¹}¹½ôˆ°Ñ¥µ•½ÕĞõÑ¥µ•½ÕĞ°(€€€€€€€€€€€€€€€€€€€½Ù•É…”õ½Ù•É…”¤°(€€€€€€€€€€€€€€€Ñ¥µ•½ÕĞõÑ¥µ•½ÕĞ¤(€€€€€€€•á•ÁĞ…Íå¹¥¼¹…¹•±±•‘ÉÉ½Èè(€€€€€€€€€€€É…¥Í”(€€€€€€€•á•ÁĞá•ÁÑ¥½¸…Ì”è€€Œ¹½Å„è	1ÀÀÄ€´ƒ–’7š~—–’Ç¢Ò—’â7–öÇ–N7¦š[¢ö»š"Cšzp(€€€€€€€€€€€±½œ¹İ…É¹¥¹œ ‹–’7š~—¢ÂR£–’Ç¢Ò”Ñ…Í­}¥ô•Ìè€•Ìˆ°Ñ…Í­}¥°”¤(€€€€€€€€€€€É•ÑÕÉ¸É•Ù¥•Ü¹…ÁÁ±å}™…¥±• (€€€€€€€€€€€€€€€É•ÍÕ±Ğ°Ñ…É•ÑÌ°½Ù•É™±½Ü°˜‹–’7š~—¢ÂR£–’Ç¢Ò—¾òií•ôˆ¤((€€€€€€€€ŒÕÍ…”ƒÒ¿¢º‡¾òk’â“š²‡r–º{¢ÂR£jšÚ#¢_–š–º{–—¢Ò›¾ò#¢şs®¿šÊ‡¢şS–n{j’â7ò[¦ƒ¾ò$(€€€€€€€ÕÍ…”€ô‘¥Ğ¡™¥ÉÍÑ}Á…å±½…¹•Ğ ‰ÕÍ…”ˆ¤½Èíô¤(€€€€€€€™½È­•ä¥¸€ ‰ÁÉ½µÁÑ}Ñ½­•¹Ìˆ°€‰½µÁ±•Ñ¥½¹}Ñ½­•¹Ìˆ¤è(€€€€€€€€€€€ÕÍ…•m­•åt€ô€¡¥¹Ğ¡ÕÍ…”¹•Ğ¡­•ä°€À¤½È€À¤(€€€€€€€€€€€€€€€€€€€€€€€€€€¬¥¹Ğ ¡Á…å±½…¹•Ğ ‰ÕÍ…”ˆ¤½Èíô¤¹•Ğ¡­•ä°€À¤½È€À¤¤(€€€€€€€™¥ÉÍÑ}Á…å±½…‘l‰ÕÍ…”‰t€ôÕÍ…”((€€€€€€€µ•Ñ„€ôì(€€€€€€€€€€€€‰µ½‘•±}É•ÅÕ•ÍÑ•ˆèÁ…å±½…¹•Ğ ‰µ½‘•±}É•ÅÕ•ÍÑ•ˆ°€ˆˆ¤°(€€€€€€€€€€€€‰µ½‘•±}É•Á½ÉÑ•ˆèÁ…å±½…¹•Ğ ‰É•Á½ÉÑ•‘}µ½‘•°ˆ°€ˆˆ¤°(€€€€€€€€€€€€‰µ½‘•±}¥‘•¹Ñ¥Ñäˆè€ˆˆ°(€€€€€€€€€€€€‰½Ù•É…”ˆè½Ù•É…”°(€€€€€€€ô(€€€€€€€¥‘•¹Ñ¥Ñä°¥‘•¹Ñ¥Ñå}¹½Ñ”€ôÉ•Ù¥•Ü¹¡•­}µ½‘•±}¥‘•¹Ñ¥Ñä (€€€€€€€€€€€Á…å±½…°™¥ÉÍÑ}Á…å±½…°(€€€€€€€€€€€ ¹É•Ù¥•İ}•áÁ•Ñ•‘}µ½‘•°° ¹É•Ù¥•İ}•áÁ•Ñ•‘}ÁÉ½Ù¥‘•È¤(€€€€€€€µ•Ñ…l‰µ½‘•±}¥‘•¹Ñ¥Ñä‰t€ô¥‘•¹Ñ¥Ñä(€€€€€€€¥˜¥‘•¹Ñ¥Ñä¹½Ğ¥¸É•Ù¥•Ü¹%9Q%Qe}AQè(€€€€€€€€€€€±½œ¹İ…É¹¥¹œ ‹–’7š~—š¢‡–z/¢ê¯’îô•ÌÑ…Í­}¥ô•Ìè€•Ìˆ°¥‘•¹Ñ¥Ñä°Ñ…Í­}¥°¥‘•¹Ñ¥Ñå}¹½Ñ”¤(€€€€€€€€€€€±…‰•°€ô€‹šr«†»¢ºˆ¥˜¥‘•¹Ñ¥Ñä€ôôÉ•Ù¥•Ü¹%9Q%Qe}U9-9=]8•±Í”€‹’â7²˜ˆ(€€€€€€€€€€€É•ÑÕÉ¸É•Ù¥•Ü¹…ÁÁ±å}™…¥±• (€€€€€€€€€€€€€€€É•ÍÕ±Ğ°Ñ…É•ÑÌ°½Ù•É™±½Ü°(€€€€€€€€€€€€€€€˜‹–’7š~—š¢‡–z/¢ê¯’îõí±…‰•±÷¾òií¥‘•¹Ñ¥Ñå}¹½Ñ•ôˆ°µ•Ñ„¤(€€€€€€€¥˜¥‘•¹Ñ¥Ñä€ôôÉ•Ù¥•Ü¹%9Q%Qe}5=1}=91dè(€€€€€€€€€€€€ŒƒöG–Ï’â7–nxÁÉ½Ù¥‘•Ë¾òkš¢‡–z/–B7–ŞËš‚ã–¾ç¾ò3¦êÏšr³š²‡–’7š~—¾ò3’ö–š–º{¢ºÃ–öWš‚ã¦ª3¢2–nĞ(€€€€€€€€€€€±½œ¹İ…É¹¥¹œ ‹–’7š~—š¢‡–z/¢ê¯’î÷’îš‚ã–¾ç–"Ãš¢‡–z/–B4Ñ…Í­}¥ô•Ìè€•Ìˆ°Ñ…Í­}¥°¥‘•¹Ñ¥Ñå}¹½Ñ”¤((€€€€€€€É•Ù¥•İÍ}‰å}¥°ÁÉ½‰±•µÌ€ôÉ•Ù¥•Ü¹É•½¹¥±•}É•Ù¥•İÌ (€€€€€€€€€€€Ñ…É•ÑÌ°Á…å±½…¹•Ğ ‰É•Ù¥•İÌˆ¤½Èmt¤(€€€€€€€¥˜ÁÉ½‰±•µÌè(€€€€€€€€€€€±½œ¹İ…É¹¥¹œ ‹–’7š~—¢úO–ë–¾ç¢Ò›–’Ç¢Ò”Ñ…Í­}¥ô•Ìè€•Ìˆ°Ñ…Í­}¥°€‹¾òlˆ¹©½¥¸¡ÁÉ½‰±•µÌ¤¤(€€€€€€€€€€€É•ÑÕÉ¸É•Ù¥•Ü¹…ÁÁ±å}™…¥±• (€€€€€€€€€€€€€€€É•ÍÕ±Ğ°Ñ…É•ÑÌ°½Ù•É™±½Ü°(€€€€€€€€€€€€€€€€‹–’7š~—¢úO–ëšr«¦k¢ş¢šn[–¾ç¢Ò›¾òhˆ€¬€‹¾òlˆ¹©½¥¸¡ÁÉ½‰±•µÌ¤°µ•Ñ„¤((€€€€€€€µ•É•€ôÉ•Ù¥•Ü¹…ÁÁ±å}É•Ù¥•İ}É•ÍÕ±Ğ¡É•ÍÕ±Ğ°Ñ…É•ÑÌ°É•Ù¥•İÍ}‰å}¥°½Ù•É™±½Ü°µ•Ñ„¤(€€€€€€€ÑÉäè(€€€€€€€€€€€¡•Éµ•Ì¹Ù…±¥‘…Ñ•}É•ÍÕ±Ğ¡µ•É•¤(€€€€€€€•á•ÁĞ¡•Éµ•Ì¹!•Éµ•ÍI•ÍÕ±Ñ%¹Ù…±¥…Ì”è(€€€€€€€€€€€€Œƒ¦bË–ú‡–ò?–n{¦¾òk–B#–æÛîOšzs’â7–B#šÎWš^Û¦–n{¢¢2–2[–~ëêÿ¾ò3’â7š*+¦v{šÎWšVÃš6»–g–êL(€€€€€€€€€€€±½œ¹İ…É¹¥¹œ ‹–’7š~—–B#–æÛîOšzsšr«¦k¢şš‚‡¦ª3¾ò3–n{¦–~ëêüÑ…Í­}¥ô•Ìè€•Ìˆ°Ñ…Í­}¥°”¤(€€€€€€€€€€€™…±±‰…¬€ôÉ•Ù¥•Ü¹…ÁÁ±å}™…¥±• (€€€€€€€€€€€€€€€É•ÍÕ±Ğ°Ñ…É•ÑÌ°½Ù•É™±½Ü°(€€€€€€€€€€€€€€€˜‹–’7š~—–B#–æÛîOšzsšr«¦k¢ş–6?¢º»š‚‡¦ª3¾òií•ôˆ°µ•Ñ„¤(€€€€€€€€€€€¡•Éµ•Ì¹Ù…±¥‘…Ñ•}É•ÍÕ±Ğ¡™…±±‰…¬¤(€€€€€€€€€€€É•ÑÕÉ¸™…±±‰…¬(€€€€€€€ÍÕµµ…Éä€ôµ•É•¹•Ğ ‰É•Ù¥•İ}ÍÕµµ…Éäˆ¤½Èíô(€€€€€€€±½œ¹¥¹™¼ ‹–’7š~—–º3š"@Ñ…Í­}¥ô•ÌÉÕ¹}¹¼ô•ÍÑ…Ñ”ô•Ì‘¥Í…É••ô•Õ¹Ù•É¥™¥•ô•ˆ°(€€€€€€€€€€€€€€€€Ñ…Í­}¥°ÉÕ¹}¹¼°ÍÕµµ…Éä¹•Ğ ‰ÍÑ…Ñ”ˆ¤°(€€€€€€€€€€€€€€€€ÍÕµµ…Éä¹•Ğ ‰‘¥Í…É••ˆ°€À¤°ÍÕµµ…Éä¹•Ğ ‰Õ¹Ù•É¥™¥•ˆ°€À¤¤(€€€€€€€É•ÑÕÉ¸µ•É•((€€€…Íå¹Œ‘•˜}™¥¹¥Í ¡Í•±˜°Ñ…Í¬è¥ÑmÍÑÈ°¹åt°ÉÕ¸è¥ÑmÍÑÈ°¹åt°(€€€€€€€€€€€€€€€€€€€€€Á…å±½…è¥ÑmÍÑÈ°¹åt°É•ÍÕ±Ğè¥ÑmÍÑÈ°¹åt°½ÕÑÁÕÑ}‘¥È°(€€€€€€€€€€€€€€€€€€€€€ÁÉ•Ù}É•ÍÕ±Ğè=ÁÑ¥½¹…±m¥ÑmÍÑÈ°¹åut€ô9½¹”¤€´ø9½¹”è(€€€€€€€Ì€ôÍ•±˜¹Í•ÑÑ¥¹Ì(€€€€€€€Ñ…Í­}¥€ôÑ…Í­l‰¥‰t((€€€€€€€€Œƒšr7–*‡®¿’ê3š²‡–’7š~—¦f¢ºÃ¦j?šr³¢ö»–öKš†’âš²‡–g–—¾òk’â;îOšzp)M=8ƒ–B3šêC¾ò#–B3’â’îôÉ•ÍÕ±Ó¾ò'¾ò0(€€€€€€€€Œƒ–öKš†š¶šZ’â;îOšz–2[–¶_šº×’â7’òk–B¢¾Ó–B¢¾w¾òošÊ‡šr'–B#šÎW–öKš†š^ÛšÊÿR£š^‹šr'¢ŞÏ¢ş¢¾·’æ'(€€€€€€€É•Ù¥•İ}µ€ôÉ•Ù¥•Ü¹‰Õ¥±‘}É•Ù¥•İ}µ…É­‘½İ¸¡É•ÍÕ±Ğ¤(€€€€€€€¥˜É•Ù¥•İ}µè(€€€€€€€€€€€…É €ôÉ•ÍÕ±Ğ¹Í•Ñ‘•™…Õ±Ğ ‰…É¡¥Ù”ˆ°íô¤(€€€€€€€€€€€µ€ô€¡…É ¹•Ğ ‰½¹Ñ•¹Ñ}µ…É­‘½İ¸ˆ¤½È€ˆˆ¤¹ÍÑÉ¥À ¤(€€€€€€€€€€€…É¡l‰½¹Ñ•¹Ñ}µ…É­‘½İ¸‰t€ô˜‰íµ‘õq¹q¹íÉ•Ù¥•İ}µ‘ôˆ¥˜µ•±Í”É•Ù¥•İ}µ((€€€€€€€…É¡¥Ù”€ô…İ…¥Ğİ½É­ÍÁ…”¹…ÁÁ±å}…É¡¥Ù”¡Ì°Ñ…Í¬°ÉÕ¸°É•ÍÕ±Ğ¤((€€€€€€€€Œƒ–öKš†š"C–*–B;š&Ÿ¢†3–>_š:œ¥Ğƒ–B3š¶—¾ò#’îš>C’ê“šr³š²‡š:#švšZ’îÛ¾ò'¾òošr«–B¿R£š"[–’Ç¢Ò—¦÷–š–º{¢ºÃ–öT(€€€€€€€¥Ñ}É•ÍÕ±Ğè=ÁÑ¥½¹…±m¥ÑmÍÑÈ°¹åut€ô9½¹”(€€€€€€€¥˜Ì¹¥Ñ}Íå¹}•¹…‰±•è(€€€€€€€€€€€¥Ñ}É•ÍÕ±Ğ€ô…İ…¥Ğ¥Ñ}Íå¹Œ¹Íå¹}İ½É­ÍÁ…” (€€€€€€€€€€€€€€€Ì°Ñ…Í¬õÑ…Í¬°ÉÕ¸õÉÕ¸°…É¡¥Ù”õ…É¡¥Ù”°É•ÍÕ±ĞõÉ•ÍÕ±Ğ¤(€€€€€€€€€€€…İ…¥Ğ‘ˆ¹±½}¥Ñ}Íå¹Œ¡Ì¹‘‰}Á…Ñ °ì¨©¥Ñ}É•ÍÕ±Ğ°€‰Ñ…Í­}¥ˆèÑ…Í­}¥‘ô¤(€€€€€€€É•ÍÕ±Ñl‰‘•±¥Ù•Éä‰t€ôİ½É­ÍÁ…”¹ÍÕµµ…É¥é•}‘•±¥Ù•Éä¡Ì°É•ÍÕ±Ğ°…É¡¥Ù”°¥Ñ}É•ÍÕ±Ğ¤((€€€€€€€€Œƒ–>Ã¢Ò›¾òk¦Rg¦Šc’â;–¶cZG¦Šcš2'–:ï¦7¦R»–g–”¿šnÓšZÃ¾ò3–’7šÖ/’ê/’îÛ–>«¢ş÷–*ƒ’â7šRç–g–:–>È(€€€€€€€±•‘•É}½Õ¹Ğ€ô…İ…¥Ğ}İÉ¥Ñ•}±•‘•È¡Ì°Ñ…Í¬°É•ÍÕ±Ğ°…É¡¥Ù”°ÁÉ•Ù}É•ÍÕ±Ğ¤((€€€€€€€…ÉÑ¥™…Ñ}É½Ü€ôİ½É­ÍÁ…”¹…É¡¥Ù•}…ÉÑ¥™…Ğ¡Ì°Ñ…Í­}¥°…É¡¥Ù”¤(€€€€€€€¥˜…ÉÑ¥™…Ñ}É½Üè(€€€€€€€€€€€…ÉÑ¥™…Ñ}É½İl‰ÉÕ¹}¥‰t€ôÉÕ¹l‰¥‰t(€€€€€€€€€€€…İ…¥Ğ‘ˆ¹…‘‘}…ÉÑ¥™…Ğ¡Ì¹‘‰}Á…Ñ °…ÉÑ¥™…Ñ}É½Ü¤(€€€€€€€™½ÈÉ½Ü¥¸İ½É­ÍÁ…”¹½±±•Ñ}…ÉÑ¥™…ÑÌ¡Ì°Ñ…Í­}¥°ÉÕ¹l‰ÉÕ¹}¹¼‰t¤è(€€€€€€€€€€€É½İl‰ÉÕ¹}¥‰t€ôÉÕ¹l‰¥‰t(€€€€€€€€€€€…İ…¥Ğ‘ˆ¹…‘‘}…ÉÑ¥™…Ğ¡Ì¹‘‰}Á…Ñ °É½Ü¤((€€€€€€€ÍÑ…ÑÕÌ€ô€‰İ…¥Ñ¥¹}¥¹ÁÕĞˆ¥˜É•ÍÕ±Ğ¹•Ğ ‰µ¥ÍÍ¥¹}¥¹™¼ˆ¤•±Í”€‰‘½¹”ˆ(€€€€€€€…İ…¥Ğ‘ˆ¹ÕÁ‘…Ñ•}ÉÕ¸ (€€€€€€€€€€€Ì¹‘‰}Á…Ñ °ÉÕ¹l‰¥‰t°ÍÑ…ÑÕÌõÍÑ…ÑÕÌ°™¥¹¥Í¡•‘}…ĞõÑ¥µ”¹Ñ¥µ” ¤°(€€€€€€€€€€€É•ÍÕ±Ñ}©Í½¸õ©Í½¸¹‘ÕµÁÌ¡É•ÍÕ±Ğ°•¹ÍÕÉ•}…Í¥¤õ…±Í”¤°(€€€€€€€€€€€¡•Éµ•Í}Í•ÍÍ¥½¹}¥õ˜‰ÍÑÕ‘äµíÑ…Í­}¥‘ôµíÉÕ¹lÉÕ¹}¹¼uôˆ°(€€€€€€€€¤(€€€€€€€…İ…¥Ğ‘ˆ¹ÕÁ‘…Ñ•}Ñ…Í¬ (€€€€€€€€€€€Ì¹‘‰}Á…Ñ °Ñ…Í­}¥°ÍÑ…ÑÕÌõÍÑ…ÑÕÌ°(€€€€€€€€€€€É•ÍÕ±Ñ}©Í½¸õ©Í½¸¹‘ÕµÁÌ¡É•ÍÕ±Ğ°•¹ÍÕÉ•}…Í¥¤õ…±Í”¤°(€€€€€€€€€€€ÁÉ½Ù¥‘•ÈõÁ…å±½…¹•Ğ ‰ÁÉ½Ù¥‘•Èˆ°€‰¡•Éµ•Ìˆ¤°µ½‘•°õÁ…å±½…¹•Ğ ‰µ½‘•°ˆ°€ˆˆ¤°(€€€€€€€€€€€¥¹ÁÕÑ}Ñ½­•¹Ìõ¥¹Ğ ¡Á…å±½…¹•Ğ ‰ÕÍ…”ˆ¤½Èíô¤¹•Ğ ‰ÁÉ½µÁÑ}Ñ½­•¹Ìˆ°€À¤½È€À¤°(€€€€€€€€€€€½ÕÑÁÕÑ}Ñ½­•¹Ìõ¥¹Ğ ¡Á…å±½…¹•Ğ ‰ÕÍ…”ˆ¤½Èíô¤¹•Ğ ‰½µÁ±•Ñ¥½¹}Ñ½­•¹Ìˆ°€À¤½È€À¤°(€€€€€€€€€€€•ÉÉ½Èôˆˆ°±…¥µ}½İ¹•Èôˆˆ°±…¥µ}•áÁ¥É•Í}…ĞôÀ°(€€€€€€€€€€€…É¡¥Ù•}Á…Ñ õ…É¡¥Ù”¹•Ğ ‰Á…Ñ ˆ°€ˆˆ¤½È€ˆˆ°(€€€€€€€€€€€¥Ñ}ÍÑ…ÑÕÌô¡¥Ñ}É•ÍÕ±Ğ½Èíô¤¹•Ğ ‰ÍÑ…ÑÕÌˆ°€ˆˆ¤¥˜Ì¹¥Ñ}Íå¹}•¹…‰±••±Í”€‰¹½Ñ}½¹™¥ÕÉ•ˆ°(€€€€€€€€¤(€€€€€€€…İ…¥Ğ‘ˆ¹Í•ÑÑ±•}É•Í•ÉÙ…Ñ¥½¸¡Ì¹‘‰}Á…Ñ °Ñ…Í­}¥¤(€€€€€€€±½œ¹¥¹™¼ ‹’îï–*‡–º3š"@Ñ…Í­}¥ô•ÌÉÕ¹}¹¼ô•ÍÑ…ÑÕÌô•Ì…É¡¥Ù”ô•Ì¥Ğô•Ì±•‘•Èô•ˆ°(€€€€€€€€€€€€€€€€Ñ…Í­}¥°ÉÕ¹l‰ÉÕ¹}¹¼‰t°ÍÑ…ÑÕÌ°…É¡¥Ù”¹•Ğ ‰ÍÑ…ÑÕÌˆ¤°(€€€€€€€€€€€€€€€€€¡¥Ñ}É•ÍÕ±Ğ½Èíô¤¹•Ğ ‰ÍÑ…ÑÕÌˆ°€ˆ´ˆ¤°±•‘•É}½Õ¹Ğ¤(((€€€…Íå¹Œ‘•˜}µ…É­}™…¥±•¡Í•±˜°Ñ…Í¬è¥ÑmÍÑÈ°¹åt°ÉÕ¸è¥ÑmÍÑÈ°¹åt°µ•ÍÍ…”èÍÑÈ°(€€€€€€€€€€€€€€€€€€€€€€€€€€•ÉÑ…¥¹}¹½Ñ}•á•ÕÑ•è‰½½°¤€´ø9½¹”è(€€€€€€€Ì€ôÍ•±˜¹Í•ÑÑ¥¹Ì(€€€€€€€…İ…¥Ğ‘ˆ¹ÕÁ‘…Ñ•}ÉÕ¸¡Ì¹‘‰}Á…Ñ °ÉÕ¹l‰¥‰t°ÍÑ…ÑÕÌô‰™…¥±•ˆ°(€€€€€€€€€€€€€€€€€€€€€€€€€€€™¥¹¥Í¡•‘}…ĞõÑ¥µ”¹Ñ¥µ” ¤°•ÉÉ½Èõµ•ÍÍ…•lèÔÀÁt¤(€€€€€€€…İ…¥Ğ‘ˆ¹ÕÁ‘…Ñ•}Ñ…Í¬¡Ì¹‘‰}Á…Ñ °Ñ…Í­l‰¥‰t°ÍÑ…ÑÕÌô‰™…¥±•ˆ°•ÉÉ½Èõµ•ÍÍ…•lèÔÀÁt°(€€€€€€€€€€€€€€€€€€€€€€€€€€€±…¥µ}½İ¹•Èôˆˆ°±…¥µ}•áÁ¥É•Í}…ĞôÀ¤(€€€€€€€¥˜•ÉÑ…¥¹}¹½Ñ}•á•ÕÑ•è(€€€€€€€€€€€…İ…¥Ğ‘ˆ¹É•±•…Í•}É•Í•ÉÙ…Ñ¥½¸¡Ì¹‘‰}Á…Ñ °Ñ…Í­l‰¥‰t°É•™Õ¹õQÉÕ”¤(€€€€€€€±½œ¹•ÉÉ½È ‹’îï–*‡–’Ç¢Ò”Ñ…Í­}¥ô•Ìè€•Ìˆ°Ñ…Í­l‰¥‰t°µ•ÍÍ…”¤((€€€…Íå¹Œ‘•˜}µ…É­}Õ¹•ÉÑ…¥¸¡Í•±˜°Ñ…Í¬è¥ÑmÍÑÈ°¹åt°ÉÕ¸è¥ÑmÍÑÈ°¹åt°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€µ•ÍÍ…”èÍÑÈ¤€´ø9½¹”è(€€€€€€€Ì€ôÍ•±˜¹Í•ÑÑ¥¹Ì(€€€€€€€¹½Ñ”€ô˜‰íµ•ÍÍ…•÷¾ò#¢şs®¿–>¿¢÷–ŞËš&Ÿ¢†3¾ò3šr«¢«–*£¦7¢¾W¾ò3’æšr«¦¢şcš²‡šVÃ¾ò$ˆ(€€€€€€€…İ…¥Ğ‘ˆ¹ÕÁ‘…Ñ•}ÉÕ¸¡Ì¹‘‰}Á…Ñ °ÉÕ¹l‰¥‰t°ÍÑ…ÑÕÌô‰¥¹Ñ•ÉÉÕÁÑ•ˆ°(€€€€€€€€€€€€€€€€€€€€€€€€€€€™¥¹¥Í¡•‘}…ĞõÑ¥µ”¹Ñ¥µ” ¤°•ÉÉ½Èõ¹½Ñ•lèÔÀÁt¤(€€€€€€€…İ…¥Ğ‘ˆ¹ÕÁ‘…Ñ•}Ñ…Í¬¡Ì¹‘‰}Á…Ñ °Ñ…Í­l‰¥‰t°ÍÑ…ÑÕÌô‰¥¹Ñ•ÉÉÕÁÑ•ˆ°•ÉÉ½Èõ¹½Ñ•lèÔÀÁt°(€€€€€€€€€€€€€€€€€€€€€€€€€€€±…¥µ}½İ¹•Èôˆˆ°±…¥µ}•áÁ¥É•Í}…ĞôÀ¤(€€€€€€€±½œ¹İ…É¹¥¹œ ‹’îï–*‡îOšzsšr«†»¢ºÑ…Í­}¥ô•Ìè€•Ìˆ°Ñ…Í­l‰¥‰t°µ•ÍÍ…”¤((Œ€´´´´´´´´´´´´´´´´´´´´´´´´´´´ƒ¢–nø€´´´´´´´´´´´´´´´´´´´´´´´´´´´(()‘•˜}Á…ÉÍ•}ÍÑ…•Í}©Í½¸¡É…Üè¹ä¤€´ø¥ÑmÍÑÈ°¹åtè(€€€€ˆˆ‹¢šz@Ñ…Í­}ÉÕ¹Ì¹ÍÑ…•Í}©Í½»¾òo¦ëš"[¦v{šÎWš^Û¢şS–nxí÷¾ò#’â7š*o¦Rg¾ò'ˆˆˆ(€€€¥˜¹½ĞÉ…Üè(€€€€€€€É•ÑÕÉ¸íô(€€€ÑÉäè(€€€€€€€‘…Ñ„€ô©Í½¸¹±½…‘Ì¡É…Ü¤(€€€•á•ÁĞ€¡©Í½¸¹)M=9•½‘•ÉÉ½È°QåÁ•ÉÉ½È¤è(€€€€€€€É•ÑÕÉ¸íô(€€€É•ÑÕÉ¸‘…Ñ„¥˜¥Í¥¹ÍÑ…¹”¡‘…Ñ„°‘¥Ğ¤•±Í”íô(()…Íå¹Œ‘•˜‰Õ¥±‘}Ñ…Í­}Ù¥•Ü¡Í•ÑÑ¥¹ÌèM•ÑÑ¥¹Ì°Ñ…Í¬è¥ÑmÍÑÈ°¹åt¤€´ø¥ÑmÍÑÈ°¹åtè(€€€€ˆˆ‹î’â’îï–*‡¢–nû¾òkšZÃš^ŸîOšzs¦÷¢÷¢¾ï¾ò3*Ûš’â;òë–>–š–º{–F#:Ãˆˆˆ(€€€ÉÕ¹Ì€ô…İ…¥Ğ‘ˆ¹±¥ÍÑ}ÉÕ¹Ì¡Í•ÑÑ¥¹Ì¹‘‰}Á…Ñ °Ñ…Í­l‰¥‰t¤(€€€…ÉÑ¥™…ÑÌ€ô…İ…¥Ğ‘ˆ¹±¥ÍÑ}…ÉÑ¥™…ÑÌ¡Í•ÑÑ¥¹Ì¹‘‰}Á…Ñ °Ñ…Í­l‰¥‰t¤(€€€É•ÍÕ±Ğ€ô¹½Éµ…±¥é•}É•ÍÕ±Ğ¡Ñ…Í¬¹•Ğ ‰É•ÍÕ±Ñ}©Í½¸ˆ¤¤((€€€±•‘•È€ô…İ…¥Ğ‘ˆ¹±¥ÍÑ}±•‘•É}‰å}Ñ…Í¬¡Í•ÑÑ¥¹Ì¹‘‰}Á…Ñ °Ñ…Í­l‰½Á•¹¥‰t°Ñ…Í­l‰¥‰t¤(€€€É•ÑÕÉ¸ì(€€€€€€€€‰¥ˆèÑ…Í­l‰¥‰t°(€€€€€€€€‰ÍÑ…ÑÕÌˆèÑ…Í­l‰ÍÑ…ÑÕÌ‰t°(€€€€€€€€‰½É¥•¹Ñ…Ñ¥½¸ˆè€¡}Á…ÉÍ•}ÍÑ…•Í}©Í½¸¡ÉÕ¹Íl´Åt¹•Ğ ‰ÍÑ…•Í}©Í½¸ˆ¤¤¹•Ğ ‰½É¥•¹Ñ…Ñ¥½¸ˆ¤(€€€€€€€€€€€€€€€€€€€€€€€¥˜ÉÕ¹Ì…¹Ñ…Í­l‰ÍÑ…ÑÕÌ‰t€ôô€‰İ…¥Ñ¥¹}¥¹ÁÕĞˆ(€€€€€€€€€€€€€€€€€€€€€€€…¹ÉÕ¹Íl´Åt¹•Ğ ‰ÍÑ…”ˆ¤€ôô€‰½É¥•¹Ñ…Ñ¥½¸ˆ•±Í”9½¹”¤°(€€€€€€€€‰Ñ…Í­}ÑåÁ”ˆèÑ…Í¬¹•Ğ ‰Ñ…Í­}ÑåÁ”ˆ°€‰É…‘¥¹œˆ¤°(€€€€€€€€Œƒ–¶›Gšr«š2–ºkš^ÛR£š¢‡–z/š2'švCšZg–"“šZ·–ëj–¶›G–ÆW’ë¾ò3¦ÿ–7¦†×¦v‹–ë:Ã¦ë–¶›D(€€€€€€€€‰ÍÕ‰©•ĞˆèÑ…Í¬¹•Ğ ‰ÍÕ‰©•Ğˆ¤½È€¡É•ÍÕ±Ğ½Èíô¤¹•Ğ ‰ÍÕ‰©•Ğˆ°€ˆˆ¤½È€ˆˆ°(€€€€€€€€‰É…‘•}±•Ù•°ˆèÑ…Í¬¹•Ğ ‰É…‘•}±•Ù•°ˆ°€ˆˆ¤°(€€€€€€€€‰•á…µ}Í½Á”ˆèÑ…Í¬¹•Ğ ‰•á…µ}Í½Á”ˆ°€ˆˆ¤°(€€€€€€€€‰ÑÉ…¥¹¥¹}­¥¹ˆèÑ…Í¬¹•Ğ ‰ÑÉ…¥¹¥¹}­¥¹ˆ°€ˆˆ¤°(€€€€€€€€‰Í½Á•}ÍÑ…ÉĞˆèÑ…Í¬¹•Ğ ‰Í½Á•}ÍÑ…ÉĞˆ°€ˆˆ¤°(€€€€€€€€‰Í½Á•}•¹ˆèÑ…Í¬¹•Ğ ‰Í½Á•}•¹ˆ°€ˆˆ¤°(€€€€€€€€‰¥Ñ}ÍÑ…ÑÕÌˆèÑ…Í¬¹•Ğ ‰¥Ñ}ÍÑ…ÑÕÌˆ°€ˆˆ¤°(€€€€€€€€‰…É¡¥Ù•}Á…Ñ ˆèİ½É­ÍÁ…”¹İ½É­ÍÁ…•}É•±…Ñ¥Ù•}Á…Ñ ¡Í•ÑÑ¥¹Ì°Ñ…Í¬¹•Ğ ‰…É¡¥Ù•}Á…Ñ ˆ°€ˆˆ¤¤°(€€€€€€€€‰±•‘•Èˆèl(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€‰¥ˆèÉ½İl‰¥‰t°€‰ÅÕ•ÍÑ¥½¹}Õ¥ˆèÉ½Ü¹•Ğ ‰ÅÕ•ÍÑ¥½¹}Õ¥ˆ°€ˆˆ¤°(€€€€€€€€€€€€€€€€‰¹¼ˆèÉ½Ü¹•Ğ ‰ÅÕ•ÍÑ¥½¹}¹¼ˆ°€ˆˆ¤°€‰Í½ÕÉ”ˆèÉ½Ü¹•Ğ ‰Í½ÕÉ”ˆ°€ˆˆ¤°(€€€€€€€€€€€€€€€€‰Á…”ˆèÉ½Ü¹•Ğ ‰Á…”ˆ°€ˆˆ¤°€‰ÍÑ…ÑÕÌˆèÉ½Ü¹•Ğ ‰ÍÑ…ÑÕÌˆ°€ˆˆ¤°(€€€€€€€€€€€€€€€€‰­¹½İ±•‘•}Á½¥¹ĞˆèÉ½Ü¹•Ğ ‰­¹½İ±•‘•}Á½¥¹Ğˆ°€ˆˆ¤°(€€€€€€€€€€€€€€€€‰É•µ•‘¥…Ñ¥½¹}ÍÑ…Ñ”ˆèÉ½Ü¹•Ğ ‰É•µ•‘¥…Ñ¥½¹}ÍÑ…Ñ”ˆ°€ˆˆ¤°(€€€€€€€€€€€ô(€€€€€€€€€€€™½ÈÉ½Ü¥¸±•‘•È(€€€€€€€t°(€€€€€€€€‰ÁÉ½Ù¥‘•ÈˆèÑ…Í¬¹•Ğ ‰ÁÉ½Ù¥‘•Èˆ°€ˆˆ¤°(€€€€€€€€‰µ½‘•°ˆèÑ…Í¬¹•Ğ ‰µ½‘•°ˆ°€ˆˆ¤°(€€€€€€€€‰•ÉÉ½ÈˆèÑ…Í¬¹•Ğ ‰•ÉÉ½Èˆ°€ˆˆ¤°(€€€€€€€€‰É•…Ñ•‘}…ĞˆèÑ…Í¬¹•Ğ ‰É•…Ñ•‘}…Ğˆ¤°(€€€€€€€€‰ÕÁ‘…Ñ•‘}…ĞˆèÑ…Í¬¹•Ğ ‰ÕÁ‘…Ñ•‘}…Ğˆ¤°(€€€€€€€€‰ÉÕ¹}½Õ¹ĞˆèÑ…Í¬¹•Ğ ‰ÉÕ¹}½Õ¹Ğˆ°€À¤°(€€€€€€€€‰ÉÕ¹Ìˆèl(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€‰¥ˆèÉl‰¥‰t°€‰ÉÕ¹}¹¼ˆèÉl‰ÉÕ¹}¹¼‰t°€‰­¥¹ˆèÉl‰­¥¹‰t°(€€€€€€€€€€€€€€€€‰ÍÑ…ÑÕÌˆèÉl‰ÍÑ…ÑÕÌ‰t°€‰•ÉÉ½ÈˆèÈ¹•Ğ ‰•ÉÉ½Èˆ°€ˆˆ¤°(€€€€€€€€€€€€€€€€‰ÍÑ…ÉÑ•‘}…ĞˆèÈ¹•Ğ ‰ÍÑ…ÉÑ•‘}…Ğˆ¤°€‰™¥¹¥Í¡•‘}…ĞˆèÈ¹•Ğ ‰™¥¹¥Í¡•‘}…Ğˆ¤°(€€€€€€€€€€€€€€€€Œƒ–"¦bÛšº×¢şo–ê›’â;–B¦bÛšº×’êŸ–ë¾ò#–B¬•áÑÉ…Ğƒ¢ö³–g¾òi$ƒ¢¾ï–"Ãj¦Šcn»’â;–¶›R¶Sš†#¾ò$(€€€€€€€€€€€€€€€€‰ÍÑ…”ˆèÈ¹•Ğ ‰ÍÑ…”ˆ°€ˆˆ¤°(€€€€€€€€€€€€€€€€‰ÍÑ…•Ìˆè}Á…ÉÍ•}ÍÑ…•Í}©Í½¸¡È¹•Ğ ‰ÍÑ…•Í}©Í½¸ˆ¤¤°(€€€€€€€€€€€ô(€€€€€€€€€€€™½ÈÈ¥¸ÉÕ¹Ì(€€€€€€€t°(€€€€€€€€‰…ÉÑ¥™…ÑÌˆèl(€€€€€€€€€€€ì‰¥ˆè…l‰¥‰t°€‰­¥¹ˆè…l‰­¥¹‰t°€‰‰åÑ•Ìˆè…l‰‰åÑ•Ì‰t°(€€€€€€€€€€€€€‰‘½İ¹±½…‘}ÕÉ°ˆè˜ˆ½…Á¤½Ñ…Í­Ì½íÑ…Í­l¥uô½…ÉÑ¥™…ÑÌ½í…l¥uô‰ô(€€€€€€€€€€€™½È„¥¸…ÉÑ¥™…ÑÌ(€€€€€€€t°(€€€€€€€€‰É•ÍÕ±ĞˆèÉ•ÍÕ±Ğ°(€€€€€€€€‰É•ÍÕ±Ñ}Õ¹­¹½İ¸ˆèÑ…Í¬¹•Ğ ‰É•ÍÕ±Ñ}©Í½¸ˆ¤¥Ì¹½Ğ9½¹”…¹É•ÍÕ±Ğ¥Ì9½¹”°(€€€ô(((Œ€´´´´´´´´´´´´´´´´´´´´´´´´´´´ƒ¦Rg¦Šc–>Ã¢Ò˜€´´´´´´´´´´´´´´´´´´´´´´´´´´´((Œƒ¢ºÃ–—–>Ã¢Ò›j¦Šcn»*Ûš¾òk–>«¢ºÃ¦r¢š¢Ş¢şoj¦Rg¦Šc’â;–¶cZG¦Šc¾ò3¶S–¾ç¦Šc’â7–—–>Ã¢Ò˜)1I}MQQUML€ô€ ‰İÉ½¹œˆ°€‰Õ¹•ÉÑ…¥¸ˆ¤(()‘•˜}±•‘•É}ÍÑ…Ñ•}™½É}•Ù•¹Ğ¡É•ÍÕ±ĞèÍÑÈ¤€´øÍÑÈè(€€€€ˆˆ‹–’7šÖ,¿¢º‹š¶’ê/’îÛ–¾ç–êSj–>Ã¢Ò›*Ûš¾òoš^ƒšÎW¢¾–"¯š^Û’şwš2–:*Ûš¾ò#’â72sšÖ/¾ò'ˆˆˆ(€€€É•ÑÕÉ¸ì(€€€€€€€€‰É•Ñ•ÍÑ}Á…ÍÍ•ˆè€‰É•Ñ•ÍÑ}Á…ÍÍ•ˆ°(€€€€€€€€‰É•Ñ•ÍÑ}™…¥±•ˆè€‰É•Ñ•ÍÑ}™…¥±•ˆ°(€€€€€€€€‰½ÉÉ•Ñ•ˆè€‰½ÉÉ•Ñ•‘}Á•¹‘¥¹}É•Ñ•ÍĞˆ°(€€€ô¹•Ğ¡É•ÍÕ±Ğ°€ˆˆ¤(()‘•˜É•Ù¥Í¥½¹}½Ù•É…•}…ÁÌ¡ÁÉ•Ù}É•ÍÕ±Ğè=ÁÑ¥½¹…±m¥ÑmÍÑÈ°¹åut°(€€€€€€€€€€€€€€€€€€€€€€€€€€É•ÍÕ±Ğè¥ÑmÍÑÈ°¹åt¤€´ø1¥ÍÑmÍÑÉtè(€€€€ˆˆ‹¢†—–¢ö»š²„Õ¥ƒ¢šn[šš~—¾òk¢şS–n{’â+’â¢ö»šr'šr³¢ö»òë–’Çj¦Šcn¸Õ¥ƒ–"_¢†£((€€€ƒ’ş»¢º‹š¢‡–ò?¢ššÆš¢‡–z/–:š‚ß’şwVg’â+’â¢ö»š&šr'¦Šcn»jÕ¥“¾òoòë–’Ç¢¾Óšb;š¢‡–z/š*+¢†—–švCšZd(€€€ƒ–öOš"C’êšZÃ’ös’âk’î;–’Óš&ç¦b¾ò3¢şgš^Ûîw’â7¢÷R£šZÃîOšzs¢šn[š^ŸîOšzs(€€€€ˆˆˆ(€€€¥˜¹½ĞÁÉ•Ù}É•ÍÕ±Ğè(€€€€€€€É•ÑÕÉ¸mt(€€€ÁÉ•Ù}Õ¥‘Ì€ômÍÑÈ¡Ä¹•Ğ ‰Õ¥ˆ¤½È€ˆˆ¤¹ÍÑÉ¥À ¤(€€€€€€€€€€€€€€€€™½ÈÄ¥¸€¡ÁÉ•Ù}É•ÍÕ±Ğ¹•Ğ ‰ÅÕ•ÍÑ¥½¹Ìˆ¤½Èmt¥t(€€€ÁÉ•Ù}Õ¥‘Ì€ômÔ™½ÈÔ¥¸ÁÉ•Ù}Õ¥‘Ì¥˜Õt(€€€¥˜¹½ĞÁÉ•Ù}Õ¥‘Ìè(€€€€€€€É•ÑÕÉ¸mt(€€€¹•İ}Õ¥‘Ì€ôíÍÑÈ¡Ä¹•Ğ ‰Õ¥ˆ¤½È€ˆˆ¤¹ÍÑÉ¥À ¤(€€€€€€€€€€€€€€€™½ÈÄ¥¸€¡É•ÍÕ±Ğ¹•Ğ ‰ÅÕ•ÍÑ¥½¹Ìˆ¤½Èmt¥ô(€€€É•ÑÕÉ¸mÔ™½ÈÔ¥¸ÁÉ•Ù}Õ¥‘Ì¥˜Ô¹½Ğ¥¸¹•İ}Õ¥‘Ít(()…Íå¹Œ‘•˜}É•½É‘}É•Ù¥Í¥½¹}½ÉÉ•Ñ¥½¹Ì¡Í•ÑÑ¥¹ÌèM•ÑÑ¥¹Ì°Ñ…Í¬è¥ÑmÍÑÈ°¹åt°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€É•ÍÕ±Ğè¥ÑmÍÑÈ°¹åt°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÁÉ•Ù}É•ÍÕ±Ğè¥ÑmÍÑÈ°¹åt°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€…É¡¥Ù•}É•°èÍÑÈ¤€´ø9½¹”è(€€€€ˆˆ‹’ş»¢º‹¢úçV3¾òk’â+’â¢ö»¦Rg¦Šc–r£šr³¢ö»¢Š¯¢º‹š¶’âë–¾ç¾ò3–>Ã¢Ò›¢ºÃ’âšv‡¢º‹š¶’ê/’îÛ–æÛšnÓšZÃ*Ûš((€€€ƒ–>«¢ş÷–*ƒ’ê/’îÛ’â7–"ƒ–:–>Ë¾òo*ÛššÖ¢ö³–"À½ÉÉ•Ñ•‘}Á•¹‘¥¹}É•Ñ•ÍÓ¾ò#–ŞË¢º‹š¶–ú–’7šÖ/¾ò'¾ò0(€€€ƒ¦ÿ–7š^Ÿj3–ú¢º‹š¶7šv‡n»–>cš"C–×–ÂãšVÃš6»(€€€€ˆˆˆ(€€€½Á•¹¥€ôÑ…Í­l‰½Á•¹¥‰t(€€€ÍÕ‰©•Ğ€ôÉ•ÍÕ±Ğ¹•Ğ ‰ÍÕ‰©•Ğˆ¤½ÈÑ…Í¬¹•Ğ ‰ÍÕ‰©•Ğˆ¤½È€ˆˆ(€€€ÁÉ•Ù}‰å}Õ¥€ôíÍÑÈ¡Ä¹•Ğ ‰Õ¥ˆ¤½È€ˆˆ¤¹ÍÑÉ¥À ¤èÄ(€€€€€€€€€€€€€€€€€€™½ÈÄ¥¸€¡ÁÉ•Ù}É•ÍÕ±Ğ¹•Ğ ‰ÅÕ•ÍÑ¥½¹Ìˆ¤½Èmt¥ô(€€€¹•İ}‰å}Õ¥€ôíÍÑÈ¡Ä¹•Ğ ‰Õ¥ˆ¤½È€ˆˆ¤¹ÍÑÉ¥À ¤èÄ(€€€€€€€€€€€€€€€€€™½ÈÄ¥¸€¡É•ÍÕ±Ğ¹•Ğ ‰ÅÕ•ÍÑ¥½¹Ìˆ¤½Èmt¥ô(€€€Ñ½‘…ä€ôÑ¥µ”¹ÍÑÉ™Ñ¥µ” ˆ•d´•´´•ˆ¤(€€€™½ÈÕ¥°ÁÉ•Ù}Ä¥¸ÁÉ•Ù}‰å}Õ¥¹¥Ñ•µÌ ¤è(€€€€€€€¥˜¹½ĞÕ¥½ÈÁÉ•Ù}Ä¹•Ğ ‰ÍÑ…ÑÕÌˆ¤¹½Ğ¥¸1I}MQQUMLè(€€€€€€€€€€€½¹Ñ¥¹Õ”(€€€€€€€¹•İ}Ä€ô¹•İ}‰å}Õ¥¹•Ğ¡Õ¥¤(€€€€€€€¥˜¹½Ğ¹•İ}Äè(€€€€€€€€€€€½¹Ñ¥¹Õ”€€Œƒòë¦Šc–ŞË¢Š¯¢šn[š‚‡¦ª3š.›š"«¾ò3š¶–âã¢ÖÃ’â7–"Ã¢şg¦0(€€€€€€€½ÉÉ•Ñ•€ô€¡¹•İ}Ä¹•Ğ ‰ÍÑ…ÑÕÌˆ¤€ôô€‰½ÉÉ•Ğˆ(€€€€€€€€€€€€€€€€€€€€½È€¡¹•İ}Ä¹•Ğ ‰™¥¹…±}‘•¥Í¥½¸ˆ¤½È€ˆˆ¤€ôô€‰½ÉÉ•Ñ•‘}Ñ½}½ÉÉ•Ğˆ¤(€€€€€€€¥˜¹½Ğ½ÉÉ•Ñ•è(€€€€€€€€€€€½¹Ñ¥¹Õ”(€€€€€€€•¹ÑÉä€ô…İ…¥Ğ‘ˆ¹•Ñ}±•‘•É}‰å}Õ¥¡Í•ÑÑ¥¹Ì¹‘‰}Á…Ñ °½Á•¹¥°Õ¥¤(€€€€€€€¥˜¹½Ğ•¹ÑÉäè(€€€€€€€€€€€½¹Ñ¥¹Õ”(€€€€€€€…İ…¥Ğ‘ˆ¹…‘‘}ÅÕ•ÍÑ¥½¹}•Ù•¹Ğ¡Í•ÑÑ¥¹Ì¹‘‰}Á…Ñ °½Á•¹¥°ì(€€€€€€€€€€€€‰ÅÕ•ÍÑ¥½¹}Õ¥ˆèÕ¥°(€€€€€€€€€€€€‰ÍÕ‰©•ĞˆèÍÕ‰©•Ğ°(€€€€€€€€€€€€‰•Ù•¹Ñ}ÑåÁ”ˆè€‰½ÉÉ•Ñ¥½¸ˆ°(€€€€€€€€€€€€‰É•ÍÕ±Ğˆè€‰½ÉÉ•Ñ•ˆ°(€€€€€€€€€€€€‰½ÕÉÉ•‘}‘…Ñ”ˆèÑ½‘…ä°(€€€€€€€€€€€€‰ÍÑÕ‘•¹Ñ}…¹Íİ•Èˆè¹•İ}Ä¹•Ğ ‰ÍÑÕ‘•¹Ñ}…¹Íİ•Èˆ°€ˆˆ¤°(€€€€€€€€€€€€‰¹½Ñ”ˆè€‹¢†—–švCšZg–B;¢º‹š¶’âë–¾äˆ°(€€€€€€€€€€€€‰Í½ÕÉ•}Ñ…Í­}¥ˆèÑ…Í­l‰¥‰t°(€€€€€€€€€€€€‰…É¡¥Ù•}Á…Ñ ˆè…É¡¥Ù•}É•°°(€€€€€€€ô¤(€€€€€€€ÍÑ…Ñ”€ô}±•‘•É}ÍÑ…Ñ•}™½É}•Ù•¹Ğ ‰½ÉÉ•Ñ•ˆ¤(€€€€€€€¥˜ÍÑ…Ñ”è(€€€€€€€€€€€…İ…¥Ğ‘ˆ¹ÕÁ‘…Ñ•}±•‘•É}ÍÑ…Ñ” (€€€€€€€€€€€€€€€Í•ÑÑ¥¹Ì¹‘‰}Á…Ñ °½Á•¹¥°•¹ÑÉål‰¥‰t°(€€€€€€€€€€€€€€€É•µ•‘¥…Ñ¥½¹}ÍÑ…Ñ”õÍÑ…Ñ”°…É¡¥Ù•}Á…Ñ õ…É¡¥Ù•}É•°¤((()…Íå¹Œ‘•˜}İÉ¥Ñ•}±•‘•È¡Í•ÑÑ¥¹ÌèM•ÑÑ¥¹Ì°Ñ…Í¬è¥ÑmÍÑÈ°¹åt°É•ÍÕ±Ğè¥ÑmÍÑÈ°¹åt°(€€€€€€€€€€€€€€€€€€€€€€€…É¡¥Ù”è¥ÑmÍÑÈ°¹åt°(€€€€€€€€€€€€€€€€€€€€€€€ÁÉ•Ù}É•ÍÕ±Ğè=ÁÑ¥½¹…±m¥ÑmÍÑÈ°¹åut€ô9½¹”¤€´ø¥¹Ğè(€€€€ˆˆ‹š*+šr³š²‡îOšzs–g–—–>Ã¢Ò›¾òk¦Šcn»š2$Õ¥ƒ–:ï¦7¾ò3–’7šÖ/’ê/’îÛ¢ş÷–*ƒ–æÛšnÓšZÃ–¾ç–êS*Ûšˆˆˆ(€€€ÍÕ‰©•Ğ€ôÉ•ÍÕ±Ğ¹•Ğ ‰ÍÕ‰©•Ğˆ¤½ÈÑ…Í¬¹•Ğ ‰ÍÕ‰©•Ğˆ¤½È€ˆˆ(€€€…É¡¥Ù•}É•°€ôİ½É­ÍÁ…”¹İ½É­ÍÁ…•}É•±…Ñ¥Ù•}Á…Ñ ¡Í•ÑÑ¥¹Ì°…É¡¥Ù”¹•Ğ ‰Á…Ñ ˆ°€ˆˆ¤¤(€€€½Á•¹¥€ôÑ…Í­l‰½Á•¹¥‰t(€€€İÉ¥ÑÑ•¸€ô€À((€€€™½ÈÅÕ•ÍÑ¥½¸¥¸É•ÍÕ±Ğ¹•Ğ ‰ÅÕ•ÍÑ¥½¹Ìˆ¤½Èmtè(€€€€€€€Õ¥€ôÍÑÈ¡ÅÕ•ÍÑ¥½¸¹•Ğ ‰Õ¥ˆ¤½È€ˆˆ¤¹ÍÑÉ¥À ¤(€€€€€€€¥˜¹½ĞÕ¥½ÈÅÕ•ÍÑ¥½¸¹•Ğ ‰ÍÑ…ÑÕÌˆ¤¹½Ğ¥¸1I}MQQUMLè(€€€€€€€€€€€½¹Ñ¥¹Õ”(€€€€€€€…İ…¥Ğ‘ˆ¹ÕÁÍ•ÉÑ}±•‘•É}ÅÕ•ÍÑ¥½¸¡Í•ÑÑ¥¹Ì¹‘‰}Á…Ñ °½Á•¹¥°ì(€€€€€€€€€€€€‰ÅÕ•ÍÑ¥½¹}Õ¥ˆèÕ¥°(€€€€€€€€€€€€‰Ñ…Í­}¥ˆèÑ…Í­l‰¥‰t°(€€€€€€€€€€€€‰ÅÕ•ÍÑ¥½¹}¹¼ˆèÅÕ•ÍÑ¥½¸¹•Ğ ‰¹¼ˆ°€ˆˆ¤°(€€€€€€€€€€€€‰ÍÕ‰©•ĞˆèÍÕ‰©•Ğ°(€€€€€€€€€€€€‰Í½ÕÉ”ˆèÅÕ•ÍÑ¥½¸¹•Ğ ‰Í½ÕÉ”ˆ°€ˆˆ¤°(€€€€€€€€€€€€‰Á…”ˆèÅÕ•ÍÑ¥½¸¹•Ğ ‰Á…”ˆ°€ˆˆ¤°(€€€€€€€€€€€€‰ÍÑ•´ˆèÅÕ•ÍÑ¥½¸¹•Ğ ‰ÍÑ•´ˆ°€ˆˆ¤°(€€€€€€€€€€€€‰ÍÑÕ‘•¹Ñ}…¹Íİ•ÈˆèÅÕ•ÍÑ¥½¸¹•Ğ ‰ÍÑÕ‘•¹Ñ}…¹Íİ•Èˆ°€ˆˆ¤°(€€€€€€€€€€€€‰½ÉÉ•Ñ}…¹Íİ•ÈˆèÅÕ•ÍÑ¥½¸¹•Ğ ‰½ÉÉ•Ñ}…¹Íİ•Èˆ°€ˆˆ¤°(€€€€€€€€€€€€‰•ÉÉ½É}ÉÕ±”ˆèÅÕ•ÍÑ¥½¸¹•Ğ ‰•ÉÉ½É}ÉÕ±”ˆ°€ˆˆ¤°(€€€€€€€€€€€€‰­¹½İ±•‘•}Á½¥¹ĞˆèÅÕ•ÍÑ¥½¸¹•Ğ ‰­¹½İ±•‘•}Á½¥¹Ğˆ°€ˆˆ¤°(€€€€€€€€€€€€‰ÍÑ…ÑÕÌˆèÅÕ•ÍÑ¥½¸¹•Ğ ‰ÍÑ…ÑÕÌˆ°€ˆˆ¤°(€€€€€€€€€€€€‰É•µ•‘¥…Ñ¥½¹}ÍÑ…Ñ”ˆè€¡ÅÕ•ÍÑ¥½¸¹•Ğ ‰É•µ•‘¥…Ñ¥½¸ˆ¤½Èíô¤¹•Ğ ‰ÍÑ…Ñ”ˆ°€ˆˆ¤°(€€€€€€€€€€€€‰…É¡¥Ù•}Á…Ñ ˆè…É¡¥Ù•}É•°°(€€€€€€€ô¤(€€€€€€€İÉ¥ÑÑ•¸€¬ô€Ä((€€€™½È•Ù•¹Ğ¥¸É•ÍÕ±Ğ¹•Ğ ‰É•Ñ•ÍÑÌˆ¤½Èmtè(€€€€€€€Õ¥€ôÍÑÈ¡•Ù•¹Ğ¹•Ğ ‰ÅÕ•ÍÑ¥½¹}Õ¥ˆ¤½È€ˆˆ¤¹ÍÑÉ¥À ¤(€€€€€€€¥˜¹½ĞÕ¥è(€€€€€€€€€€€½¹Ñ¥¹Õ”(€€€€€€€…İ…¥Ğ‘ˆ¹…‘‘}ÅÕ•ÍÑ¥½¹}•Ù•¹Ğ¡Í•ÑÑ¥¹Ì¹‘‰}Á…Ñ °½Á•¹¥°ì(€€€€€€€€€€€€‰ÅÕ•ÍÑ¥½¹}Õ¥ˆèÕ¥°(€€€€€€€€€€€€‰ÍÕ‰©•ĞˆèÍÕ‰©•Ğ°(€€€€€€€€€€€€‰•Ù•¹Ñ}ÑåÁ”ˆè€‰É•Ñ•ÍĞˆ°(€€€€€€€€€€€€‰É•ÍÕ±Ğˆè•Ù•¹Ğ¹•Ğ ‰É•ÍÕ±Ğˆ°€ˆˆ¤°(€€€€€€€€€€€€‰½ÕÉÉ•‘}‘…Ñ”ˆè•Ù•¹Ğ¹•Ğ ‰½ÕÉÉ•‘}‘…Ñ”ˆ°€ˆˆ¤°(€€€€€€€€€€€€‰ÍÑÕ‘•¹Ñ}…¹Íİ•Èˆè•Ù•¹Ğ¹•Ğ ‰ÍÑÕ‘•¹Ñ}…¹Íİ•Èˆ°€ˆˆ¤°(€€€€€€€€€€€€‰¹½Ñ”ˆè•Ù•¹Ğ¹•Ğ ‰¹½Ñ”ˆ°€ˆˆ¤°(€€€€€€€€€€€€‰Í½ÕÉ•}Ñ…Í­}¥ˆèÑ…Í­l‰¥‰t°(€€€€€€€€€€€€‰…É¡¥Ù•}Á…Ñ ˆè…É¡¥Ù•}É•°°(€€€€€€€ô¤(€€€€€€€ÍÑ…Ñ”€ô}±•‘•É}ÍÑ…Ñ•}™½É}•Ù•¹Ğ¡•Ù•¹Ğ¹•Ğ ‰É•ÍÕ±Ğˆ°€ˆˆ¤¤(€€€€€€€•¹ÑÉä€ô…İ…¥Ğ‘ˆ¹•Ñ}±•‘•É}‰å}Õ¥¡Í•ÑÑ¥¹Ì¹‘‰}Á…Ñ °½Á•¹¥°Õ¥¤(€€€€€€€¥˜•¹ÑÉä…¹ÍÑ…Ñ”è(€€€€€€€€€€€…İ…¥Ğ‘ˆ¹ÕÁ‘…Ñ•}±•‘•É}ÍÑ…Ñ” (€€€€€€€€€€€€€€€Í•ÑÑ¥¹Ì¹‘‰}Á…Ñ °½Á•¹¥°•¹ÑÉål‰¥‰t°(€€€€€€€€€€€€€€€É•µ•‘¥…Ñ¥½¹}ÍÑ…Ñ”õÍÑ…Ñ”°…É¡¥Ù•}Á…Ñ õ…É¡¥Ù•}É•°¤((€€€¥˜ÁÉ•Ù}É•ÍÕ±Ğè(€€€€€€€€Œƒ’ş»¢º‹¢úçV3¾òk’â+’â¢ö»¦Rg¦Šc–r£šr³¢ö»¢Š¯¢º‹š¶’âë–¾ç¾ò3¢ºÃ¢º‹š¶’ê/’îÛ–æÛšnÓšZÃ–>Ã¢Ò›*Ûš(€€€€€€€…İ…¥Ğ}É•½É‘}É•Ù¥Í¥½¹}½ÉÉ•Ñ¥½¹Ì¡Í•ÑÑ¥¹Ì°Ñ…Í¬°É•ÍÕ±Ğ°ÁÉ•Ù}É•ÍÕ±Ğ°…É¡¥Ù•}É•°¤((€€€É•ÑÕÉ¸İÉ¥ÑÑ•¸(

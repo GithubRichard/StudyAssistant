@@ -21,6 +21,23 @@ def _size(b: bytes):
 
 
 class PrepareTest(unittest.TestCase):
+    def test_clockwise_angle_and_manual_override(self):
+        image = Image.new("RGB", (40, 60), "white")
+        for x in range(15):
+            for y in range(15):
+                image.putpixel((x, y), (255, 0, 0))
+        buf = io.BytesIO()
+        image.save(buf, "PNG")
+        for angle, point in [(0, (5, 5)), (90, (54, 5)), (180, (34, 54)), (270, (5, 34))]:
+            with self.subTest(angle=angle), patch.object(image_prep, "_detect_text_rotation") as osd:
+                out, _, info = image_prep.prepare_extract_image(
+                    buf.getvalue(), "image/png", 0, 0, confirmed_rotation=angle)
+                red, green, blue = Image.open(io.BytesIO(out)).getpixel(point)
+                self.assertGreater(red, 200)
+                self.assertLess(green, 60)
+                self.assertFalse(info["orientation_check_required"])
+                osd.assert_not_called()
+
     def test_upscale_to_min_long_side(self):
         out, mime, info = image_prep.prepare_extract_image(
             _jpeg(400, 300), "image/jpeg", min_long_side=2048, max_long_side=4096)

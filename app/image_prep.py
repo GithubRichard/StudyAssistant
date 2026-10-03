@@ -1,7 +1,7 @@
 """转写前图片预处理：校正文字方向并让模型"看"得更清楚。
 
 1. prepare_extract_image：EXIF 自动旋转，再用 Tesseract OSD 检测纸面文字的
-   90°倍数旋转；置信度不足时在 info 中要求上游阻断批改。随后转 RGB、缩放、
+   90°倍数旋转；置信度不足时在 info 中要求上游补充判断或人工确认。随后转 RGB、缩放、
    轻度锐化/对比度提升。返回 (bytes, mime, info)。
 2. make_zoom_tiles：把一页切成 grid×grid 重叠局部图并放大，
    供提取阶段对字迹存疑的题做第二遍复核。视觉模型通常会把输入图
@@ -40,8 +40,8 @@ _ORIENTATION_TIMEOUT_SECONDS = 8
 def _detect_text_rotation(img) -> dict:
     """Ask Tesseract OSD how many degrees the page text must be rotated.
 
-    Pillow's positive ``Image.rotate`` angle is counter-clockwise, which is the
-    direction Tesseract's ``Rotate`` field asks us to apply. Return a status
+    Tesseract's ``Rotate`` field is clockwise; Pillow's positive angle is
+    counter-clockwise. Return a status
     rather than guessing when OCR is unavailable or its confidence is low.
     """
     if not _PIL_OK:
@@ -93,14 +93,15 @@ def _detect_text_rotation(img) -> dict:
 def prepare_extract_image(image_bytes: bytes, mime: str,
                           min_long_side: int = 2048,
                           max_long_side: int = 4096,
-                          jpeg_quality: int = 90) -> Tuple[bytes, str, dict]:
+                          jpeg_quality: int = 90,
+                          confirmed_rotation: int | None = None) -> Tuple[bytes, str, dict]:
     """转写前预处理。返回方向检测状态，由批改编排器决定是否继续。
 
     返回 (bytes, mime, info)：info = {"width": 最终宽, "height": 最终高,
     "exif_orientation": EXIF 方向值（无则为 None）, "exif_rotated": 是否因
     EXIF 旋转/翻转, "text_rotation_degrees": 自动旋转角度,
     "orientation_confidence": OSD 方向置信度, "orientation_check_required": 是否
-    因方向无法确认而必须阻断批改}。
+    因方向无法确认而需要补充判断或人工确认}。
     """
     info = {"width": 0, "height": 0,
             "exif_orientation": None, "exif_rotated": False,
@@ -127,14 +128,21 @@ def prepare_extract_image(image_bytes: bytes, mime: str,
         img = ImageOps.exif_transpose(img)  # 手机照片自动摆正
         if img.mode != "RGB":
             img = img.convert("RGB")
-        orientation_result = _detect_text_rotation(img)
+        if confirmed_rotation is not None:
+            if confirmed_rotation not in (0, 90, 180, 270):
+                raise ValueError("rotation must be 0/90/180/270 clockwise")
+            orientation_result = {"status": "rotated" if confirmed_rotation else "upright",
+                                  "rotation": confirmed_rotation,
+                                  "confidence": None, "error": ""}
+        else:
+            orientation_result = _detect_text_rotation(img)
         info["orientation_status"] = orientation_result["status"]
         info["text_rotation_degrees"] = orientation_result["rotation"]
         info["orientation_confidence"] = orientation_result["confidence"]
         info["orientation_error"] = orientation_result["error"]
         info["orientation_check_required"] = orientation_result["status"] == "uncertain"
         if orientation_result["status"] == "rotated":
-            img = img.rotate(orientation_result["rotation"], expand=True)
+            img = img.rotate(-orientation_result["rotation"], expand=True)
         w, h = img.size
         long_side = max(w, h)
         target = long_side

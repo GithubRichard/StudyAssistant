@@ -169,6 +169,10 @@ function createFollowup(taskId, payload) {
 }
 
 const getTask = (taskId) => request('/api/tasks/' + taskId);
+const getOrientationPreview = (taskId, runId, page) =>
+  request('/api/tasks/' + taskId + '/orientation/' + page, {data: {run_id: runId}});
+const confirmOrientation = (taskId, payload) =>
+  requestJson('/api/tasks/' + taskId + '/orientation', payload);
 const getTasks = (limit = 20, offset = 0) =>
   request('/api/tasks', { data: { limit, offset } });
 const getQuota = () => request('/api/quota');
@@ -204,6 +208,7 @@ module.exports = {
   ensureLogin, login, logout, getOpenid, getToken,
   uploadAsset, createStudyTask, createFollowup,
   getTask, getTasks, getQuota, getRuntime, getProviders,
+  getOrientationPreview, confirmOrientation,
   getSettings, updateSettings,
   getLedger, getLedgerEntry, addLedgerEvent,
   addMistake, getMistakes, artifactUrl,
