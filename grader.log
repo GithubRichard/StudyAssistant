@@ -1,42 +1,44 @@
-grader-1  | 2026-10-08T07:37:37.725167828Z 2026-10-08 15:37:37,724 INFO app.main: 服务启动，代码版本 57913293
-grader-1  | 2026-10-08T07:37:37.725465718Z 2026-10-08 15:37:37,725 INFO app.main: 思考过程日志 → data/logs/thinking.log（按天轮转，保留5天；不再进 docker 日志）
-grader-1  | 2026-10-08T07:37:37.726461821Z 2026-10-08 15:37:37,726 INFO app.main: 网页版入口: /web/ （目录 /srv/app/web）
-grader-1  | 2026-10-08T07:37:37.726928088Z INFO:     Started server process [8]
-grader-1  | 2026-10-08T07:37:37.726934991Z INFO:     Waiting for application startup.
-grader-1  | 2026-10-08T07:37:37.770971347Z 2026-10-08 15:37:37,770 INFO app.main: 学习工作区: /srv/app/workspace（账号 leo、binbin、anna、wx-oCjElxp24iDQz5fK6UgBShmXLUC8、family；学科 语文、数学、英语；新建 0 项；README 新建=False；.gitignore 新建=False；升级=False）
-grader-1  | 2026-10-08T07:37:37.861939472Z 2026-10-08 15:37:37,861 WARNING app.main: Hermes 未就绪: 技能列表接口不可用（Hermes 服务错误 HTTP 500），无法确认技能是否已安装，任务仍会尝试执行
-grader-1  | 2026-10-08T07:37:37.864601448Z INFO:     Application startup complete.
-grader-1  | 2026-10-08T07:37:37.875293333Z INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-grader-1  | 2026-10-08T07:37:58.470311560Z 2026-10-08 15:37:58,470 INFO app.tasks: 创建学习任务 task_id=9fe9a943360a4d5a type=grading kind= scope=-~- assets=1
-grader-1  | 2026-10-08T07:37:59.909625647Z 2026-10-08 15:37:59,909 INFO app.tasks: 开始执行 task_id=9fe9a943360a4d5a run_no=1 budget=1200s assets=1
-grader-1  | 2026-10-08T07:37:59.910467551Z 2026-10-08 15:37:59,910 INFO app.tasks: 分阶段批改 task_id=9fe9a943360a4d5a run_no=1 images=1 followup=False
-grader-1  | 2026-10-08T07:38:26.737028260Z 2026-10-08 15:38:26,736 INFO app.staged: 分阶段批改[extract]成功 provider=ds tokens=1732/5992 cost≈0.0000元
-grader-1  | 2026-10-08T07:38:37.596667117Z 2026-10-08 15:38:37,596 WARNING app.providers: provider=ds 输出被截断（max_tokens=2000），不再重试
-grader-1  | 2026-10-08T07:38:37.596700310Z 2026-10-08 15:38:37,596 WARNING app.staged: 分阶段批改[number_verify]输出截断，同一模型放大额度重试: provider=ds 2000->4000
-grader-1  | 2026-10-08T07:38:40.595280572Z 2026-10-08 15:38:40,594 INFO app.staged: 分阶段批改[number_verify]成功 provider=ds tokens=1236/250 cost≈0.0000元
-grader-1  | 2026-10-08T07:38:40.595312542Z 2026-10-08 15:38:40,594 INFO app.staged: 分阶段批改[extract] 题号复核完成：题号序列一致。
-grader-1  | 2026-10-08T07:38:53.358949687Z 2026-10-08 15:38:53,358 INFO app.staged: 分阶段批改[extract_zoom]成功 provider=ds tokens=5467/1245 cost≈0.0000元
-grader-1  | 2026-10-08T07:38:53.359248278Z 2026-10-08 15:38:53,359 INFO app.staged: 分阶段批改[extract] 放大复核完成：1 题待复核，1 题转写被更新
-grader-1  | 2026-10-08T07:38:53.359630556Z 2026-10-08 15:38:53,359 INFO app.tasks: 【提取阶段转写】task_id=9fe9a943360a4d5a run_no=1
-grader-1  | 2026-10-08T07:38:53.359640595Z 共提取 16 题（只转写、不判定）：
-grader-1  | 2026-10-08T07:38:53.359644673Z   题9｜题干：Father often tells me ______ too much time on…｜学生答案：C
-grader-1  | 2026-10-08T07:38:53.359648240Z   题10｜题干：As teenagers, we're old enough to ______ hous…｜学生答案：B
-grader-1  | 2026-10-08T07:38:53.359651706Z   题1｜题干：He always provides a context that makes his c…｜学生答案：belieable
-grader-1  | 2026-10-08T07:38:53.359674760Z   题2｜题干：She had thought very ______ (depth) about thi…｜学生答案：deeply
-grader-1  | 2026-10-08T07:38:53.359677726Z   题3｜题干：There is little hope that they will be found …｜学生答案：alive
-grader-1  | 2026-10-08T07:38:53.359680100Z   题4｜题干：The staff is busy making ______ (prepare) for…｜学生答案：preparation
-grader-1  | 2026-10-08T07:38:53.359682555Z   题5｜题干：All the tickets having been sold out, they we…｜学生答案：disappoint
-grader-1  | 2026-10-08T07:38:53.359684980Z   题6｜题干：I will meet you at one of the main ______ (en…｜学生答案：entrances
-grader-1  | 2026-10-08T07:38:53.359687374Z   题7｜题干：The waiters threaded between the ______ (crow…｜学生答案：crowded
-grader-1  | 2026-10-08T07:38:53.359689899Z   题8｜题干：Graduates have to fight for jobs in a highly …｜学生答案：competitive
-grader-1  | 2026-10-08T07:38:53.359692373Z   题1｜题干：Mum's words rang in his head. (改为否定句) Mum's w…｜学生答案：didn't ring
-grader-1  | 2026-10-08T07:38:53.359694858Z   题2｜题干：He deals with the problem carefully. (改为现在完成时…｜学生答案：has dealt
-grader-1  | 2026-10-08T07:38:53.359697343Z   题3｜题干：I hope to be a football player. (保持句意基本不变) My…｜学生答案：dream; to
-grader-1  | 2026-10-08T07:38:53.359699867Z   题4｜题干：He didn't take up paper cutting. He took up c…｜学生答案：instead of
-grader-1  | 2026-10-08T07:38:53.359702192Z   题5｜题干：your understanding, every disappointment, of,…｜学生答案：What is your understanding of "with every disappointment comes a new chance"?
-grader-1  | 2026-10-08T07:38:53.359705047Z   题1【字迹存疑】｜题干：Some children undergo a complete transformati…｜学生答案：（未作答/空白）｜备注：该题空格（become t____）处字迹极淡且处于页面底端，局部放大图中仅见模糊笔画，无法确认学生所写内容，故无法转写。
-grader-1  | 2026-10-08T07:39:30.118449723Z 2026-10-08 15:39:30,118 INFO app.staged: 分阶段批改[solve]成功 provider=ds tokens=791/8541 cost≈0.0000元
-grader-1  | 2026-10-08T07:39:37.150884069Z 2026-10-08 15:39:37,150 INFO app.staged: 分阶段批改[compare]成功 provider=ds tokens=830/1709 cost≈0.0000元
-grader-1  | 2026-10-08T07:39:59.405932634Z 2026-10-08 15:39:59,405 WARNING app.staged: 分阶段批改[diagnose]切换备胎（输出非法）: 诊断缺题：['1', '2', '4']
-grader-1  | 2026-10-08T07:40:04.489901347Z 2026-10-08 15:40:04,489 WARNING app.staged: 分阶段批改[diagnose]切换备胎（输出非法）: 诊断缺题：['1', '2', '3', '4', '5']
-grader-1  | 2026-10-08T07:40:04.516971480Z 2026-10-08 15:40:04,516 ERROR app.tasks: 任务失败 task_id=9fe9a943360a4d5a: 分阶段批改失败: 所有模型都失败了: ds: 输出校验失败(诊断缺题：['1', '2', '4']) | glm: 输出校验失败(诊断缺题：['1', '2', '3', '4', '5'])
+grader-1  | 2026-10-08T07:53:14.958201377Z 2026-10-08 15:53:14,957 INFO app.main: 服务启动，代码版本 7874e42f
+grader-1  | 2026-10-08T07:53:14.958520417Z 2026-10-08 15:53:14,958 INFO app.main: 思考过程日志 → data/logs/thinking.log（按天轮转，保留5天；不再进 docker 日志）
+grader-1  | 2026-10-08T07:53:14.959531869Z 2026-10-08 15:53:14,959 INFO app.main: 网页版入口: /web/ （目录 /srv/app/web）
+grader-1  | 2026-10-08T07:53:14.959724882Z INFO:     Started server process [6]
+grader-1  | 2026-10-08T07:53:14.959759017Z INFO:     Waiting for application startup.
+grader-1  | 2026-10-08T07:53:15.001584574Z 2026-10-08 15:53:15,001 INFO app.main: 学习工作区: /srv/app/workspace（账号 leo、binbin、anna、wx-oCjElxp24iDQz5fK6UgBShmXLUC8、family；学科 语文、数学、英语；新建 0 项；README 新建=False；.gitignore 新建=False；升级=False）
+grader-1  | 2026-10-08T07:53:15.091058510Z 2026-10-08 15:53:15,090 WARNING app.main: Hermes 未就绪: 技能列表接口不可用（Hermes 服务错误 HTTP 500），无法确认技能是否已安装，任务仍会尝试执行
+grader-1  | 2026-10-08T07:53:15.093194718Z INFO:     Application startup complete.
+grader-1  | 2026-10-08T07:53:15.102851305Z INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+grader-1  | 2026-10-08T07:54:26.206448541Z 2026-10-08 15:54:26,206 INFO app.tasks: 创建学习任务 task_id=616bdb81cb6c4296 type=grading kind= scope=-~- assets=1
+grader-1  | 2026-10-08T07:54:27.180829218Z 2026-10-08 15:54:27,180 INFO app.tasks: 开始执行 task_id=616bdb81cb6c4296 run_no=1 budget=1200s assets=1
+grader-1  | 2026-10-08T07:54:27.181616699Z 2026-10-08 15:54:27,181 INFO app.tasks: 分阶段批改 task_id=616bdb81cb6c4296 run_no=1 images=1 followup=False
+grader-1  | 2026-10-08T07:55:10.429816073Z 2026-10-08 15:55:10,429 INFO app.staged: 分阶段批改[extract]成功 provider=ds tokens=1814/9568 cost≈0.0000元
+grader-1  | 2026-10-08T07:55:10.430720484Z 2026-10-08 15:55:10,430 WARNING app.staged: 分阶段批改[extract] 思考过程暴露题号不确定（思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）），16 题题号标存疑
+grader-1  | 2026-10-08T07:55:23.315886500Z 2026-10-08 15:55:23,315 WARNING app.providers: provider=ds 输出被截断（max_tokens=2000），不再重试
+grader-1  | 2026-10-08T07:55:23.315917789Z 2026-10-08 15:55:23,315 WARNING app.staged: 分阶段批改[number_verify]输出截断，同一模型放大额度重试: provider=ds 2000->4000
+grader-1  | 2026-10-08T07:55:36.208321796Z 2026-10-08 15:55:36,208 INFO app.staged: 分阶段批改[number_verify]成功 provider=ds tokens=1236/2511 cost≈0.0000元
+grader-1  | 2026-10-08T07:55:36.208711299Z 2026-10-08 15:55:36,208 INFO app.staged: 分阶段批改[extract] 题号复核完成：1 题题号不一致已标存疑（「无题号」→复核为「18」）。
+grader-1  | 2026-10-08T07:55:36.208996395Z 2026-10-08 15:55:36,208 INFO app.tasks: 【提取阶段转写】task_id=616bdb81cb6c4296 run_no=1
+grader-1  | 2026-10-08T07:55:36.209006685Z 共提取 16 题（只转写、不判定）：
+grader-1  | 2026-10-08T07:55:36.209011233Z   题无题号【题号存疑】｜题干：(child) are now learning to use 3D printers i…｜学生答案：exciting｜题号备注：该题无印刷题号；思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）；题号复核不一致（转写「无题号」，复核「18」）
+grader-1  | 2026-10-08T07:55:36.209143842Z   题19【题号存疑】｜题干：His grandmother found it ___19___ (difficulty…｜学生答案：difficulty｜题号备注：思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）
+grader-1  | 2026-10-08T07:55:36.209150114Z   题20【题号存疑】｜题干：He designed a handle that was ___20___ (easy)…｜学生答案：easier｜题号备注：思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）
+grader-1  | 2026-10-08T07:55:36.209153109Z   题21【题号存疑】｜题干：This simple invention made his grandmother ve…｜学生答案：proud｜题号备注：思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）
+grader-1  | 2026-10-08T07:55:36.209156085Z   题22【题号存疑】｜题干：These models help doctors understand the pati…｜学生答案：better｜题号备注：思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）
+grader-1  | 2026-10-08T07:55:36.209158970Z   题23【题号存疑】｜题干：The technology itself is developing rapidly, …｜学生答案：its｜题号备注：思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）
+grader-1  | 2026-10-08T07:55:36.209163399Z   题24【题号存疑】｜题干：Dr. Smith: ___24___ (根据选择疑问句做出回答). Failure is…｜学生答案：I believe failure is a good thing｜题号备注：思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）
+grader-1  | 2026-10-08T07:55:36.209166755Z   题25【题号存疑】｜题干：Host: I see. ___25___ (写出恰当的一般疑问句) before try…｜学生答案：should we ask ourselves a question?｜题号备注：思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）
+grader-1  | 2026-10-08T07:55:36.209170011Z   题26【题号存疑】｜题干：Host: ___26___ (就目的提问：在尝试新事物之前我们为什么应该设立新目标呢？)…｜学生答案：Why should we set new goals before trying new things?｜题号备注：思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）
+grader-1  | 2026-10-08T07:55:36.209173538Z   题27【题号存疑】｜题干：Host: And it's also important to celebrate sm…｜学生答案：isn't it｜题号备注：思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）
+grader-1  | 2026-10-08T07:55:36.209176183Z   题28【题号存疑】｜题干：Host: At the end of today's interview, please…｜学生答案：How can we overcome the fear of trying new things｜题号备注：思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）
+grader-1  | 2026-10-08T07:55:36.209178968Z   题29【题号存疑】｜题干：Gina Zheng Min likes volleyball very much. Sh…｜学生答案：G｜题号备注：思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）
+grader-1  | 2026-10-08T07:55:36.209187313Z   题30【题号存疑】｜题干：Zhang Peng is good at tennis. He loves it ver…｜学生答案：D｜题号备注：思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）
+grader-1  | 2026-10-08T07:55:36.209190230Z   题31【题号存疑】｜题干：Tom's Chinese friends are good at playing pin…｜学生答案：C｜题号备注：思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）
+grader-1  | 2026-10-08T07:55:36.209193145Z   题32【题号存疑】｜题干：Basketball is Joe's favourite sport. He is go…｜学生答案：F｜题号备注：思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）
+grader-1  | 2026-10-08T07:55:36.209196031Z   题33【题号存疑】｜题干：Betty loves playing chess. She hopes she can …｜学生答案：B｜题号备注：思考过程兜底：思考过程现题号不确定表述（…"(child) are now learning..." 无题号。我建为无题号。  再看题号是否有…）
+grader-1  | 2026-10-08T07:55:36.462308000Z 2026-10-08 15:55:36,462 INFO app.tasks: 开始复查 task_id=616bdb81cb6c4296 run_no=1 送审=16 超限=0 timeout=600s coverage=reread images=1
+grader-1  | 2026-10-08T07:55:36.462716097Z 2026-10-08 15:55:36,462 INFO app.hermes: 调用复查模型 session=review-616bdb81cb6c4296-1 model=glm（provider=zai） timeout=600.0s
+grader-1  | 2026-10-08T07:57:34.354666992Z 2026-10-08 15:57:34,353 INFO app.hermes: 复查请求耗时 118s session=review-616bdb81cb6c4296-1
+grader-1  | 2026-10-08T07:57:34.354690927Z 2026-10-08 15:57:34,353 INFO app.hermes: 复查完成 session=review-616bdb81cb6c4296-1 题数=16 网关报告模型=glm tokens=23104/2694
+grader-1  | 2026-10-08T07:57:34.354695576Z 2026-10-08 15:57:34,353 WARNING app.tasks: 复查模型身份仅核对到模型名 task_id=616bdb81cb6c4296: 网关报告模型 glm 与期望一致且不同于首轮模型，但网关未报告 provider，无法核对是否为 zai
+grader-1  | 2026-10-08T07:57:34.355122098Z 2026-10-08 15:57:34,354 WARNING app.tasks: 复查图片链路故障 task_id=616bdb81cb6c4296：已附 1 张原图但复查方全部以'未能直接读取'为由 unverified，图片未送达模型；请排查 Hermes 网关图片透传或更换支持视觉的复查模型/路由
+grader-1  | 2026-10-08T07:57:34.355466125Z 2026-10-08 15:57:34,355 INFO app.tasks: 复查完成 task_id=616bdb81cb6c4296 run_no=1 state=partial disagreed=0 unverified=16
+grader-1  | 2026-10-08T07:57:34.527608770Z 2026-10-08 15:57:34,527 INFO app.tasks: 任务完成 task_id=616bdb81cb6c4296 run_no=1 status=waiting_input archive=failed git=- ledger=16
