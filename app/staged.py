@@ -643,9 +643,10 @@ def _number_verify_user() -> str:
 # number_uncertain"，但结构化输出里并没有标——reasoning 承认不确定，
 # 不等于结构化字段如实标记。这里做服务端兜底：只要思考过程里出现
 # 题号不确定信号，整批题号强制标存疑（fail-closed，不猜）。
-_NUMBER_UNCERTAIN_EXPLICIT = (
-    "number_uncertain",  # 模型自己提到了该标记（无论大小写）
-)
+# 注意：不要把 "number_uncertain" 这个字段名字面匹配当作信号。
+# 2026-10-08 生产教训：模型在思考中 deliberation 字段语义是常态
+# （"我标 number_uncertain 可能不需要。就写 '1'。"），字面命中会导致
+# 整批误伤。真正的信号是"题号词 + 不确定表述"的近距离同现。
 _NUMBER_WORDS = ("题号", "编号", "题序", "number")
 _UNCERTAIN_WORDS = ("不确定", "拿不准", "没把握", "不肯定", "疑似", "冲突",
                     "对不上", "对不齐", "存疑", "可能有误", "可能读错",
@@ -662,10 +663,9 @@ def _reasoning_number_uncertainty(thinking: str) -> str:
     text = thinking or ""
     if not text:
         return ""
-    lowered = text.lower()
-    for marker in _NUMBER_UNCERTAIN_EXPLICIT:
-        if marker in lowered:
-            return f"思考过程提及 {marker}"
+    # 先剔除字段名本身：模型 deliberation 字段语义是常态，且 "number_uncertain"
+    # 自带 "uncertain" 子串，不剔除会走私触发近距离规则（2026-10-08 生产教训）。
+    lowered = re.sub(r"number_uncertain", " ", text.lower())
     num_pos = [m.start() for w in _NUMBER_WORDS for m in re.finditer(re.escape(w), lowered)]
     if not num_pos:
         return ""

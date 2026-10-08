@@ -1414,9 +1414,14 @@ class ProductionIncidentRegressionTest(unittest.IsolatedAsyncioTestCase):
 class ReasoningUncertaintyTest(unittest.TestCase):
     """_reasoning_number_uncertainty：思考过程暴露题号不确定即命中。"""
 
-    def test_explicit_marker(self):
-        self.assertTrue(staged._reasoning_number_uncertainty(
-            "我决定对表格的题号标记 number_uncertain 并在说明里解释"))
+    def test_field_name_mention_alone_does_not_trigger(self):
+        # 2026-10-08 生产教训：模型 deliberation 字段语义（"我标 number_uncertain
+        # 可能不需要"）是常态，字面命中会导致整批误伤，不再作为信号。
+        self.assertEqual(staged._reasoning_number_uncertainty(
+            "我决定对表格的题号标记 number_uncertain 并在说明里解释"), "")
+        self.assertEqual(staged._reasoning_number_uncertainty(
+            "注意图片底部题号是\"1.\"或\"I.\"，看起来是\"1.\"但实际可能是罗马数字\"I\"。"
+            "我标 number_uncertain 可能不需要。就写 \"1\"。"), "")
 
     def test_chinese_cooccurrence(self):
         self.assertTrue(staged._reasoning_number_uncertainty(
