@@ -217,7 +217,8 @@ class StagedOutcome(BaseModel):
 EXTRACT_SYSTEM = """你是试卷内容转写员。你的唯一任务是把图片中的题目和学生的手写答案逐题转写成文本。思考过程尽量简洁，直出转写结果。
 铁律：
 1. 只转写，不判断对错，不批改，不补全题目，不猜测。
-2. 每道题输出：no（题号，原样照抄）、stem（题干文字，含选项与填空横线位置，尽量完整）、student_answer（学生手写答案，原样转写；该题未作答写空字符串）、page（图片序号，从1开始）。
+2. 每道题输出：no（题号）、stem（题干文字，含选项与填空横线位置，尽量完整）、student_answer（学生手写答案，原样转写；该题未作答写空字符串）、page（图片序号，从1开始）。
+   题号规则：照抄印刷题号；如试卷分版块（如 V、VI），题号必须写成"版块-题号"形式（如 V-1、VI-3），保证整卷题号唯一——同一数字在多个版块出现时（如三个"1"），只写数字会导致题号重复、无法区分；无版块时直接写印刷题号。
 3. 字迹无法辨认时：handwriting_uncertain 写 true，student_answer 写空字符串，在 uncertain_note 里说明（如"第2问笔迹潦草无法辨认"）——绝不猜一个答案填进去。
 4. 数学公式尽量保留原样字符（如 x²、分数写成 a/b 形式）。
 5. 题干防幻觉：stem 必须逐字照抄图片中的印刷文字，图片上没有的文字一个字也不许写；禁止按"常见题型"推测题干、补全选项、编造题号或题型。题干拿不准时 stem 留空、stem_uncertain 写 true 并在 stem_note 说明原因——绝不编造题干。
@@ -919,6 +920,29 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
             q.number_note = ((q.number_note + "；" if q.number_note else "")
                              + f"思考过程兜底：{r_reason}")
         msg = f"思考过程暴露题号不确定（{r_reason}），{len(qs)} 题题号标存疑"
+        log.warning("分阶段批改[extract] %s", msg)
+        stage_notes.append(msg)
+
+    # 题号重复检测：同一题号出现多次时无法唯一标识，下游按题号 key 的
+    # 环节（比对 statuses、诊断校验、UID）会塌。把重复题号的题全部标
+    # number_uncertain，不送求解（fail-closed）。
+    # （2026-10-08 生产事故：extract 吐出 9,10,1-8,1-5,1（三个"1"），
+    # number_verify 位置比对"序列一致"通过，下游 diagnose"诊断缺题"致任务失败）
+    dup_counts: Dict[str, int] = {}
+    for q in qs:
+        key = unicodedata.normalize("NFKC", str(q.no or "")).strip()
+        dup_counts[key] = dup_counts.get(key, 0) + 1
+    dup_nos = sorted([k for k, c in dup_counts.items() if c > 1])
+    if dup_nos:
+        for q in qs:
+            key = unicodedata.normalize("NFKC", str(q.no or "")).strip()
+            if key in dup_nos:
+                q.number_uncertain = True
+                add = (f"题号重复（「{key}」出现 {dup_counts[key]} 次），"
+                       f"无法唯一标识题目，未独立求解")
+                q.number_note = ((q.number_note + "；" if q.number_note else "")
+                                 + add)
+        msg = f"题号重复 {len(dup_nos)} 组（{', '.join(dup_nos[:5])}），相关题标存疑"
         log.warning("分阶段批改[extract] %s", msg)
         stage_notes.append(msg)
 

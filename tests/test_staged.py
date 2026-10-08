@@ -1544,3 +1544,59 @@ class NumberVerifySectionPrefixTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(qs[0].number_uncertain)
         self.assertFalse(qs[1].number_uncertain)
         self.assertIn("一致", note)
+
+
+class DuplicateNumberTest(unittest.IsolatedAsyncioTestCase):
+    """题号重复 fail-closed：2026-10-08 生产事故回归。
+
+    extract 吐出 9,10,1-8,1-5,1（三个"1"），number_verify 位置比对
+    "序列一致"通过，下游 diagnose"诊断缺题"致任务失败。
+    """
+
+    def setUp(self):
+        self.calls = []
+        self.img = [(_tiny_jpeg(), "image/jpeg")]
+
+    async def test_duplicate_numbers_marked_uncertain(self):
+        extract_json = json.dumps({"questions": [
+            {"no": "9", "stem": "s9", "student_answer": "a", "page": "1",
+             "handwriting_uncertain": False, "uncertain_note": ""},
+            {"no": "1", "stem": "s1a", "student_answer": "b", "page": "1",
+             "handwriting_uncertain": False, "uncertain_note": ""},
+            {"no": "1", "stem": "s1b", "student_answer": "c", "page": "1",
+             "handwriting_uncertain": False, "uncertain_note": ""},
+        ]}, ensure_ascii=False)
+        # 复核照抄同一序列：位置比对通过，重复问题只能由服务端重复检测发现
+        verify_json = json.dumps({"numbers": ["9", "1", "1"]}, ensure_ascii=False)
+        scripts = {"fake": {"extract": [extract_json],
+                            "number_verify": [verify_json]}}
+        parsed, calls, total_cost = await staged.extract_stage(
+            self.img, "英语", "七年级", "", make_settings("fake"), ["fake"],
+            provider_factory=factory_for(scripts, self.calls),
+            images_prepared=True)
+        by_no = {}
+        for q in parsed.questions:
+            by_no.setdefault(q.no, []).append(q)
+        self.assertFalse(by_no["9"][0].number_uncertain)
+        self.assertEqual(len(by_no["1"]), 2)
+        for q in by_no["1"]:
+            self.assertTrue(q.number_uncertain)
+            self.assertIn("题号重复", q.number_note)
+
+    async def test_unique_numbers_untouched(self):
+        extract_json = json.dumps({"questions": [
+            {"no": "V-1", "stem": "s1", "student_answer": "a", "page": "1",
+             "handwriting_uncertain": False, "uncertain_note": ""},
+            {"no": "VI-1", "stem": "s2", "student_answer": "b", "page": "1",
+             "handwriting_uncertain": False, "uncertain_note": ""},
+        ]}, ensure_ascii=False)
+        verify_json = json.dumps({"numbers": ["1", "1"]}, ensure_ascii=False)
+        scripts = {"fake": {"extract": [extract_json],
+                            "number_verify": [verify_json]}}
+        parsed, calls, notes = await staged.extract_stage(
+            self.img, "英语", "七年级", "", make_settings("fake"), ["fake"],
+            provider_factory=factory_for(scripts, self.calls),
+            images_prepared=True)
+        # "V-1" 与 "VI-1" 是不同的题号（仅比对时去前缀），不算重复
+        for q in parsed.questions:
+            self.assertFalse(q.number_uncertain, q.no)
