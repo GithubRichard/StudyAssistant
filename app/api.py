@@ -291,6 +291,52 @@ async def get_task(task_id: str, ctx: dict = Session):
     return await tasks.build_task_view(s, task)
 
 
+@router.post("/tasks/{task_id}/diagrams")
+async def generate_task_diagrams(task_id: str, ctx: dict = Session):
+    """手动为任务的数学题生成示意图（老任务补生成），结果存回 task.result_json。"""
+    import asyncio as _asyncio
+    import json as _json
+    from . import diagram as _diagram
+    from .providers import make_provider as _make_provider
+    from .config import provider_chain as _chain
+
+    s = get_settings()
+    task = await db.get_task(s.db_path, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    try:
+        auth.ensure_owner(task["openid"], ctx)
+    except auth.AuthError as e:
+        raise HTTPException(e.status_code, e.message) from e
+
+    from .tasks import normalize_result
+    result = normalize_result(task.get("result_json"))
+    if not result:
+        raise HTTPException(400, "任务无可用结果")
+    subj = task.get("subject") or result.get("subject", "") or ""
+    missing = [q for q in (result.get("questions") or [])
+               if q.get("uid") and not q.get("diagram_svg") and q.get("stem")
+               and _diagram.should_attempt_diagram(subj, q.get("stem", ""))]
+    if not missing:
+        return {"generated": 0, "message": "无需生成（已有示意图或无几何题）"}
+    chain = _chain(s)
+    if not chain:
+        raise HTTPException(500, "无可用模型")
+    prov = _make_provider(chain[0], s.llm.providers[chain[0]])
+    svgs = await _asyncio.gather(
+        *(_diagram.generate_diagram_svg(q["stem"], prov) for q in missing),
+        return_exceptions=True)
+    n = 0
+    for q, r in zip(missing, svgs):
+        if isinstance(r, str) and r:
+            q["diagram_svg"] = r
+            n += 1
+    if n:
+        await db.update_task(s.db_path, task_id,
+                             result_json=_json.dumps(result, ensure_ascii=False))
+    return {"generated": n, "total": len(missing)}
+
+
 @router.get("/tasks/{task_id}/orientation/{page}")
 async def orientation_preview(task_id: str, page: int, run_id: str, ctx: dict = Session):
     try:

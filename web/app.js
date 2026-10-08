@@ -888,6 +888,47 @@ async function pageResult(app, r, alive) {
   // 在结果下方给出补充材料入口，后端 add_followup 本来就允许 done 任务追加。
   const missing = ((task.result || {}).missing_info || []).filter((m) => (m || "").trim());
   renderResultView(app, task, { title: "批改结果", followup: missing.length > 0 });
+  if (!alive()) return;
+  bindDiagramButton(app, task, alive);
+}
+
+/* 结果页：老任务缺示意图时，提供手动生成按钮 */
+function bindDiagramButton(app, task, alive) {
+  const qs = ((task.result || {}).questions) || [];
+  const need = qs.filter((q) => q.uid && !q.diagram_svg && (q.stem || "").length > 10);
+  if (!need.length) return;
+  // 只在可能有几何题时显示（题干含图/形关键词，或科目为数学）
+  const subj = task.subject || "";
+  const geoKw = /图|正方形|长方形|三角形|圆形|梯形|阴影|面积|∠|△/;
+  const likely = subj.includes("数学") || need.some((q) => geoKw.test(q.stem || ""));
+  if (!likely) return;
+  const bar = document.createElement("div");
+  bar.className = "card";
+  bar.innerHTML = `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <span class="muted small">部分题目没有示意图</span>
+    <button class="btn primary small" id="genDiagrams">生成示意图</button>
+    <span class="muted small" id="genDiagramsMsg"></span></div>`;
+  const page = app.querySelector(".page");
+  if (page) page.insertBefore(bar, page.firstChild);
+  bar.querySelector("#genDiagrams").onclick = async (e) => {
+    const btn = e.target, msg = bar.querySelector("#genDiagramsMsg");
+    btn.disabled = true;
+    msg.textContent = "生成中，请稍候…";
+    try {
+      const r = await S.api(`/tasks/${encodeURIComponent(task.id)}/diagrams`, { method: "POST" });
+      if (!alive()) return;
+      if (r.generated > 0) {
+        msg.textContent = `已生成 ${r.generated} 张，刷新页面查看`;
+        setTimeout(() => location.reload(), 1200);
+      } else {
+        msg.textContent = r.message || "无需生成";
+        btn.disabled = false;
+      }
+    } catch (err) {
+      msg.textContent = err.message || "生成失败";
+      btn.disabled = false;
+    }
+  };
 }
 
 /* ---------------- 做题页（一题一屏） ---------------- */
