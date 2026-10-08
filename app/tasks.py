@@ -656,6 +656,31 @@ class TaskRunner:
             md = (arch.get("content_markdown") or "").strip()
             arch["content_markdown"] = f"{md}\n\n{review_md}" if md else review_md
 
+        # 数学题示意图：结果定稿时按题干 AI 重绘 SVG（不依赖台账，
+        # 未记入台账的题结果页也要能看）
+        subject = result.get("subject") or task.get("subject") or ""
+        if diagram.is_math_subject(subject):
+            try:
+                chain = provider_chain(s)
+                if chain:
+                    prov = make_provider(chain[0], s.llm.providers[chain[0]])
+                    qs = [q for q in (result.get("questions") or [])
+                          if q.get("uid") and not q.get("diagram_svg")]
+                    if qs:
+                        svgs = await asyncio.gather(
+                            *(diagram.generate_diagram_svg(q.get("stem", ""), prov)
+                              for q in qs),
+                            return_exceptions=True)
+                        n = 0
+                        for q, r in zip(qs, svgs):
+                            if isinstance(r, str) and r:
+                                q["diagram_svg"] = r
+                                n += 1
+                        if n:
+                            log.info("task_id=%s 示意图已生成 %d 张", task_id, n)
+            except Exception as e:
+                log.warning("task_id=%s 示意图生成跳过：%s", task_id, e)
+
         archive = await workspace.apply_archive(s, task, run, result)
 
         # 归档成功后执行受控 Git 同步（仅提交本次授权文件）；未启用或失败都如实记录
@@ -886,32 +911,6 @@ async def _write_ledger(settings: Settings, task: Dict[str, Any], result: Dict[s
     openid = task["openid"]
     written = 0
 
-    # 数学错题示意图：按题干 AI 重绘 SVG（fail-open，失败不阻断台账）
-    want_diagram = diagram.is_math_subject(subject)
-    diagram_svgs: Dict[str, str] = {}
-    if want_diagram:
-        try:
-            chain = provider_chain(settings)
-            if chain:
-                prov = make_provider(chain[0], settings.llm.providers[chain[0]])
-                stems = {}
-                for question in result.get("questions") or []:
-                    uid = str(question.get("uid") or "").strip()
-                    if not uid or question.get("status") not in LEDGER_STATUSES:
-                        continue
-                    stems[uid] = question.get("stem", "")
-                if stems:
-                    results = await asyncio.gather(
-                        *(diagram.generate_diagram_svg(s, prov) for s in stems.values()),
-                        return_exceptions=True)
-                    for uid, r in zip(stems.keys(), results):
-                        if isinstance(r, str) and r:
-                            diagram_svgs[uid] = r
-                    if diagram_svgs:
-                        log.info("台账示意图已生成 %d 张", len(diagram_svgs))
-        except Exception as e:
-            log.warning("台账示意图生成跳过：%s", e)
-
     for question in result.get("questions") or []:
         uid = str(question.get("uid") or "").strip()
         if not uid or question.get("status") not in LEDGER_STATUSES:
@@ -931,7 +930,7 @@ async def _write_ledger(settings: Settings, task: Dict[str, Any], result: Dict[s
             "status": question.get("status", ""),
             "remediation_state": (question.get("remediation") or {}).get("state", ""),
             "archive_path": archive_rel,
-            "diagram_svg": diagram_svgs.get(uid, ""),
+            "diagram_svg": question.get("diagram_svg", ""),
         })
         written += 1
 

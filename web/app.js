@@ -716,7 +716,7 @@ function resultBodyHtml(task, questions, ledgerByUid) {
 
   const qCard = (q) => {
     const entry = q.uid ? ledgerByUid[q.uid] : null;
-    const diagramSvg = entry && entry.diagram_svg ? entry.diagram_svg : "";
+    const diagramSvg = q.diagram_svg || (entry && entry.diagram_svg) || "";
     return `
     <div class="card q-card q-${esc(q.status)}" data-qid="${esc(q.id)}">
       <div class="q-head">
