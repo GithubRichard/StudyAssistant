@@ -1545,6 +1545,10 @@ class NumberVerifyProviderTest(unittest.IsolatedAsyncioTestCase):
         # 复核 prompt 必须包含小题口径约定
         self.assertIn("20(1)", staged.NUMBER_VERIFY_SYSTEM)
         self.assertIn("小题", staged.NUMBER_VERIFY_SYSTEM)
+        # 提取 prompt 必须包含父题干条件继承规则
+        # （2026-10-08 生产：复查发现 20(1)/20(2) 的 stem 缺父题干条件
+        # a+b=12 等，致首轮误判"条件不足" uncertain）
+        self.assertIn("父题干条件继承", staged.EXTRACT_SYSTEM)
 
     async def test_uses_configured_independent_provider(self):
         from unittest.mock import patch
