@@ -620,6 +620,11 @@ class TaskRunner:
                 "复查输出未通过覆盖对账：" + "；".join(problems), meta)
 
         merged = review.apply_review_result(result, targets, reviews_by_id, overflow, meta)
+        if review.detect_image_link_failure(reviews_by_id, meta.get("coverage", "")):
+            log.warning("复查图片链路故障 task_id=%s：已附 %d 张原图但复查方全部"
+                        "以'未能直接读取'为由 unverified，图片未送达模型；"
+                        "请排查 Hermes 网关图片透传或更换支持视觉的复查模型/路由",
+                        task_id, len(images))
         try:
             hermes.validate_result(merged)
         except hermes.HermesResultInvalid as e:

@@ -695,3 +695,47 @@ class ReviewPipelineTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _unverified_item(qid, note):
+    return {"id": qid, "transcript_ok": None, "reread_answer": "",
+            "state": "unverified", "note": note, "basis": ""}
+
+
+class DetectImageLinkFailureTest(unittest.TestCase):
+    """复查图片链路故障检测：附了原图但复查方全部以"没拿到图"为由 unverified。"""
+
+    HINT = "无法核查：本次会话未获得可直接读取的原图数据，仅收到图片文字摘要"
+
+    def test_detects_when_all_unverified_for_no_image(self):
+        by_id = {f"q{i}": _unverified_item(f"q{i}", self.HINT) for i in range(3)}
+        self.assertTrue(review.detect_image_link_failure(by_id, "reread"))
+
+    def test_transcript_only_never_flags(self):
+        by_id = {f"q{i}": _unverified_item(f"q{i}", self.HINT) for i in range(3)}
+        self.assertFalse(review.detect_image_link_failure(by_id, "transcript_only"))
+
+    def test_any_confirmed_result_clears(self):
+        by_id = {"q0": _unverified_item("q0", self.HINT),
+                 "q1": {"id": "q1", "transcript_ok": True, "reread_answer": "x",
+                        "state": "agreed", "note": "", "basis": ""}}
+        self.assertFalse(review.detect_image_link_failure(by_id, "reread"))
+
+    def test_genuinely_illegible_does_not_flag(self):
+        # 真看不清（无图片链路信号词）不应误报为链路故障
+        by_id = {f"q{i}": _unverified_item(f"q{i}", "字迹潦草无法辨认") for i in range(2)}
+        self.assertFalse(review.detect_image_link_failure(by_id, "reread"))
+
+    def test_empty_reviews_never_flags(self):
+        self.assertFalse(review.detect_image_link_failure({}, "reread"))
+
+    def test_summary_carries_link_failure_note(self):
+        data = copy.deepcopy(LEARNING_RESULT)
+        sent = data["questions"][:2]
+        items = [_unverified_item(q["id"], self.HINT) for q in sent]
+        by_id, problems = review.reconcile_reviews(sent, items)
+        self.assertEqual(problems, [])
+        result = review.apply_review_result(data, sent, by_id, [], {
+            "coverage": "reread", "model_identity": "confirmed",
+            "model_requested": "hy4", "model_reported": "hy4"})
+        self.assertIn("图片链路故障", result["review_summary"]["note"])

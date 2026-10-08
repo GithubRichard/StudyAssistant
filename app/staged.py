@@ -620,8 +620,17 @@ SINGLE_QUESTION_VERIFY_SYSTEM = """你是试卷单题复核员。你会看到作
 最终回答必须包含且仅包含一个 ```json 代码块，不要输出其他文字。"""
 
 
+# 版块前缀：罗马数字 + 分隔符（如 "V-"、"VI."、"IV_"）
+_SECTION_PREFIX_RE = re.compile(r"^(?:[IVXivx]+)[\-._\s]+")
+
+
 def _norm_no(s: Any) -> str:
-    return unicodedata.normalize("NFKC", str(s or "")).strip()
+    t = unicodedata.normalize("NFKC", str(s or "")).strip()
+    # 版块前缀归一：转写侧常带版块（如 "V-1"），复核侧只读印刷题号（如 "1"）。
+    # 题号复核是位置比对，去掉罗马数字版块前缀可避免 "V-1" vs "1" 这类误报
+    # （2026-10-08 生产事故：13 道带版块前缀的题被全标存疑）。
+    # 只用于复核比对，不改变存储与展示用的原始题号。
+    return _SECTION_PREFIX_RE.sub("", t)
 
 
 def _number_verify_user() -> str:

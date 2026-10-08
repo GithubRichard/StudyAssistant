@@ -221,6 +221,33 @@ def reconcile_reviews(sent: List[Dict[str, Any]],
     return by_id, problems
 
 
+# 复查图片链路故障的信号词：复查模型明确表示没拿到原图像素
+# （2026-10-08 生产事故：网关 tencent-tokenhub 把附图替换成了文字摘要，
+# 14 道题全部 unverified，复查形同虚设）
+_IMAGE_LINK_FAILURE_HINTS = ("未能直接读取", "无法读取原图", "文字摘要",
+                             "未获得可直接读取")
+
+
+def detect_image_link_failure(reviews_by_id: Dict[str, Dict[str, Any]],
+                              coverage: str) -> bool:
+    """检测复查图片链路故障。
+
+    明明附了原图（coverage=reread），复查方却全部以"没拿到图"为由
+    unverified（transcript_ok 全 null）→ 图片根本没送达模型，
+    复查形同虚设，必须让运维去修网关/换视觉模型，而不是默默接受。
+    """
+    if coverage != "reread" or not reviews_by_id:
+        return False
+    hinted = 0
+    for item in reviews_by_id.values():
+        if item.get("transcript_ok") is not None or item.get("state") != "unverified":
+            return False
+        note = str(item.get("note") or "")
+        if any(h in note for h in _IMAGE_LINK_FAILURE_HINTS):
+            hinted += 1
+    return hinted > 0
+
+
 def apply_review_result(result: Dict[str, Any], sent: List[Dict[str, Any]],
                         reviews_by_id: Dict[str, Dict[str, Any]],
                         overflow: List[str],
@@ -266,6 +293,10 @@ def apply_review_result(result: Dict[str, Any], sent: List[Dict[str, Any]],
         notes.append(f"{len(overflow)} 道题超过单次复查上限未送审")
     if unverified:
         notes.append(f"{unverified} 道题复查方无法核查")
+    if detect_image_link_failure(reviews_by_id, coverage):
+        notes.append("复查图片链路故障：已附原图但复查方表示未能直接读取，"
+                     "图片未送达模型，本次复查形同虚设；请排查网关图片透传"
+                     "或更换支持视觉的复查模型/路由")
 
     state = "completed"
     if unverified or overflow:

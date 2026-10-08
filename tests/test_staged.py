@@ -1498,3 +1498,44 @@ class NumberVerifyProviderTest(unittest.IsolatedAsyncioTestCase):
             await staged._verify_question_numbers(
                 [q], [(b"x", "image/jpeg")], settings, ["p1"], None)
         self.assertEqual(seen["chain"], ["p1"])
+
+
+class NormNoSectionPrefixTest(unittest.TestCase):
+    """_norm_no：题号复核是位置比对，去掉罗马数字版块前缀，
+    避免 "V-1"（转写） vs "1"（复核）这类误报。"""
+
+    def test_strips_section_prefix(self):
+        self.assertEqual(staged._norm_no("V-1"), "1")
+        self.assertEqual(staged._norm_no("VI-5"), "5")
+        self.assertEqual(staged._norm_no("IV.2"), "2")
+        self.assertEqual(staged._norm_no("iii_3"), "3")
+
+    def test_plain_numbers_unchanged(self):
+        self.assertEqual(staged._norm_no("1"), "1")
+        self.assertEqual(staged._norm_no("10"), "10")
+        self.assertEqual(staged._norm_no("V"), "V")  # 无分隔符的裸版块号不动
+
+    def test_still_catches_real_mismatch(self):
+        self.assertNotEqual(staged._norm_no("V-1"), staged._norm_no("2"))
+
+
+class NumberVerifySectionPrefixTest(unittest.IsolatedAsyncioTestCase):
+    async def test_section_prefixed_numbers_not_flagged(self):
+        # 2026-10-08 生产事故回归：转写 "V-1"、复核 "1" 是同一道题，不应标存疑
+        from unittest.mock import patch
+        settings = make_settings("p1")
+        qs = [staged.ExtractedQuestion(no="V-1", stem="s1", student_answer="a", page="1"),
+              staged.ExtractedQuestion(no="VI-2", stem="s2", student_answer="b", page="1")]
+        parsed = staged.NumberVerifyResult(numbers=["1", "2"])
+
+        async def fake_run_stage(stage, model_cls, chain, settings_, call,
+                                 semantic_check=None, provider_factory=None,
+                                 base_max_tokens=0):
+            return parsed, GradeOutcome(text="{}", provider="p1", model="m"), 0.0
+
+        with patch.object(staged, "_run_stage", side_effect=fake_run_stage):
+            note, _ = await staged._verify_question_numbers(
+                qs, [(b"x", "image/jpeg")], settings, ["p1"], None)
+        self.assertFalse(qs[0].number_uncertain)
+        self.assertFalse(qs[1].number_uncertain)
+        self.assertIn("一致", note)
