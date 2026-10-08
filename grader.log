@@ -1,0 +1,9 @@
+grader-1  | 2026-10-08T06:50:45.024186479Z 2026-10-08 14:50:45,022 INFO app.main: 服务启动，代码版本 57913293
+grader-1  | 2026-10-08T06:50:45.024243757Z 2026-10-08 14:50:45,022 INFO app.main: 思考过程日志 → data/logs/thinking.log（按天轮转，保留5天；不再进 docker 日志）
+grader-1  | 2026-10-08T06:50:45.024250069Z 2026-10-08 14:50:45,023 INFO app.main: 网页版入口: /web/ （目录 /srv/app/web）
+grader-1  | 2026-10-08T06:50:45.024252924Z INFO:     Started server process [7]
+grader-1  | 2026-10-08T06:50:45.024255189Z INFO:     Waiting for application startup.
+grader-1  | 2026-10-08T06:50:45.033514489Z 2026-10-08 14:50:45,033 INFO app.main: 学习工作区: /srv/app/workspace（账号 leo、binbin、anna、wx-oCjElxp24iDQz5fK6UgBShmXLUC8、family；学科 语文、数学、英语；新建 0 项；README 新建=False；.gitignore 新建=False；升级=False）
+grader-1  | 2026-10-08T06:50:45.085969256Z 2026-10-08 14:50:45,085 WARNING app.main: Hermes 未就绪: 技能列表接口不可用（Hermes 服务错误 HTTP 500），无法确认技能是否已安装，任务仍会尝试执行
+grader-1  | 2026-10-08T06:50:45.088088391Z INFO:     Application startup complete.
+grader-1  | 2026-10-08T06:50:45.097276859Z INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
