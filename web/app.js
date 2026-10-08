@@ -716,6 +716,7 @@ function resultBodyHtml(task, questions, ledgerByUid) {
 
   const qCard = (q) => {
     const entry = q.uid ? ledgerByUid[q.uid] : null;
+    const diagramSvg = entry && entry.diagram_svg ? entry.diagram_svg : "";
     return `
     <div class="card q-card q-${esc(q.status)}" data-qid="${esc(q.id)}">
       <div class="q-head">
@@ -723,6 +724,7 @@ function resultBodyHtml(task, questions, ledgerByUid) {
         <span class="q-status st-${esc(q.status)}">${esc(STATUS_LABEL[q.status] || q.status)}</span>
       </div>
       ${q.stem ? `<div class="q-stem">${esc(q.stem)}</div>` : ""}
+      ${diagramSvg ? `<div class="diagram-wrap">${diagramSvg}<div class="muted small">示意图（AI 按题干重绘，仅供参考）</div></div>` : ""}
       ${q.student_answer ? `<div class="q-row"><span class="q-label">我的作答</span><div>${esc(q.student_answer)}</div></div>` : ""}
       ${q.correct_answer ? `<div class="q-row"><span class="q-label">正确答案</span><div class="q-correct">${esc(q.correct_answer)}</div></div>` : ""}
       ${q.error_rule ? `<div class="q-row"><span class="q-label">错因</span><div>${esc(q.error_rule)}</div></div>` : ""}

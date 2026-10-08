@@ -19,9 +19,10 @@ from fastapi import (APIRouter, Depends, File, Form, Header, HTTPException, Quer
                      Request, Response, UploadFile)
 from fastapi.responses import FileResponse
 
-from . import auth, db, tasks, wechat, weekly, workspace, orientation_tasks, version
+from . import auth, db, tasks, wechat, weekly, workspace, orientation_tasks, version, diagram
 from .config import Settings, provider_chain, web_asset_version
 from .hermes import HermesClient
+from .providers import make_provider
 from .schemas import (FamilySettingsUpdate, FollowupCreate, LedgerEventCreate,
                       ManualLedgerCreate, StudyTaskCreate, OrientationConfirm)
 from .tasks import TaskError
@@ -752,6 +753,18 @@ async def get_ledger_entry(entry_id: int, ctx: dict = Session):
     row = await db.get_ledger_entry(s.db_path, ctx["openid"], entry_id)
     if not row:
         raise HTTPException(404, "台账条目不存在")
+    # 懒生成示意图：老错题（升级前写入）没有 diagram_svg，查看时补上
+    if not row.get("diagram_svg") and diagram.is_math_subject(row.get("subject", "")):
+        try:
+            chain = provider_chain(s)
+            if chain and row.get("stem"):
+                prov = make_provider(chain[0], s.llm.providers[chain[0]])
+                svg = await diagram.generate_diagram_svg(row["stem"], prov)
+                if svg:
+                    await db.update_ledger_diagram(s.db_path, ctx["openid"], entry_id, svg)
+                    row["diagram_svg"] = svg
+        except Exception as e:
+            log.warning("示意图懒生成失败 entry=%s：%s", entry_id, e)
     events = await db.list_question_events(s.db_path, ctx["openid"],
                                            row.get("question_uid", ""))
     return {"entry": _ledger_view(row), "events": events}

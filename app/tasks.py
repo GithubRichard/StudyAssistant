@@ -764,6 +764,7 @@ async def build_task_view(settings: Settings, task: Dict[str, Any]) -> Dict[str,
                 "page": row.get("page", ""), "status": row.get("status", ""),
                 "knowledge_point": row.get("knowledge_point", ""),
                 "remediation_state": row.get("remediation_state", ""),
+                "diagram_svg": row.get("diagram_svg", ""),
             }
             for row in ledger
         ],
@@ -906,6 +907,8 @@ async def _write_ledger(settings: Settings, task: Dict[str, Any], result: Dict[s
                     for uid, r in zip(stems.keys(), results):
                         if isinstance(r, str) and r:
                             diagram_svgs[uid] = r
+                    if diagram_svgs:
+                        log.info("台账示意图已生成 %d 张", len(diagram_svgs))
         except Exception as e:
             log.warning("台账示意图生成跳过：%s", e)
 

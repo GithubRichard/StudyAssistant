@@ -1331,6 +1331,16 @@ async def get_ledger_entry(db_path: str, openid: str, entry_id: int) -> Optional
         return dict(row) if row else None
 
 
+async def update_ledger_diagram(db_path: str, openid: str, entry_id: int,
+                                diagram_svg: str) -> None:
+    """更新台账条目的示意图（懒生成回填）。"""
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "UPDATE mistakes SET diagram_svg=? WHERE id=? AND openid=?",
+            (diagram_svg, entry_id, openid))
+        await db.commit()
+
+
 async def update_ledger_state(db_path: str, openid: str, entry_id: int, *,
                               remediation_state: str, last_event_at: float = 0.0,
                               archive_path: str = "") -> None:
