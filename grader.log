@@ -42,3 +42,68 @@ grader-1  | 2026-10-08T07:57:34.354695576Z 2026-10-08 15:57:34,353 WARNING app.t
 grader-1  | 2026-10-08T07:57:34.355122098Z 2026-10-08 15:57:34,354 WARNING app.tasks: 复查图片链路故障 task_id=616bdb81cb6c4296：已附 1 张原图但复查方全部以'未能直接读取'为由 unverified，图片未送达模型；请排查 Hermes 网关图片透传或更换支持视觉的复查模型/路由
 grader-1  | 2026-10-08T07:57:34.355466125Z 2026-10-08 15:57:34,355 INFO app.tasks: 复查完成 task_id=616bdb81cb6c4296 run_no=1 state=partial disagreed=0 unverified=16
 grader-1  | 2026-10-08T07:57:34.527608770Z 2026-10-08 15:57:34,527 INFO app.tasks: 任务完成 task_id=616bdb81cb6c4296 run_no=1 status=waiting_input archive=failed git=- ledger=16
+grader-1  | 2026-10-08T08:00:43.547885290Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-08T08:05:36.052291436Z 2026-10-08 16:05:36,051 INFO app.tasks: 创建学习任务 task_id=b56b13f0087648b4 type=grading kind= scope=-~- assets=1
+grader-1  | 2026-10-08T08:05:36.881042386Z 2026-10-08 16:05:36,880 INFO app.tasks: 开始执行 task_id=b56b13f0087648b4 run_no=1 budget=1200s assets=1
+grader-1  | 2026-10-08T08:05:36.881956686Z 2026-10-08 16:05:36,881 INFO app.tasks: 分阶段批改 task_id=b56b13f0087648b4 run_no=1 images=1 followup=False
+grader-1  | 2026-10-08T08:06:13.134296333Z 2026-10-08 16:06:13,133 INFO app.staged: 分阶段批改[extract]成功 provider=ds tokens=1814/8106 cost≈0.0000元
+grader-1  | 2026-10-08T08:06:13.134594353Z 2026-10-08 16:06:13,134 WARNING app.staged: 分阶段批改[extract] 思考过程暴露题号不确定（思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）），16 题题号标存疑
+grader-1  | 2026-10-08T08:06:25.070346856Z 2026-10-08 16:06:25,069 INFO app.staged: 分阶段批改[number_verify]成功 provider=ds tokens=1236/1823 cost≈0.0000元
+grader-1  | 2026-10-08T08:06:25.070372504Z 2026-10-08 16:06:25,069 INFO app.staged: 分阶段批改[extract] 题号复核完成：1 题题号不一致已标存疑（「」→复核为「18」）。
+grader-1  | 2026-10-08T08:06:35.943287295Z 2026-10-08 16:06:35,942 INFO app.staged: 分阶段批改[extract_zoom]成功 provider=ds tokens=5485/221 cost≈0.0000元
+grader-1  | 2026-10-08T08:06:35.943318414Z 2026-10-08 16:06:35,943 INFO app.staged: 分阶段批改[extract] 放大复核完成：1 题待复核，1 题转写被更新
+grader-1  | 2026-10-08T08:06:35.943765975Z 2026-10-08 16:06:35,943 INFO app.tasks: 【提取阶段转写】task_id=b56b13f0087648b4 run_no=1
+grader-1  | 2026-10-08T08:06:35.943773309Z 共提取 16 题（只转写、不判定）：
+grader-1  | 2026-10-08T08:06:35.943776755Z   题【题号存疑】｜题干：(child) are now learning to use 3D printers i…｜学生答案：exciting｜题号备注：印刷题号不可见（图片顶部截断），无法确定题号；思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）；题号复核不一致（转写「」，复核「18」）
+grader-1  | 2026-10-08T08:06:35.943781875Z   题19【题号存疑】｜题干：Some inventors have used 3D printing to creat…｜学生答案：difficulty｜题号备注：思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）
+grader-1  | 2026-10-08T08:06:35.943785612Z   题20【题号存疑】｜题干：He designed a handle that was ______ (easy) t…｜学生答案：easier｜题号备注：思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）
+grader-1  | 2026-10-08T08:06:35.943789099Z   题21【题号存疑】｜题干：This simple invention made his grandmother ve…｜学生答案：proud｜题号备注：思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）
+grader-1  | 2026-10-08T08:06:35.943792114Z   题22【题号存疑】｜题干：3D printing is also used in the medical field…｜学生答案：better｜题号备注：思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）
+grader-1  | 2026-10-08T08:06:35.943795060Z   题23【题号存疑】｜题干：The technology itself is developing rapidly, …｜学生答案：its｜题号备注：思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）
+grader-1  | 2026-10-08T08:06:35.943799268Z   题24【题号存疑】｜题干：Dr. Smith: ______（对划线部分提问）Failure is not the …｜学生答案：I believe failure is a good thing｜题号备注：思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）
+grader-1  | 2026-10-08T08:06:35.943826919Z   题25【题号存疑】｜题干：Host: I see. ______（写出恰当的一般疑问句）before trying …｜学生答案：should we ask ourselves a question｜题号备注：思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）
+grader-1  | 2026-10-08T08:06:35.943830516Z   题26【题号存疑】｜题干：Host: ______（就目的提问：在尝试新事物之前我们为什么应该设立新目标呢？）?｜学生答案：Why should we set new goals before trying something new?｜题号备注：思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）
+grader-1  | 2026-10-08T08:06:35.943834073Z   题27【题号存疑】｜题干：Host: And it's also important to celebrate sm…｜学生答案：isn't it｜题号备注：思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）
+grader-1  | 2026-10-08T08:06:35.943837509Z   题28【题号存疑】｜题干：Host: At the end of today's interview, please…｜学生答案：How can we overcome the fear of trying new things｜题号备注：思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）
+grader-1  | 2026-10-08T08:06:35.943841136Z   题29【题号存疑】｜题干：配对阅读。左栏是五个人的体育爱好，右栏是七则体育俱乐部的介绍。请为每人选择一个合适的俱乐部…｜学生答案：C｜题号备注：思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）
+grader-1  | 2026-10-08T08:06:35.943844993Z   题30【题号存疑】｜题干：配对阅读。左栏是五个人的体育爱好，右栏是七则体育俱乐部的介绍。请为每人选择一个合适的俱乐部…｜学生答案：D｜题号备注：思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）
+grader-1  | 2026-10-08T08:06:35.943848530Z   题31【题号存疑】｜题干：配对阅读。左栏是五个人的体育爱好，右栏是七则体育俱乐部的介绍。请为每人选择一个合适的俱乐部…｜学生答案：E｜题号备注：思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）
+grader-1  | 2026-10-08T08:06:35.943851966Z   题32【题号存疑】｜题干：配对阅读。左栏是五个人的体育爱好，右栏是七则体育俱乐部的介绍。请为每人选择一个合适的俱乐部…｜学生答案：F｜题号备注：思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）
+grader-1  | 2026-10-08T08:06:35.943855403Z   题33【题号存疑】｜题干：配对阅读。左栏是五个人的体育爱好，右栏是七则体育俱乐部的介绍。请为每人选择一个合适的俱乐部…｜学生答案：B｜题号备注：思考过程兜底：思考过程现题号不确定表述（…o: "unnumbered"。我写 no: ""，加 number_note。  好，写 JSON…）
+grader-1  | 2026-10-08T08:06:36.204269602Z 2026-10-08 16:06:36,202 INFO app.tasks: 开始复查 task_id=b56b13f0087648b4 run_no=1 送审=16 超限=0 timeout=600s coverage=reread images=1
+grader-1  | 2026-10-08T08:06:36.204301372Z 2026-10-08 16:06:36,202 INFO app.hermes: 调用复查模型 session=review-b56b13f0087648b4-1 model=glm（provider=zai） timeout=600.0s
+grader-1  | 2026-10-08T08:07:41.293779580Z 2026-10-08 16:07:41,293 INFO app.hermes: 复查请求耗时 65s session=review-b56b13f0087648b4-1
+grader-1  | 2026-10-08T08:07:41.295469527Z 2026-10-08 16:07:41,294 INFO app.hermes: 复查完成 session=review-b56b13f0087648b4-1 题数=16 网关报告模型=glm tokens=23249/2046
+grader-1  | 2026-10-08T08:07:41.295486759Z 2026-10-08 16:07:41,294 WARNING app.tasks: 复查模型身份仅核对到模型名 task_id=b56b13f0087648b4: 网关报告模型 glm 与期望一致且不同于首轮模型，但网关未报告 provider，无法核对是否为 zai
+grader-1  | 2026-10-08T08:07:41.295490396Z 2026-10-08 16:07:41,294 WARNING app.tasks: 复查图片链路故障 task_id=b56b13f0087648b4：已附 1 张原图但复查方全部以'未能直接读取'为由 unverified，图片未送达模型；请排查 Hermes 网关图片透传或更换支持视觉的复查模型/路由
+grader-1  | 2026-10-08T08:07:41.295493272Z 2026-10-08 16:07:41,295 INFO app.tasks: 复查完成 task_id=b56b13f0087648b4 run_no=1 state=partial disagreed=0 unverified=16
+grader-1  | 2026-10-08T08:07:41.440237146Z 2026-10-08 16:07:41,439 INFO app.tasks: 任务完成 task_id=b56b13f0087648b4 run_no=1 status=waiting_input archive=failed git=- ledger=16
+grader-1  | 2026-10-08T08:10:08.205008757Z 2026-10-08 16:10:08,204 INFO app.tasks: 创建学习任务 task_id=d440e44ee4e542f2 type=grading kind= scope=-~- assets=1
+grader-1  | 2026-10-08T08:10:09.565735198Z 2026-10-08 16:10:09,565 INFO app.tasks: 开始执行 task_id=d440e44ee4e542f2 run_no=1 budget=1200s assets=1
+grader-1  | 2026-10-08T08:10:09.566336719Z 2026-10-08 16:10:09,566 INFO app.tasks: 分阶段批改 task_id=d440e44ee4e542f2 run_no=1 images=1 followup=False
+grader-1  | 2026-10-08T08:10:22.362469159Z 2026-10-08 16:10:22,362 INFO app.staged: 分阶段批改[extract]成功 provider=ds tokens=1805/1364 cost≈0.0000元
+grader-1  | 2026-10-08T08:10:24.320323418Z 2026-10-08 16:10:24,320 INFO app.staged: 分阶段批改[number_verify]成功 provider=ds tokens=1227/32 cost≈0.0000元
+grader-1  | 2026-10-08T08:10:24.320459094Z 2026-10-08 16:10:24,320 WARNING app.staged: 分阶段批改[extract] 题号复核数量不一致（转写 2 题，复核 1 题），2 题题号标存疑
+grader-1  | 2026-10-08T08:10:59.459683433Z 2026-10-08 16:10:59,459 INFO app.staged: 分阶段批改[extract_zoom]成功 provider=ds tokens=5459/6874 cost≈0.0000元
+grader-1  | 2026-10-08T08:10:59.460202369Z 2026-10-08 16:10:59,459 INFO app.staged: 分阶段批改[extract] 放大复核完成：1 题待复核，1 题转写被更新
+grader-1  | 2026-10-08T08:10:59.460235321Z 2026-10-08 16:10:59,459 INFO app.tasks: 【提取阶段转写】task_id=d440e44ee4e542f2 run_no=1
+grader-1  | 2026-10-08T08:10:59.460240030Z 共提取 2 题（只转写、不判定）：
+grader-1  | 2026-10-08T08:10:59.460243847Z   题20(1)【题号存疑】｜题干：甲、乙两张正方形纸片的边长分别为 a、b，且 a>b>0，a+b=12。图1中两纸片底边共…｜学生答案：解：(a-b)²=16
+grader-1  | 2026-10-08T08:10:59.460249267Z a+b=12
+grader-1  | 2026-10-08T08:10:59.460252603Z (a+b)²-4ab=(a+b)²-(a-b)²
+grader-1  | 2026-10-08T08:10:59.460255819Z =144-16
+grader-1  | 2026-10-08T08:10:59.460258985Z =128
+grader-1  | 2026-10-08T08:10:59.460262231Z ab=32
+grader-1  | 2026-10-08T08:10:59.460265438Z a²+b²=(a+b)²-2ab
+grader-1  | 2026-10-08T08:10:59.460291747Z =144-64=80｜备注：该小题有几处涂改，但主体内容可辨认｜题号备注：题号复核数量不一致（转写2题/复核1题）
+grader-1  | 2026-10-08T08:10:59.460308007Z   题20(2)【题号存疑】｜题干：(2) 求图1的阴影面积。图1阴影是两正方形去掉两个白色三角形后的部分。(4分)｜学生答案：解：S = a² + b² - (a+b)a/2 - (a+b)b/2
+grader-1  | 2026-10-08T08:10:59.460311314Z = a² + b² - 6a - 6b
+grader-1  | 2026-10-08T08:10:59.460313668Z = 80 - 72 = 8｜题号备注：题号复核数量不一致（转写2题/复核1题）
+grader-1  | 2026-10-08T08:10:59.696440527Z 2026-10-08 16:10:59,696 INFO app.tasks: 开始复查 task_id=d440e44ee4e542f2 run_no=1 送审=2 超限=0 timeout=600s coverage=reread images=1
+grader-1  | 2026-10-08T08:10:59.696522823Z 2026-10-08 16:10:59,696 INFO app.hermes: 调用复查模型 session=review-d440e44ee4e542f2-1 model=glm（provider=zai） timeout=600.0s
+grader-1  | 2026-10-08T08:16:58.506039773Z 2026-10-08 16:16:58,505 INFO app.hermes: 复查请求耗时 359s session=review-d440e44ee4e542f2-1
+grader-1  | 2026-10-08T08:16:58.506083084Z 2026-10-08 16:16:58,505 INFO app.hermes: 复查完成 session=review-d440e44ee4e542f2-1 题数=2 网关报告模型=glm tokens=20539/15271
+grader-1  | 2026-10-08T08:16:58.506271037Z 2026-10-08 16:16:58,506 WARNING app.tasks: 复查模型身份仅核对到模型名 task_id=d440e44ee4e542f2: 网关报告模型 glm 与期望一致且不同于首轮模型，但网关未报告 provider，无法核对是否为 zai
+grader-1  | 2026-10-08T08:16:58.506445245Z 2026-10-08 16:16:58,506 WARNING app.tasks: 复查图片链路故障 task_id=d440e44ee4e542f2：已附 1 张原图但复查方全部以'未能直接读取'为由 unverified，图片未送达模型；请排查 Hermes 网关图片透传或更换支持视觉的复查模型/路由
+grader-1  | 2026-10-08T08:16:58.506754757Z 2026-10-08 16:16:58,506 INFO app.tasks: 复查完成 task_id=d440e44ee4e542f2 run_no=1 state=partial disagreed=0 unverified=2
+grader-1  | 2026-10-08T08:16:58.551082039Z 2026-10-08 16:16:58,550 INFO app.tasks: 任务完成 task_id=d440e44ee4e542f2 run_no=1 status=waiting_input archive=failed git=- ledger=2
