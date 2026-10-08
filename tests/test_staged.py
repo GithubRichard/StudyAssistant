@@ -1517,6 +1517,35 @@ class ReasoningUncertaintyIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
 
 class NumberVerifyProviderTest(unittest.IsolatedAsyncioTestCase):
+    async def test_subquestion_numbers_match(self):
+        # 小题口径：转写 20(1)/20(2)，复核也按小题列出 → 位置一致，不标存疑
+        # （2026-10-08 生产：复核 prompt 没覆盖小题，只回 ["20"]，
+        # 数量不一致致两小题全标存疑）
+        calls = []
+        img = [(_tiny_jpeg(), "image/jpeg")]
+        extract_json = json.dumps({"questions": [
+            {"no": "20(1)", "stem": "s1", "student_answer": "80", "page": "1",
+             "handwriting_uncertain": False, "uncertain_note": ""},
+            {"no": "20(2)", "stem": "s2", "student_answer": "8", "page": "1",
+             "handwriting_uncertain": False, "uncertain_note": ""},
+        ]}, ensure_ascii=False)
+        thinking_outcome = GradeOutcome(
+            text=extract_json, input_tokens=10, output_tokens=20,
+            provider="p1", model="fake-p1", thinking="转写完成。")
+        verify_json = json.dumps({"numbers": ["20(1)", "20(2)"]},
+                                 ensure_ascii=False)
+        scripts = {"p1": {"extract": [thinking_outcome],
+                          "number_verify": [verify_json]}}
+        parsed, _, _ = await staged.extract_stage(
+            img, "数学", "七年级", "", make_settings("p1"), ["p1"],
+            provider_factory=factory_for(scripts, calls),
+            images_prepared=True)
+        for q in parsed.questions:
+            self.assertFalse(q.number_uncertain, q.no)
+        # 复核 prompt 必须包含小题口径约定
+        self.assertIn("20(1)", staged.NUMBER_VERIFY_SYSTEM)
+        self.assertIn("小题", staged.NUMBER_VERIFY_SYSTEM)
+
     async def test_uses_configured_independent_provider(self):
         from unittest.mock import patch
         settings = make_settings("p1", "verifier")
