@@ -1438,6 +1438,14 @@ class ReasoningUncertaintyTest(unittest.TestCase):
         self.assertEqual(staged._reasoning_number_uncertainty(
             "学生答案有两个不确定"), "")
 
+    def test_negation_does_not_trigger(self):
+        # 2026-10-08 生产："如果确定红笔，无需不确定"被误判，
+        # 模型本意是不标，否定反转不是信号。
+        self.assertEqual(staged._reasoning_number_uncertainty(
+            "题号旁字母为红笔。如果确定红笔，无需不确定。但为了安全，我可以在 note 里写"), "")
+        self.assertEqual(staged._reasoning_number_uncertainty(
+            "题号 1-3 没有不确定的，都很清楚"), "")
+
 
 class ReasoningUncertaintyIntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def test_reasoning_uncertainty_washed_by_verify(self):
@@ -1599,6 +1607,10 @@ class NormNoSectionPrefixTest(unittest.TestCase):
         self.assertEqual(staged._norm_no("VI-5"), "5")
         self.assertEqual(staged._norm_no("IV.2"), "2")
         self.assertEqual(staged._norm_no("iii_3"), "3")
+        # 2026-10-08 生产：中文数字版块（四-24 vs 24）
+        self.assertEqual(staged._norm_no("四-24"), "24")
+        self.assertEqual(staged._norm_no("五-29"), "29")
+        self.assertEqual(staged._norm_no("十.1"), "1")
 
     def test_plain_numbers_unchanged(self):
         self.assertEqual(staged._norm_no("1"), "1")

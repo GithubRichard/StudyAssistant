@@ -634,7 +634,10 @@ SINGLE_QUESTION_VERIFY_SYSTEM = """你是试卷单题复核员。你会看到作
 
 
 # 版块前缀：罗马数字 + 分隔符（如 "V-"、"VI."、"IV_"）
-_SECTION_PREFIX_RE = re.compile(r"^(?:[IVXivx]+)[\-._\s]+")
+# 版块前缀：罗马数字（V、VI）或中文数字（一、二…十），后接分隔符。
+# 2026-10-08 生产：英文卷用"四-24""五-29"（中文数字版块），复核只读"24"，
+# 旧正则只认罗马数字致 10 题误报。
+_SECTION_PREFIX_RE = re.compile(r"^(?:[IVXivx]+|[一二三四五六七八九十]+)[\-._\s]+")
 
 
 def _norm_no(s: Any) -> str:
@@ -664,6 +667,9 @@ _NUMBER_WORDS = ("题号", "编号", "题序", "number")
 _UNCERTAIN_WORDS = ("不确定", "拿不准", "没把握", "不肯定", "疑似", "冲突",
                     "对不上", "对不齐", "存疑", "可能有误", "可能读错",
                     "uncertain", "unsure", "ambiguous")
+# 否定反转词：不确定词前出现这些词时，不是真正的信号
+# （2026-10-08 生产："如果确定红笔，无需不确定"被误判，模型本意是不标）
+_NEGATION_WORDS = ("无需", "不用", "不需要", "没有", "不是", "并未", "未")
 # 题号词与不确定词同现时的最大字符距离（防"题号是确定的……答案不确定"式误伤）
 _NUMBER_UNCERTAIN_WINDOW = 40
 
@@ -684,6 +690,10 @@ def _reasoning_number_uncertainty(thinking: str) -> str:
         return ""
     for w in _UNCERTAIN_WORDS:
         for m in re.finditer(re.escape(w), lowered):
+            # 否定反转："无需不确定"不是信号，跳过
+            pre = lowered[max(0, m.start() - 4):m.start()]
+            if any(neg in pre for neg in _NEGATION_WORDS):
+                continue
             if any(abs(m.start() - p) <= _NUMBER_UNCERTAIN_WINDOW for p in num_pos):
                 snippet = text[max(0, m.start() - 20):m.start() + 30].replace("\n", " ")
                 return f"思考过程现题号不确定表述（…{snippet}…）"
