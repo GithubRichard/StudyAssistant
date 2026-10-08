@@ -14,9 +14,10 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from . import db, git_sync, grading, hermes, review, scope, staged, workspace, orientation, thinking
+from . import db, git_sync, grading, hermes, review, scope, staged, workspace, orientation, thinking, diagram
 from .config import Settings, provider_chain
 from .hermes import HermesClient, HermesError, HermesUncertain
+from .providers import make_provider
 from .schemas import (fill_question_uids, grading_result_to_v3, normalize_result,
                       request_hash)
 from .staged import StageError
@@ -884,6 +885,30 @@ async def _write_ledger(settings: Settings, task: Dict[str, Any], result: Dict[s
     openid = task["openid"]
     written = 0
 
+    # 数学错题示意图：按题干 AI 重绘 SVG（fail-open，失败不阻断台账）
+    want_diagram = diagram.is_math_subject(subject)
+    diagram_svgs: Dict[str, str] = {}
+    if want_diagram:
+        try:
+            chain = provider_chain(settings)
+            if chain:
+                prov = make_provider(chain[0], settings.llm.providers[chain[0]])
+                stems = {}
+                for question in result.get("questions") or []:
+                    uid = str(question.get("uid") or "").strip()
+                    if not uid or question.get("status") not in LEDGER_STATUSES:
+                        continue
+                    stems[uid] = question.get("stem", "")
+                if stems:
+                    results = await asyncio.gather(
+                        *(diagram.generate_diagram_svg(s, prov) for s in stems.values()),
+                        return_exceptions=True)
+                    for uid, r in zip(stems.keys(), results):
+                        if isinstance(r, str) and r:
+                            diagram_svgs[uid] = r
+        except Exception as e:
+            log.warning("台账示意图生成跳过：%s", e)
+
     for question in result.get("questions") or []:
         uid = str(question.get("uid") or "").strip()
         if not uid or question.get("status") not in LEDGER_STATUSES:
@@ -903,6 +928,7 @@ async def _write_ledger(settings: Settings, task: Dict[str, Any], result: Dict[s
             "status": question.get("status", ""),
             "remediation_state": (question.get("remediation") or {}).get("state", ""),
             "archive_path": archive_rel,
+            "diagram_svg": diagram_svgs.get(uid, ""),
         })
         written += 1
 

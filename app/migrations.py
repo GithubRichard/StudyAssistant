@@ -362,6 +362,19 @@ async def run_migrations(path: str) -> dict:
                              (time.time(),))
             applied.append(5)
 
+        if 6 not in versions:
+            # v6：错题台账加 AI 重绘示意图（SVG 矢量图，数学几何题用）
+            mistake_columns = await _column_names(db, "mistakes")
+            if "diagram_svg" not in mistake_columns:
+                await db.execute(
+                    "ALTER TABLE mistakes ADD COLUMN diagram_svg TEXT NOT NULL DEFAULT ''")
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS schema_version("
+                "version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)")
+            await db.execute("INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(6, ?)",
+                             (time.time(),))
+            applied.append(6)
+
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA busy_timeout=5000")
         await db.commit()

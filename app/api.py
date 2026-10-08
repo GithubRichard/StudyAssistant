@@ -693,6 +693,7 @@ def _ledger_view(row: dict) -> dict:
         "archive_path": row.get("archive_path", ""),
         "task_id": row.get("task_id", ""),
         "note": row.get("note", ""),
+        "diagram_svg": row.get("diagram_svg", ""),
         "created_at": row.get("created_at"),
         "last_event_at": row.get("last_event_at") or row.get("created_at"),
     }

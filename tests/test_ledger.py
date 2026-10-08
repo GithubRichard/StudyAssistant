@@ -180,3 +180,27 @@ class DisputeWithdrawTest(unittest.IsolatedAsyncioTestCase):
         events = await db.list_question_events(self.db_path, "u1", "q-1")
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["result"], "disputed")
+
+
+class LedgerDiagramTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.settings = make_settings(self.tmp.name)
+        self.db_path = self.settings.db_path
+        await db.init_db(self.db_path)
+        await db.get_or_create_user(self.db_path, "u1", 5)
+
+    async def asyncTearDown(self):
+        self.tmp.cleanup()
+
+    async def test_diagram_svg_roundtrip(self):
+        svg = '<svg width="400" height="300"><rect width="10"/></svg>'
+        await db.upsert_ledger_question(
+            self.db_path, "u1", entry("q-diag", diagram_svg=svg))
+        row = await db.get_ledger_by_uid(self.db_path, "u1", "q-diag")
+        self.assertEqual(row["diagram_svg"], svg)
+        # 更新时可演进
+        await db.upsert_ledger_question(
+            self.db_path, "u1", entry("q-diag", diagram_svg="<svg/>"))
+        row = await db.get_ledger_by_uid(self.db_path, "u1", "q-diag")
+        self.assertEqual(row["diagram_svg"], "<svg/>")

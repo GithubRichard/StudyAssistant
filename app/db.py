@@ -843,7 +843,7 @@ async def latest_git_sync(db_path: str) -> Optional[dict]:
 
 _LEDGER_UPDATABLE = (
     "subject", "source", "page", "stem", "student_answer", "correct_answer",
-    "error_rule", "knowledge_point", "status", "archive_path",
+    "error_rule", "knowledge_point", "status", "archive_path", "diagram_svg",
 )
 
 
@@ -884,14 +884,15 @@ async def upsert_ledger_question(db_path: str, openid: str, entry: Dict[str, Any
             """INSERT INTO mistakes(openid, task_id, question_no, knowledge_point, note,
                                     created_at, subject, source, page, question_uid, stem,
                                     student_answer, correct_answer, error_rule, status,
-                                    remediation_state, last_event_at, archive_path)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                    remediation_state, last_event_at, archive_path, diagram_svg)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (openid, entry.get("task_id", ""), entry.get("question_no", ""),
              entry.get("knowledge_point", ""), entry.get("note", ""), now,
              entry.get("subject", ""), entry.get("source", ""), entry.get("page", ""),
              uid, entry.get("stem", ""), entry.get("student_answer", ""),
              entry.get("correct_answer", ""), entry.get("error_rule", ""),
-             entry.get("status", "wrong"), state, now, entry.get("archive_path", "")),
+             entry.get("status", "wrong"), state, now, entry.get("archive_path", ""),
+             entry.get("diagram_svg", "")),
         )
         await db.commit()
         return {"id": cur.lastrowid, "created": True}

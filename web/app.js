@@ -1052,6 +1052,7 @@ async function pageReviewDetail(app, r, alive) {
         <span class="ledger-state">${esc(STATE_LABEL[e.remediation_state] || e.remediation_state)}</span>
       </div>
       ${e.stem ? `<div class="q-stem">${esc(e.stem)}</div>` : ""}
+      ${e.diagram_svg ? `<div class="q-row"><span class="q-label">示意图</span><div class="diagram-wrap">${e.diagram_svg}<div class="muted small">AI 按题干重绘，仅供参考</div></div></div>` : ""}
       ${e.student_answer ? `<div class="q-row"><span class="q-label">我的作答</span><div>${esc(e.student_answer)}</div></div>` : ""}
       ${e.correct_answer ? `<div class="q-row"><span class="q-label">正确答案</span><div class="q-correct">${esc(e.correct_answer)}</div></div>` : ""}
       ${e.error_rule ? `<div class="q-row"><span class="q-label">错因</span><div>${esc(e.error_rule)}</div></div>` : ""}

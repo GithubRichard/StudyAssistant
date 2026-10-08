@@ -41,10 +41,10 @@ class MigrationTest(unittest.IsolatedAsyncioTestCase):
         await build_legacy_db(self.db_path)
         result = await migrations.run_migrations(self.db_path)
 
-        self.assertEqual(sorted(result["applied"]), [1, 2, 3, 4, 5])
+        self.assertEqual(sorted(result["applied"]), [1, 2, 3, 4, 5, 6])
         self.assertIsNotNone(result["backup"], "旧库升级前必须备份")
         self.assertTrue(Path(result["backup"]).exists())
-        self.assertEqual(await migrations.current_version(self.db_path), 5)
+        self.assertEqual(await migrations.current_version(self.db_path), 6)
 
         # 旧任务保留且可读
         task = await db.get_task(self.db_path, "old-task")
@@ -63,7 +63,7 @@ class MigrationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_fresh_db_has_no_backup(self):
         result = await migrations.run_migrations(self.db_path)
-        self.assertEqual(sorted(result["applied"]), [1, 2, 3, 4, 5])
+        self.assertEqual(sorted(result["applied"]), [1, 2, 3, 4, 5, 6])
         self.assertIsNone(result["backup"])
 
     async def test_new_tables_exist(self):
@@ -87,6 +87,14 @@ class MigrationTest(unittest.IsolatedAsyncioTestCase):
             cols = await migrations._column_names(conn, "task_runs")
         self.assertIn("stage", cols)
         self.assertIn("stages_json", cols)
+
+    async def test_v6_adds_diagram_svg_to_mistakes(self):
+        import aiosqlite
+
+        await db.init_db(self.db_path)
+        async with aiosqlite.connect(self.db_path) as conn:
+            cols = await migrations._column_names(conn, "mistakes")
+        self.assertIn("diagram_svg", cols)
 
 
 if __name__ == "__main__":
