@@ -1,27 +1,35 @@
-grader-1  | 2026-10-08T10:44:43.705992345Z 2026-10-08 18:44:43,702 INFO app.main: 服务启动，代码版本 19ca857d
-grader-1  | 2026-10-08T10:44:43.706041799Z 2026-10-08 18:44:43,703 INFO app.main: 思考过程日志 → data/logs/thinking.log（按天轮转，保留5天；不再进 docker 日志）
-grader-1  | 2026-10-08T10:44:43.706045376Z 2026-10-08 18:44:43,704 INFO app.main: 网页版入口: /web/ （目录 /srv/app/web）
-grader-1  | 2026-10-08T10:44:43.706047480Z INFO:     Started server process [7]
-grader-1  | 2026-10-08T10:44:43.706049353Z INFO:     Waiting for application startup.
-grader-1  | 2026-10-08T10:44:43.764579683Z 2026-10-08 18:44:43,764 INFO app.main: 学习工作区: /srv/app/workspace（账号 leo、binbin、anna、wx-oCjElxp24iDQz5fK6UgBShmXLUC8、family；学科 语文、数学、英语；新建 0 项；README 新建=False；.gitignore 新建=False；升级=False）
-grader-1  | 2026-10-08T10:44:43.895003064Z 2026-10-08 18:44:43,894 WARNING app.main: Hermes 未就绪: 技能列表接口不可用（Hermes 服务错误 HTTP 500），无法确认技能是否已安装，任务仍会尝试执行
-grader-1  | 2026-10-08T10:44:43.898281747Z INFO:     Application startup complete.
-grader-1  | 2026-10-08T10:44:43.909515302Z INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-grader-1  | 2026-10-08T10:44:56.670037434Z 2026-10-08 18:44:56,669 INFO app.tasks: 创建学习任务 task_id=1424c2dd029f4b5b type=grading kind= scope=-~- assets=1
-grader-1  | 2026-10-08T10:44:57.939295969Z 2026-10-08 18:44:57,938 INFO app.tasks: 开始执行 task_id=1424c2dd029f4b5b run_no=1 budget=1200s assets=1
-grader-1  | 2026-10-08T10:44:57.939323401Z 2026-10-08 18:44:57,939 INFO app.tasks: 分阶段批改 task_id=1424c2dd029f4b5b run_no=1 images=1 followup=False
-grader-1  | 2026-10-08T10:45:20.065461543Z 2026-10-08 18:45:20,065 INFO app.staged: 分阶段批改[extract]成功 provider=ds tokens=1871/4013 cost≈0.0000元
-grader-1  | 2026-10-08T10:45:24.577786371Z 2026-10-08 18:45:24,577 INFO app.staged: 分阶段批改[number_verify]成功 provider=glm tokens=4346/37 cost≈0.0000元
-grader-1  | 2026-10-08T10:45:24.579385858Z 2026-10-08 18:45:24,579 WARNING app.staged: 分阶段批改[extract] 题号复核数量不一致（转写 2 题，复核 3 题），2 题题号标存疑
-grader-1  | 2026-10-08T10:45:24.579727191Z 2026-10-08 18:45:24,579 INFO app.tasks: 【提取阶段转写】task_id=1424c2dd029f4b5b run_no=1
-grader-1  | 2026-10-08T10:45:24.579735647Z 共提取 2 题（只转写、不判定）：
-grader-1  | 2026-10-08T10:45:24.579738712Z   题20(1)【题号存疑】｜题干：20. 甲、乙两张正方形纸片的边长分别为a、b，且a>b>0，a+b=12。图1中两纸片底…｜学生答案：解：(a-b)²=16 a+b=12 a²+b²=(a+b)²-2ab =144-64=80｜题号备注：题号复核数量不一致（转写2题/复核3题）
-grader-1  | 2026-10-08T10:45:24.579742981Z   题20(2)【题号存疑】｜题干：20. 甲、乙两张正方形纸片的边长分别为a、b，且a>b>0，a+b=12。图1中两纸片底…｜学生答案：解：S=a²+b²-1/2a(a+b)-1/2b² =80-a(a+b)/2-b²/2 =80-(a²+ab+b²)/2 =80-(80+32)/2 =80-56 =24 S=a²+b²-(a+b)a/2-(a+b)b/2 =a²+b²-(a+b)²/2 =80-72=8｜题号备注：题号复核数量不一致（转写2题/复核3题）
-grader-1  | 2026-10-08T10:45:24.879453393Z 2026-10-08 18:45:24,879 INFO app.tasks: 开始复查 task_id=1424c2dd029f4b5b run_no=1 送审=2 超限=0 timeout=600s coverage=reread images=1
-grader-1  | 2026-10-08T10:45:24.879719936Z 2026-10-08 18:45:24,879 INFO app.hermes: 调用复查模型 session=review-1424c2dd029f4b5b-1 model=glm（provider=zai） timeout=600.0s
-grader-1  | 2026-10-08T10:48:26.046716587Z 2026-10-08 18:48:26,046 INFO app.hermes: 复查请求耗时 181s session=review-1424c2dd029f4b5b-1
-grader-1  | 2026-10-08T10:48:26.047054845Z 2026-10-08 18:48:26,046 INFO app.hermes: 复查完成 session=review-1424c2dd029f4b5b-1 题数=2 网关报告模型=glm tokens=20511/1462
-grader-1  | 2026-10-08T10:48:26.047269149Z 2026-10-08 18:48:26,047 WARNING app.tasks: 复查模型身份仅核对到模型名 task_id=1424c2dd029f4b5b: 网关报告模型 glm 与期望一致且不同于首轮模型，但网关未报告 provider，无法核对是否为 zai
-grader-1  | 2026-10-08T10:48:26.048005568Z 2026-10-08 18:48:26,047 WARNING app.tasks: 复查图片链路故障 task_id=1424c2dd029f4b5b：已附 1 张原图但复查方全部以'未能直接读取'为由 unverified，图片未送达模型；请排查 Hermes 网关图片透传或更换支持视觉的复查模型/路由
-grader-1  | 2026-10-08T10:48:26.048015877Z 2026-10-08 18:48:26,047 INFO app.tasks: 复查完成 task_id=1424c2dd029f4b5b run_no=1 state=partial disagreed=0 unverified=2
-grader-1  | 2026-10-08T10:48:26.088398393Z 2026-10-08 18:48:26,088 INFO app.tasks: 任务完成 task_id=1424c2dd029f4b5b run_no=1 status=waiting_input archive=failed git=- ledger=2
+grader-1  | 2026-10-08T11:30:45.875580191Z 2026-10-08 19:30:45,875 INFO app.main: 服务启动，代码版本 19ca857d
+grader-1  | 2026-10-08T11:30:45.878171237Z 2026-10-08 19:30:45,878 INFO app.main: 思考过程日志 → data/logs/thinking.log（按天轮转，保留5天；不再进 docker 日志）
+grader-1  | 2026-10-08T11:30:45.879158128Z 2026-10-08 19:30:45,879 INFO app.main: 网页版入口: /web/ （目录 /srv/app/web）
+grader-1  | 2026-10-08T11:30:45.879417908Z INFO:     Started server process [6]
+grader-1  | 2026-10-08T11:30:45.879460028Z INFO:     Waiting for application startup.
+grader-1  | 2026-10-08T11:30:45.939601569Z 2026-10-08 19:30:45,939 INFO app.main: 学习工作区: /srv/app/workspace（账号 leo、binbin、anna、wx-oCjElxp24iDQz5fK6UgBShmXLUC8、family；学科 语文、数学、英语；新建 0 项；README 新建=False；.gitignore 新建=False；升级=False）
+grader-1  | 2026-10-08T11:30:47.273605551Z 2026-10-08 19:30:47,269 WARNING app.main: Hermes 未就绪: 技能列表接口不可用（Hermes 服务错误 HTTP 500），无法确认技能是否已安装，任务仍会尝试执行
+grader-1  | 2026-10-08T11:30:47.292643070Z INFO:     Application startup complete.
+grader-1  | 2026-10-08T11:30:47.316748346Z INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+grader-1  | 2026-10-08T11:31:24.081109962Z 2026-10-08 19:31:24,080 INFO app.tasks: 创建学习任务 task_id=1e4c5d3fbc284029 type=grading kind= scope=-~- assets=1
+grader-1  | 2026-10-08T11:31:25.362283540Z 2026-10-08 19:31:25,361 INFO app.tasks: 开始执行 task_id=1e4c5d3fbc284029 run_no=1 budget=1200s assets=1
+grader-1  | 2026-10-08T11:31:25.362320870Z 2026-10-08 19:31:25,362 INFO app.tasks: 分阶段批改 task_id=1e4c5d3fbc284029 run_no=1 images=1 followup=False
+grader-1  | 2026-10-08T11:31:38.254516831Z 2026-10-08 19:31:38,254 INFO app.staged: 分阶段批改[extract]成功 provider=ds tokens=1862/1067 cost≈0.0000元
+grader-1  | 2026-10-08T11:31:42.000957406Z 2026-10-08 19:31:42,000 INFO app.staged: 分阶段批改[number_verify]成功 provider=glmf tokens=4406/70 cost≈0.0000元
+grader-1  | 2026-10-08T11:31:42.000991951Z 2026-10-08 19:31:42,000 INFO app.staged: 分阶段批改[extract] 题号复核完成：题号序列一致。
+grader-1  | 2026-10-08T11:31:42.000995498Z 2026-10-08 19:31:42,000 INFO app.tasks: 【提取阶段转写】task_id=1e4c5d3fbc284029 run_no=1
+grader-1  | 2026-10-08T11:31:42.000997952Z 共提取 2 题（只转写、不判定）：
+grader-1  | 2026-10-08T11:31:42.001000327Z   题20(1)｜题干：(1) 求a²+b²。（3分）｜学生答案：解：(a-b)²=16
+grader-1  | 2026-10-08T11:31:42.001003202Z a+b=12
+grader-1  | 2026-10-08T11:31:42.001005527Z ab=32
+grader-1  | 2026-10-08T11:31:42.001007691Z (a+b)²-(a-b)²=4ab=(a+b)²-(a-b)²=144-16=128
+grader-1  | 2026-10-08T11:31:42.001010005Z a²+b²=(a+b)²-2ab=144-64=80
+grader-1  | 2026-10-08T11:31:42.001012299Z   题20(2)｜题干：(2) 求图1的阴影面积。图1阴影是两正方形去掉两个白色三角形后的部分。（4分）｜学生答案：解：S=a²+b²-(a+b)a/2-(a+b)b/2
+grader-1  | 2026-10-08T11:31:42.001015105Z =80-(a²+ab)/2-(ab+b²)/2 = 80-(a²+2ab+b²)/2 = 80-144/2 = 80-72
+grader-1  | 2026-10-08T11:31:42.001017409Z S=a²+b²-(a+b)a/2-(a+b)b/2
+grader-1  | 2026-10-08T11:31:42.001019693Z a²+b²-6a-6b
+grader-1  | 2026-10-08T11:31:42.001021917Z 80-72=8｜备注：第(2)问手写中有较多涂改划掉的内容，已按可辨认内容转写
+grader-1  | 2026-10-08T11:31:44.181504506Z 2026-10-08 19:31:44,181 INFO app.staged: 分阶段批改[solve]成功 provider=ds tokens=352/358 cost≈0.0000元
+grader-1  | 2026-10-08T11:31:44.391264529Z 2026-10-08 19:31:44,390 INFO app.tasks: 开始复查 task_id=1e4c5d3fbc284029 run_no=1 送审=2 超限=0 timeout=600s coverage=reread images=1
+grader-1  | 2026-10-08T11:31:44.391295517Z 2026-10-08 19:31:44,390 INFO app.hermes: 调用复查模型 session=review-1e4c5d3fbc284029-1 model=glmf（provider=zai） timeout=600.0s
+grader-1  | 2026-10-08T11:32:57.545333942Z 2026-10-08 19:32:57,544 INFO app.hermes: 复查请求耗时 73s session=review-1e4c5d3fbc284029-1
+grader-1  | 2026-10-08T11:32:57.545373616Z 2026-10-08 19:32:57,545 INFO app.hermes: 复查完成 session=review-1e4c5d3fbc284029-1 题数=2 网关报告模型=glmf tokens=23255/3663
+grader-1  | 2026-10-08T11:32:57.545377584Z 2026-10-08 19:32:57,545 WARNING app.tasks: 复查模型身份仅核对到模型名 task_id=1e4c5d3fbc284029: 网关报告模型 glmf 与期望一致且不同于首轮模型，但网关未报告 provider，无法核对是否为 zai
+grader-1  | 2026-10-08T11:32:57.546279155Z 2026-10-08 19:32:57,545 INFO app.tasks: 复查完成 task_id=1e4c5d3fbc284029 run_no=1 state=completed disagreed=2 unverified=0
+grader-1  | 2026-10-08T11:32:57.592366804Z 2026-10-08 19:32:57,592 INFO app.tasks: 任务完成 task_id=1e4c5d3fbc284029 run_no=1 status=waiting_input archive=failed git=- ledger=2
