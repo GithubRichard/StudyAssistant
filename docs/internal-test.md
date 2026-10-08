@@ -30,6 +30,24 @@ docker compose logs -f          # 看启动日志
 - HTTP 直连只建议在可信网络下内测；公网长期使用请配置 HTTPS（域名+反代，二期）。
 - `config.yaml` 不进版本库，改完配置需重启服务。
 
+### 独立核验模型（推荐配置）
+
+题号复核和方向确认默认用批改主模型"自己查自己"，有漏检风险。
+配一个不同的模型做"第二双眼睛"（如 glm-4v-flash，短输出任务够用）：
+
+```yaml
+llm:
+  providers:
+    glm:
+      enabled: true   # 并确认 .env 里有 GLM_API_KEY
+
+staged_grading:
+  orientation_provider: "glm"      # 方向确认的视觉裁判
+  number_verify_provider: "glm"    # 题号复核员
+```
+
+改完重启生效。注意：二次复查走 Hermes 网关的 `review_model`，不受这两个配置影响。
+
 ## 二、冒烟测试清单
 
 1. 打开页面 → 应跳到登录页，标题为配置的 `web.title`。
