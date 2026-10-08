@@ -1440,28 +1440,80 @@ class ReasoningUncertaintyTest(unittest.TestCase):
 
 
 class ReasoningUncertaintyIntegrationTest(unittest.IsolatedAsyncioTestCase):
-    async def test_reasoning_uncertainty_marks_all_numbers(self):
-        # extract 的思考过程暴露题号不确定 → 整批 number_uncertain，不送求解
+    async def test_reasoning_uncertainty_washed_by_verify(self):
+        # extract 的思考过程暴露题号不确定 → 先暂标；题号复核逐题位置确认 →
+        # 洗清，不标存疑（2026-10-08 需求：兜底先标、复核再洗清，避免整批误伤）
         calls = []
+        img = [(_tiny_jpeg(), "image/jpeg")]
+        extract_json = json.dumps({"questions": [
+            {"no": "1", "stem": "s1", "student_answer": "a", "page": "1",
+             "handwriting_uncertain": False, "uncertain_note": ""},
+            {"no": "2", "stem": "s2", "student_answer": "b", "page": "1",
+             "handwriting_uncertain": False, "uncertain_note": ""},
+        ]}, ensure_ascii=False)
         thinking_outcome = GradeOutcome(
-            text=EXTRACT_OK, input_tokens=10, output_tokens=20,
+            text=extract_json, input_tokens=10, output_tokens=20,
             provider="p1", model="fake-p1",
-            thinking="转写完成。注：题号 28-32 辨认不确定，但先按顺序给出了编号。")
-        scripts = {"p1": {"extract": [thinking_outcome]}}
-        outcome = await staged.grade_staged(
-            [(b"img", "image/jpeg")], "数学", "七年级", "", make_settings("p1"),
-            provider_factory=factory_for(scripts, calls))
-        qs = outcome.result["questions"]
-        self.assertTrue(qs)
-        for q in qs:
-            self.assertEqual(q["status"], "uncertain", q)
-        # 非字迹问题的前两题：evidence 应记录思考过程兜底
-        # （第 3 题本身字迹存疑，走 handwriting 分支优先）
-        by_no = {q["no"]: q for q in qs}
-        self.assertIn("思考过程", by_no["1"].get("evidence", ""))
-        self.assertIn("思考过程", by_no["2"].get("evidence", ""))
-        self.assertFalse([c for c in calls if c["stage"] == "solve"],
-                         "题号存疑不应送独立求解")
+            thinking="注：题号 1-2 辨认不确定，但先按顺序给出了编号。")
+        verify_json = json.dumps({"numbers": ["1", "2"]}, ensure_ascii=False)
+        scripts = {"p1": {"extract": [thinking_outcome],
+                          "number_verify": [verify_json]}}
+        parsed, _, _ = await staged.extract_stage(
+            img, "数学", "七年级", "", make_settings("p1"), ["p1"],
+            provider_factory=factory_for(scripts, calls),
+            images_prepared=True)
+        for q in parsed.questions:
+            self.assertFalse(q.number_uncertain, q.no)
+            self.assertFalse(q.reasoning_uncertain, q.no)
+            self.assertNotIn("思考过程兜底", q.number_note)
+
+    async def test_reasoning_uncertainty_kept_on_mismatch(self):
+        # 复核不一致的题保留存疑；一致的题洗清
+        calls = []
+        img = [(_tiny_jpeg(), "image/jpeg")]
+        extract_json = json.dumps({"questions": [
+            {"no": "1", "stem": "s1", "student_answer": "a", "page": "1",
+             "handwriting_uncertain": False, "uncertain_note": ""},
+            {"no": "2", "stem": "s2", "student_answer": "b", "page": "1",
+             "handwriting_uncertain": False, "uncertain_note": ""},
+        ]}, ensure_ascii=False)
+        thinking_outcome = GradeOutcome(
+            text=extract_json, input_tokens=10, output_tokens=20,
+            provider="p1", model="fake-p1",
+            thinking="注：题号 1-2 辨认不确定，但先按顺序给出了编号。")
+        verify_json = json.dumps({"numbers": ["1", "X"]}, ensure_ascii=False)
+        scripts = {"p1": {"extract": [thinking_outcome],
+                          "number_verify": [verify_json]}}
+        parsed, _, _ = await staged.extract_stage(
+            img, "数学", "七年级", "", make_settings("p1"), ["p1"],
+            provider_factory=factory_for(scripts, calls),
+            images_prepared=True)
+        by_no = {q.no: q for q in parsed.questions}
+        self.assertFalse(by_no["1"].number_uncertain)
+        self.assertTrue(by_no["2"].number_uncertain)
+        self.assertIn("题号复核不一致", by_no["2"].number_note)
+
+    async def test_reasoning_uncertainty_kept_when_verify_fails(self):
+        # 复核失败/未执行 → fail-closed，暂标全部转正式存疑
+        from app.staged import StageError
+        calls = []
+        img = [(_tiny_jpeg(), "image/jpeg")]
+        extract_json = json.dumps({"questions": [
+            {"no": "1", "stem": "s1", "student_answer": "a", "page": "1",
+             "handwriting_uncertain": False, "uncertain_note": ""},
+        ]}, ensure_ascii=False)
+        thinking_outcome = GradeOutcome(
+            text=extract_json, input_tokens=10, output_tokens=20,
+            provider="p1", model="fake-p1",
+            thinking="注：题号辨认不确定，但先按顺序给出了编号。")
+        scripts = {"p1": {"extract": [thinking_outcome],
+                          "number_verify": [StageError("number_verify", "boom")]}}
+        parsed, _, _ = await staged.extract_stage(
+            img, "数学", "七年级", "", make_settings("p1"), ["p1"],
+            provider_factory=factory_for(scripts, calls),
+            images_prepared=True)
+        self.assertTrue(parsed.questions[0].number_uncertain)
+        self.assertIn("思考过程兜底", parsed.questions[0].number_note)
 
 
 class NumberVerifyProviderTest(unittest.IsolatedAsyncioTestCase):

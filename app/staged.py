@@ -67,6 +67,12 @@ class ExtractedQuestion(BaseModel):
     # 不送独立求解，直接标存疑；题号错一位整题就废了，与 stem_uncertain 同级处理）
     number_uncertain: bool = False
     number_note: LooseStr = ""
+    # reasoning 兜底暂标（服务端内部流转）：思考过程暴露题号不确定时先整批暂标，
+    # 待题号复核逐题位置确认后洗清（_resolve_reasoning_provisional）。
+    # 暂标期间不直接视为 number_uncertain，避免误伤整批。
+    reasoning_uncertain: bool = False
+    # 题号复核逐题位置确认（服务端内部流转）：复核读到的题号与转写一致。
+    number_verified: bool = False
     # 答案归属存疑（服务端去重检测填入）：该题答案疑似与另一题为同一组作答
     attribution_note: LooseStr = ""
 
@@ -678,6 +684,36 @@ def _reasoning_number_uncertainty(thinking: str) -> str:
     return ""
 
 
+def _resolve_reasoning_provisional(qs: List["ExtractedQuestion"],
+                                   hook_note: str,
+                                   verify_ran: bool) -> tuple:
+    """兜底洗清：reasoning 兜底先整批暂标（reasoning_uncertain），
+    题号复核逐题位置确认后，洗清确认无误的题。
+
+    - 模型自己或复核已标 number_uncertain → 保留（不洗）。
+    - 复核成功执行且逐题位置确认（number_verified）→ 洗清暂标，
+      移除兜底 note，不标存疑。
+    - 复核未执行/未确认 → 转为正式 number_uncertain（fail-closed）。
+
+    返回 (cleared, kept)。
+    """
+    cleared = kept = 0
+    for q in qs:
+        if not q.reasoning_uncertain:
+            continue
+        if q.number_uncertain:
+            kept += 1  # 模型/复核已标定，保留
+        elif verify_ran and q.number_verified:
+            q.reasoning_uncertain = False
+            parts = [p for p in q.number_note.split("；") if p and p != hook_note]
+            q.number_note = "；".join(parts)
+            cleared += 1
+        else:
+            q.number_uncertain = True
+            kept += 1
+    return cleared, kept
+
+
 async def _verify_question_numbers(
         questions: List[ExtractedQuestion],
         prepped: List[Tuple[bytes, str]],
@@ -749,6 +785,9 @@ async def _verify_question_numbers(
             add = f"题号复核不一致（转写「{exp}」，复核「{g}」）"
             q.number_note = (q.number_note + "；" + add) if q.number_note else add
             flagged.append(f"「{exp}」→复核为「{g}」")
+        else:
+            # 逐题位置确认：供 reasoning 兜底洗清用
+            q.number_verified = True
     parts = []
     if flagged:
         parts.append(f"{len(flagged)} 题题号不一致已标存疑（{'；'.join(flagged[:5])}）")
@@ -910,18 +949,21 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
         log.warning("分阶段批改[extract] %s", msg)
         stage_notes.append(msg)
 
-    # reasoning 兜底：模型思考过程里暴露题号不确定，但结构化输出没标时，
-    # 服务端强制整批标存疑（2026-09-30 事故：reasoning 写了 number_uncertain，
-    # 输出字段却没标，模型把"纠结后决定采用某套编号"当成了"已确定"）。
+    # reasoning 兜底（provisional 暂标）：模型思考过程里暴露题号不确定，但
+    # 结构化输出没标时，服务端先整批暂标（reasoning_uncertain），待题号复核
+    # 逐题位置确认后洗清（_resolve_reasoning_provisional）。
+    # 2026-09-30 事故：reasoning 写了 number_uncertain，输出字段却没标，
+    # 模型把"纠结后决定采用某套编号"当成了"已确定"。
     r_reason = _reasoning_number_uncertainty(outcome.thinking)
+    r_hook_note = ""
     if r_reason and qs:
+        r_hook_note = f"思考过程兜底：{r_reason}"
         for q in qs:
-            q.number_uncertain = True
+            q.reasoning_uncertain = True
             q.number_note = ((q.number_note + "；" if q.number_note else "")
-                             + f"思考过程兜底：{r_reason}")
-        msg = f"思考过程暴露题号不确定（{r_reason}），{len(qs)} 题题号标存疑"
-        log.warning("分阶段批改[extract] %s", msg)
-        stage_notes.append(msg)
+                             + r_hook_note)
+        log.warning("分阶段批改[extract] 思考过程暴露题号不确定（%s），已暂标待复核洗清",
+                    r_reason)
 
     # 题号重复检测：同一题号出现多次时无法唯一标识，下游按题号 key 的
     # 环节（比对 statuses、诊断校验、UID）会塌。把重复题号的题全部标
@@ -952,6 +994,18 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
     calls.extend(v_calls)
     if v_note:
         stage_notes.append(v_note)
+
+    # 兜底洗清：复核逐题位置确认后，洗清 reasoning 兜底暂标中确认无误的题；
+    # 未确认的转为正式 number_uncertain（fail-closed）。
+    if r_reason and qs:
+        cleared, kept = _resolve_reasoning_provisional(qs, r_hook_note, bool(v_calls))
+        msg = f"思考过程暴露题号不确定（{r_reason}）"
+        if kept:
+            msg += f"，{kept} 题标存疑"
+        if cleared:
+            msg += f"，{cleared} 题经复核确认已洗清"
+        log.warning("分阶段批改[extract] %s", msg)
+        stage_notes.append(msg)
 
     # 逐题转写复核（默认关闭）：每题一次聚焦调用，只核对题号 + 括号原词
     pq_note, pq_calls = await _per_question_verify(
