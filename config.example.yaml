@@ -182,13 +182,20 @@ staged_grading:
   # 提取阶段"眼睛"：图片预处理 + 字迹存疑时局部放大复核
   extract_image_min_long_side: 2048  # 转写前长边放大到该值；0=关闭
   orientation_visual_fallback: true  # OSD 不确定时每页仅一次视觉补判
-  orientation_provider: ""           # 留空选模型链中首个支持直接读图的模型
+  # 视觉判向用的模型：留空选模型链中首个支持直接读图的模型。强烈建议配一个与批改链
+  # 不同的模型——方向判错会导致整页静默错改，同一模型既判向又转写等于自己确认自己。
+  orientation_provider: ""
+  # 方向待确认超过该天数未处理，自动转 interrupted（可删除，避免永久残留）；0=关闭
+  orientation_wait_days: 7
   extract_image_max_long_side: 4096  # 超过则缩小；0=不限制
   extract_zoom_reread: true          # 首轮转写后对存疑题做局部放大复核
   extract_zoom_grid: 2               # 每页切 2x2=4 张重叠局部图
   extract_zoom_max_images: 2         # 图片超过该张数跳过复核
   extract_zoom_max_items: 15         # 存疑题超过该数跳过复核
   number_verify: true               # 题号序列复核：extract 后重读题号序列，diff 不一致标存疑
+  # 题号复核用的独立模型：留空则用批改链。强烈建议配一个与批改链不同的模型——
+  # 同一模型复核自己时错误高度相关，"复核一致"可能是把同一批错题又数了一遍。
+  number_verify_provider: ""
   per_question_verify: false   # 逐题复核（每题一次聚焦调用，只核对题号+括号原词）；默认关闭
   per_question_verify_max_items: 10   # 逐题复核的题数上限（超过整批跳过）
 

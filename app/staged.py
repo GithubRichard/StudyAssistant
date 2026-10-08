@@ -629,6 +629,45 @@ def _number_verify_user() -> str:
             '输出 JSON：{"numbers": ["题号1", "题号2", "..."]}')
 
 
+# 模型在思考过程中暴露的题号不确定性信号。
+# 2026-09-30 生产事故：模型在 reasoning 里明确写了"对表格的题号标记
+# number_uncertain"，但结构化输出里并没有标——reasoning 承认不确定，
+# 不等于结构化字段如实标记。这里做服务端兜底：只要思考过程里出现
+# 题号不确定信号，整批题号强制标存疑（fail-closed，不猜）。
+_NUMBER_UNCERTAIN_EXPLICIT = (
+    "number_uncertain",  # 模型自己提到了该标记（无论大小写）
+)
+_NUMBER_WORDS = ("题号", "编号", "题序", "number")
+_UNCERTAIN_WORDS = ("不确定", "拿不准", "没把握", "不肯定", "疑似", "冲突",
+                    "对不上", "对不齐", "存疑", "可能有误", "可能读错",
+                    "uncertain", "unsure", "ambiguous")
+# 题号词与不确定词同现时的最大字符距离（防"题号是确定的……答案不确定"式误伤）
+_NUMBER_UNCERTAIN_WINDOW = 40
+
+
+def _reasoning_number_uncertainty(thinking: str) -> str:
+    """检查 extract 阶段的思考过程是否暴露了题号不确定性。
+
+    返回命中原因（"" 表示无信号）。网关没返回 thinking 时返回 ""。
+    """
+    text = thinking or ""
+    if not text:
+        return ""
+    lowered = text.lower()
+    for marker in _NUMBER_UNCERTAIN_EXPLICIT:
+        if marker in lowered:
+            return f"思考过程提及 {marker}"
+    num_pos = [m.start() for w in _NUMBER_WORDS for m in re.finditer(re.escape(w), lowered)]
+    if not num_pos:
+        return ""
+    for w in _UNCERTAIN_WORDS:
+        for m in re.finditer(re.escape(w), lowered):
+            if any(abs(m.start() - p) <= _NUMBER_UNCERTAIN_WINDOW for p in num_pos):
+                snippet = text[max(0, m.start() - 20):m.start() + 30].replace("\n", " ")
+                return f"思考过程现题号不确定表述（…{snippet}…）"
+    return ""
+
+
 async def _verify_question_numbers(
         questions: List[ExtractedQuestion],
         prepped: List[Tuple[bytes, str]],
@@ -649,6 +688,18 @@ async def _verify_question_numbers(
     if len(prepped) > cfg.extract_zoom_max_images:
         return (f"题号复核跳过：图片 {len(prepped)} 张超过上限 "
                 f"{cfg.extract_zoom_max_images}"), []
+    # 独立信息源：复核模型默认与批改链解耦。配了 number_verify_provider 则用它
+    # （配错/不可用时记 warning 并回落到批改链，不阻断主流程）；
+    # 留空时沿用旧行为（批改链），但"同一模型复核自己"的漏检风险依然存在。
+    verify_chain = chain
+    verify_provider = (getattr(cfg, "number_verify_provider", "") or "").strip()
+    if verify_provider:
+        prov = settings.llm.providers.get(verify_provider)
+        if prov and prov.enabled:
+            verify_chain = [verify_provider]
+        else:
+            log.warning("分阶段批改[extract] number_verify_provider=%s 不可用，回落到批改链",
+                        verify_provider)
 
     async def call(provider, max_tokens_want: int = 0):
         return await provider.grade_multi(
@@ -658,7 +709,7 @@ async def _verify_question_numbers(
 
     try:
         parsed, outcome, cost = await _run_stage(
-            "number_verify", NumberVerifyResult, chain, settings, call, None,
+            "number_verify", NumberVerifyResult, verify_chain, settings, call, None,
             provider_factory, base_max_tokens=2000)
     except StageError as e:
         reason = (e.message or "").strip()[:120]
@@ -846,6 +897,19 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
         else:
             parsed.questions = qs
         msg = f"过滤版块标题 {len(dropped)} 行：{'；'.join(dropped[:5])}"
+        log.warning("分阶段批改[extract] %s", msg)
+        stage_notes.append(msg)
+
+    # reasoning 兜底：模型思考过程里暴露题号不确定，但结构化输出没标时，
+    # 服务端强制整批标存疑（2026-09-30 事故：reasoning 写了 number_uncertain，
+    # 输出字段却没标，模型把"纠结后决定采用某套编号"当成了"已确定"）。
+    r_reason = _reasoning_number_uncertainty(outcome.thinking)
+    if r_reason and qs:
+        for q in qs:
+            q.number_uncertain = True
+            q.number_note = ((q.number_note + "；" if q.number_note else "")
+                             + f"思考过程兜底：{r_reason}")
+        msg = f"思考过程暴露题号不确定（{r_reason}），{len(qs)} 题题号标存疑"
         log.warning("分阶段批改[extract] %s", msg)
         stage_notes.append(msg)
 

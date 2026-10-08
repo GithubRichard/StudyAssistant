@@ -81,8 +81,12 @@ class StagedGradingConfig(BaseModel):
     # 长边超过该值则缩小（防超大图 token 爆炸）；0=不限制
     extract_image_max_long_side: int = 4096
     # OSD 不确定时只做一次视觉判向；为空时选模型链中首个支持图像的模型。
+    # 强烈建议配一个与批改链不同的模型：方向判错会导致整页静默错改，
+    # 同一模型既判向又转写时，"判向正确"可能是同一批幻觉的自我确认。
     orientation_provider: str = ""
     orientation_visual_fallback: bool = True
+    # 方向待确认超过该天数未处理，自动转 interrupted（可删除，避免永久残留）；0=关闭
+    orientation_wait_days: int = 7
     # 首轮转写后，对字迹存疑/空白的题自动做一遍局部放大复核
     extract_zoom_reread: bool = True
     # 局部图网格：2 = 每页切 2x2=4 张重叠局部图
@@ -95,6 +99,9 @@ class StagedGradingConfig(BaseModel):
     # 题号序列复核：extract 后用一次聚焦调用重读题号序列，diff 不一致的题标存疑。
     # 防题号错位/跳号/漏题（如把 18 读成 19 导致整体顺延）；失败自动降级不阻断主流程。
     number_verify: bool = True
+    # 题号复核用的模型：留空则用批改链。强烈建议配一个与批改链不同的模型——
+    # 同一模型复核自己时，错误高度相关，"复核一致"可能是把同一批错题又数了一遍。
+    number_verify_provider: str = ""
     # 逐题转写复核：每题一次聚焦调用，只核对题号 + 括号原词（不碰学生答案）。
     # 默认关闭：成本为每题一次调用；题数超限时整批跳过。
     per_question_verify: bool = False

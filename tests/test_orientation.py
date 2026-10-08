@@ -83,6 +83,31 @@ class OrientationTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(orientation.ConfirmationRequired):
                 await orientation.prepare_pages([(picture(), "image/jpeg")], settings, ["v"], provider_factory=factory)
 
+    async def test_visual_decision_rejected_by_osd_recheck(self):
+        # 视觉补判 confident，但把角度实际转一次后 OSD 高置信度说仍不正 → 不采信
+        calls, saved = [], {}
+        async def record(data): saved.update(copy.deepcopy(data))
+        factory = lambda n, c: VisualProvider({"rotation": 90, "certain": True, "readable": True, "cue": "标题"}, calls)
+        with patch.object(image_prep, "_detect_text_rotation", return_value=LOW), \
+             patch.object(image_prep, "check_rotation", return_value="wrong"):
+            with self.assertRaises(orientation.ConfirmationRequired):
+                await orientation.prepare_pages([(picture(), "image/jpeg")], self.settings(), ["v"], on_update=record, provider_factory=factory)
+        self.assertEqual(len(calls), 1)
+        page = saved["pages"][0]
+        self.assertFalse(page["confirmed"])
+        self.assertEqual(page.get("visual_error"), "rotation_recheck_failed")
+
+    async def test_visual_decision_accepted_when_recheck_unknown(self):
+        # OSD 无法判断（unknown）时接受视觉结论：OSD 本来就不确定，无法证伪
+        calls, saved = [], {}
+        async def record(data): saved.update(copy.deepcopy(data))
+        factory = lambda n, c: VisualProvider({"rotation": 90, "certain": True, "readable": True, "cue": "标题"}, calls)
+        with patch.object(image_prep, "_detect_text_rotation", return_value=LOW), \
+             patch.object(image_prep, "check_rotation", return_value="unknown"):
+            images, data = await orientation.prepare_pages([(picture(), "image/jpeg")], self.settings(), ["v"], on_update=record, provider_factory=factory)
+        self.assertTrue(data["pages"][0]["confirmed"])
+        self.assertEqual(data["pages"][0]["rotation"], 90)
+
 
 class OrientationApiTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -135,6 +160,21 @@ class OrientationApiTest(unittest.IsolatedAsyncioTestCase):
         images = grade.call_args.args[0]
         self.assertEqual(Image.open(io.BytesIO(images[0][0])).size, (1536, 2048))
         self.assertIn((await db.get_task(self.settings.db_path, self.task_id))["status"], ["done", "waiting_input"])
+
+    async def test_confirm_rejected_when_osd_recheck_fails(self):
+        # 人工确认的角度经 OSD 复核被否决 → 400 打回，任务仍停留在 waiting_input
+        url = f"/api/tasks/{self.task_id}/orientation"
+        body = {"run_id": self.run["id"], "rotations": [{"page": 1, "rotation": 90}]}
+        with patch.object(image_prep, "check_rotation", return_value="wrong"):
+            res = await self.client.post(url, json=body)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("复核", res.json()["detail"])
+        task = await db.get_task(self.settings.db_path, self.task_id)
+        self.assertEqual(task["status"], "waiting_input")
+        # 复核无法判断（unknown）时接受人工结论
+        with patch.object(image_prep, "check_rotation", return_value="unknown"):
+            res = await self.client.post(url, json=body)
+        self.assertEqual(res.status_code, 200)
 
     async def test_owner_stale_run_and_invalid_angles(self):
         url = f"/api/tasks/{self.task_id}/orientation"

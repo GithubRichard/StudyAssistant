@@ -115,6 +115,90 @@ class PrepareTest(unittest.TestCase):
         self.assertTrue(info["orientation_check_required"])
 
 
+class CheckRotationTest(unittest.TestCase):
+    """check_rotation：确认后二次复核。OSD 高置信度说仍不正 → wrong；
+    OSD 无法判断 → unknown（接受人工结论）；非法角度抛 ValueError。"""
+
+    def test_invalid_rotation_raises(self):
+        with self.assertRaises(ValueError):
+            image_prep.check_rotation(_jpeg(100, 100), 45)
+
+    def test_unknown_when_osd_uncertain(self):
+        with patch.object(image_prep, "_detect_text_rotation", return_value={
+                "status": "uncertain", "rotation": 90, "confidence": 0.5, "error": "low"}):
+            self.assertEqual(image_prep.check_rotation(_jpeg(800, 600), 90), "unknown")
+
+    def test_ok_and_wrong_mapping(self):
+        raw = _jpeg(800, 600)
+        with patch.object(image_prep, "_detect_text_rotation", return_value={
+                "status": "upright", "rotation": 0, "confidence": 8.0, "error": ""}):
+            self.assertEqual(image_prep.check_rotation(raw, 90), "ok")
+        with patch.object(image_prep, "_detect_text_rotation", return_value={
+                "status": "rotated", "rotation": 180, "confidence": 9.0, "error": ""}):
+            self.assertEqual(image_prep.check_rotation(raw, 90), "wrong")
+
+
+def _tesseract_available() -> bool:
+    import shutil
+    return shutil.which("tesseract") is not None
+
+
+def _text_page() -> bytes:
+    """生成一张文字朝上的干净测试页：多行英文，OSD 可高置信度识别方向。"""
+    from PIL import ImageDraw, ImageFont
+    img = Image.new("RGB", (1200, 1600), "white")
+    draw = ImageDraw.Draw(img)
+    font = None
+    for path in ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                 "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"):
+        try:
+            font = ImageFont.truetype(path, 40)
+            break
+        except OSError:
+            continue
+    if font is None:
+        font = ImageFont.load_default()
+    lines = [
+        "English homework grading test page",
+        "The quick brown fox jumps over the lazy dog",
+        "Mathematics: solve for x in 2x + 5 = 17",
+        "Reading comprehension: answer the questions below",
+        "Question one: choose the correct answer",
+        "Question two: complete the following sentences",
+    ]
+    y = 100
+    for _ in range(4):
+        for line in lines:
+            draw.text((90, y), line, fill="black", font=font)
+            y += 80
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+@unittest.skipUnless(_tesseract_available(), "需要安装 tesseract 才跑真机 OSD 回归")
+class RealOsdRotationTest(unittest.TestCase):
+    """真机回归：a110625 曾把 OSD 的顺时针角度用反（img.rotate(+R)），
+    436014a 改为 img.rotate(-R)。以下测试不 mock，直接跑 tesseract，
+    符号再反就会失败。Docker 镜像自带 tesseract，CI/生产可跑。"""
+
+    def test_sideways_page_is_uprighted_with_correct_sign(self):
+        upright = _text_page()
+        # 顺时针转 90°，模拟横拍：OSD 应报需要顺时针 270°（即逆时针 90°）摆正
+        sideways = Image.open(io.BytesIO(upright)).rotate(-90, expand=True)
+        buf = io.BytesIO()
+        sideways.save(buf, "PNG")
+        raw = buf.getvalue()
+        out, _, info = image_prep.prepare_extract_image(raw, "image/png", 0, 0)
+        self.assertFalse(info["orientation_check_required"], info)
+        self.assertEqual(info["text_rotation_degrees"], 270)
+        # 输出图再跑 OSD：必须已正（符号反了这里就是 wrong）
+        self.assertEqual(image_prep.check_rotation(out, 0), "ok")
+        # 复核语义：转对了 ok，转错了 wrong
+        self.assertEqual(image_prep.check_rotation(raw, 270), "ok")
+        self.assertEqual(image_prep.check_rotation(raw, 90), "wrong")
+
+
 class TilesTest(unittest.TestCase):
     def test_grid_2x2(self):
         tiles = image_prep.make_zoom_tiles(_jpeg(800, 600), "image/jpeg", page=1,

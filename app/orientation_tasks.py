@@ -52,7 +52,17 @@ async def confirm(settings, openid, task_id, payload):
         if hashlib.sha256(raw).hexdigest() != page["sha256"]:
             raise tasks.TaskError("图片内容发生变化，请重新提交", 409)
         if page["page"] in rotations:
-            page.update(rotation=rotations[page["page"]], confirmed=True, source="manual")
+            rotation = rotations[page["page"]]
+            # 人工确认也不是终审：把用户给的角度实际转一次，再跑 OSD 复核。
+            # OSD 高置信度说仍不正 → 拒绝本次确认，打回 waiting_input；
+            # OSD 无法判断 → 接受人工结论（人本来就是最终 fallback）。
+            recheck = await asyncio.to_thread(
+                image_prep.check_rotation, raw, rotation)
+            if recheck == "wrong":
+                raise tasks.TaskError(
+                    f"第{page['page']}页：按该角度旋转后复核显示文字仍不正，"
+                    "请重新调整方向后再确认", 400)
+            page.update(rotation=rotation, confirmed=True, source="manual")
     if not await db.resume_orientation(settings.db_path, task_id, openid, run["id"],
                                        run["stages_json"], json.dumps(stages, ensure_ascii=False)):
         raise tasks.TaskError("任务状态已变化，请刷新页面", 409)

@@ -88,11 +88,21 @@ async def prepare_pages(images, settings, chain, saved=None, on_update=None,
                 thinking.log_thinking(f"stage=orientation page={number} sha256={digest} provider={vision}", outcome.thinking)
                 decision = Direction.model_validate(extract_result_json(outcome.text))
                 if outcome.finish_reason != "length" and decision.certain and decision.readable and decision.cue.strip():
-                    page.update(rotation=decision.rotation, confirmed=True, cue=decision.cue)
-                    pb, pm, info = await asyncio.to_thread(
-                        image_prep.prepare_extract_image, raw, mime,
-                        cfg.extract_image_min_long_side, cfg.extract_image_max_long_side,
-                        confirmed_rotation=decision.rotation)
+                    # 视觉补判不是终审：把模型给的角度实际转一次，再跑 OSD 复核。
+                    # OSD 高置信度说仍不正 → 不采信，回 waiting_input 等人工；
+                    # OSD 无法判断 → 接受视觉结论（OSD 本来就不确定）。
+                    recheck = await asyncio.to_thread(
+                        image_prep.check_rotation, raw, decision.rotation)
+                    if recheck == "wrong":
+                        page["visual_error"] = "rotation_recheck_failed"
+                        log.warning("视觉判向被 OSD 复核否决 page=%s rotation=%s",
+                                    number, decision.rotation)
+                    else:
+                        page.update(rotation=decision.rotation, confirmed=True, cue=decision.cue)
+                        pb, pm, info = await asyncio.to_thread(
+                            image_prep.prepare_extract_image, raw, mime,
+                            cfg.extract_image_min_long_side, cfg.extract_image_max_long_side,
+                            confirmed_rotation=decision.rotation)
             except Exception as exc:
                 # No retry or provider cascade for direction alone.
                 page["visual_error"] = type(exc).__name__

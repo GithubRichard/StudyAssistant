@@ -308,7 +308,12 @@ async def confirm_orientation(task_id: str, payload: OrientationConfirm, ctx: di
 
 @router.delete("/tasks/{task_id}")
 async def delete_task(task_id: str, ctx: dict = Session):
-    """删除任务：仅允许删除失败/中断的任务（成功任务关联错题台账，误删会丢数据）。
+    """删除任务：允许删除失败/中断的任务，以及方向待确认的任务。
+
+    方向待确认（最新轮次 stage='orientation'）的任务尚未产出任何批改结果与
+    台账数据，删除是安全的——否则用户放弃确认时任务会永久残留。
+    补充材料（missing_info）的 waiting_input 有批改结果，仍不允许删除。
+    成功任务关联错题台账，误删会丢数据，不允许删除。
 
     连带删除轮次、附件关联、错题、事件、成果索引、归档日志；
     已无人引用的附件图片文件一并删除。
@@ -321,8 +326,12 @@ async def delete_task(task_id: str, ctx: dict = Session):
         auth.ensure_owner(task["openid"], ctx)
     except auth.AuthError as e:
         raise HTTPException(e.status_code, e.message) from e
-    if task["status"] not in ("failed", "interrupted"):
-        raise HTTPException(400, "只有失败的任务可以删除")
+    deletable = task["status"] in ("failed", "interrupted")
+    if not deletable and task["status"] == "waiting_input":
+        runs = await db.list_runs(s.db_path, task_id)
+        deletable = bool(runs) and runs[-1].get("stage") == "orientation"
+    if not deletable:
+        raise HTTPException(400, "只有失败/中断/待确认方向的任务可以删除")
     orphan_paths = await db.delete_task(s.db_path, task_id)
 
     # 兼容老任务的 image_path：没有其它任务引用才删文件
@@ -360,8 +369,11 @@ async def list_tasks(limit: int = Query(20, ge=1, le=100), offset: int = Query(0
                      ctx: dict = Session):
     s = get_settings()
     rows = await db.list_tasks(s.db_path, ctx["openid"], limit, offset)
+    run_stages = await db.latest_run_stages(s.db_path, [t["id"] for t in rows])
     out = []
     for t in rows:
+        orientation_pending = (t["status"] == "waiting_input"
+                               and run_stages.get(t["id"]) == "orientation")
         item = {
             "id": t["id"], "status": t["status"], "subject": t.get("subject", ""),
             "task_type": t.get("task_type", "grading"),
@@ -371,6 +383,7 @@ async def list_tasks(limit: int = Query(20, ge=1, le=100), offset: int = Query(0
             "git_status": t.get("git_status", ""),
             "archive_path": workspace.workspace_relative_path(s, t.get("archive_path", "")),
             "created_at": t.get("created_at"), "run_count": t.get("run_count", 0),
+            "orientation_pending": orientation_pending,
             "summary": "", "missing_info_count": 0,
         }
         if t.get("result_json"):

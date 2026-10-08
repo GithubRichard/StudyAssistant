@@ -891,9 +891,11 @@ class ExtractZoomTest(unittest.IsolatedAsyncioTestCase):
         return scripts
 
     async def _extract(self, scripts, settings):
+        # 方向确认不是本类的测试对象：图片视为已预处理，跳过 orientation
         return await staged.extract_stage(
             self.img, "数学", "七年级", "", settings, ["fake"],
-            provider_factory=factory_for(scripts, self.calls))
+            provider_factory=factory_for(scripts, self.calls),
+            images_prepared=True)
 
     async def test_zoom_merges_reread_into_transcript(self):
         # EXTRACT_OK 的第 3 题字迹存疑 → 复核找回答案 → 合并后不再存疑
@@ -933,7 +935,8 @@ class ExtractZoomTest(unittest.IsolatedAsyncioTestCase):
         imgs = self.img * 3
         await staged.extract_stage(
             imgs, "数学", "七年级", "", self._settings(), ["fake"],
-            provider_factory=factory_for(scripts, self.calls))
+            provider_factory=factory_for(scripts, self.calls),
+            images_prepared=True)
         stages = [c["stage"] for c in self.calls]
         self.assertNotIn("extract_zoom", stages)
 
@@ -1035,7 +1038,8 @@ class StageProviderCapTest(unittest.IsolatedAsyncioTestCase):
                             "compare": [COMPARE_OK], "diagnose": [DIAGNOSE_OK]}}
         await staged.grade_staged(
             self.img, "数学", "七年级", "", settings,
-            provider_factory=factory_for(scripts, self.calls))
+            provider_factory=factory_for(scripts, self.calls),
+            images_prepared=True)
         extract_call = [c for c in self.calls if c["stage"] == "extract"][0]
         solve_call = [c for c in self.calls if c["stage"] == "solve"][0]
         # 阶段上限 8000/6000 都被压到厂商上限 1024
@@ -1048,7 +1052,8 @@ class StageProviderCapTest(unittest.IsolatedAsyncioTestCase):
                             "compare": [COMPARE_OK], "diagnose": [DIAGNOSE_OK]}}
         await staged.grade_staged(
             self.img, "数学", "七年级", "", settings,
-            provider_factory=factory_for(scripts, self.calls))
+            provider_factory=factory_for(scripts, self.calls),
+            images_prepared=True)
         extract_call = [c for c in self.calls if c["stage"] == "extract"][0]
         self.assertEqual(extract_call["max_tokens"],
                          settings.staged_grading.extract_max_tokens)
@@ -1404,3 +1409,92 @@ class ProductionIncidentRegressionTest(unittest.IsolatedAsyncioTestCase):
         # 补充材料入口有内容
         missing = outcome.result["missing_info"]
         self.assertTrue(any("「三」" in m for m in missing), f"missing_info={missing}")
+
+
+class ReasoningUncertaintyTest(unittest.TestCase):
+    """_reasoning_number_uncertainty：思考过程暴露题号不确定即命中。"""
+
+    def test_explicit_marker(self):
+        self.assertTrue(staged._reasoning_number_uncertainty(
+            "我决定对表格的题号标记 number_uncertain 并在说明里解释"))
+
+    def test_chinese_cooccurrence(self):
+        self.assertTrue(staged._reasoning_number_uncertainty(
+            "题号 28-32 辨认不确定，但先按顺序给出了编号"))
+
+    def test_empty_thinking(self):
+        self.assertEqual(staged._reasoning_number_uncertainty(""), "")
+
+    def test_neutral_number_mention(self):
+        self.assertEqual(staged._reasoning_number_uncertainty(
+            "题号 19 出现在 found it ___ (help) 句中"), "")
+
+    def test_uncertain_about_answers_only(self):
+        self.assertEqual(staged._reasoning_number_uncertainty(
+            "学生答案有两个不确定"), "")
+
+
+class ReasoningUncertaintyIntegrationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_reasoning_uncertainty_marks_all_numbers(self):
+        # extract 的思考过程暴露题号不确定 → 整批 number_uncertain，不送求解
+        calls = []
+        thinking_outcome = GradeOutcome(
+            text=EXTRACT_OK, input_tokens=10, output_tokens=20,
+            provider="p1", model="fake-p1",
+            thinking="转写完成。注：题号 28-32 辨认不确定，但先按顺序给出了编号。")
+        scripts = {"p1": {"extract": [thinking_outcome]}}
+        outcome = await staged.grade_staged(
+            [(b"img", "image/jpeg")], "数学", "七年级", "", make_settings("p1"),
+            provider_factory=factory_for(scripts, calls))
+        qs = outcome.result["questions"]
+        self.assertTrue(qs)
+        for q in qs:
+            self.assertEqual(q["status"], "uncertain", q)
+        # 非字迹问题的前两题：evidence 应记录思考过程兜底
+        # （第 3 题本身字迹存疑，走 handwriting 分支优先）
+        by_no = {q["no"]: q for q in qs}
+        self.assertIn("思考过程", by_no["1"].get("evidence", ""))
+        self.assertIn("思考过程", by_no["2"].get("evidence", ""))
+        self.assertFalse([c for c in calls if c["stage"] == "solve"],
+                         "题号存疑不应送独立求解")
+
+
+class NumberVerifyProviderTest(unittest.IsolatedAsyncioTestCase):
+    async def test_uses_configured_independent_provider(self):
+        from unittest.mock import patch
+        settings = make_settings("p1", "verifier")
+        settings.staged_grading.number_verify_provider = "verifier"
+        q = staged.ExtractedQuestion(no="1", stem="s", student_answer="a", page="1")
+        parsed = staged.NumberVerifyResult(numbers=["1"])
+        seen = {}
+
+        async def fake_run_stage(stage, model_cls, chain, settings_, call,
+                                 semantic_check=None, provider_factory=None,
+                                 base_max_tokens=0):
+            seen["chain"] = list(chain)
+            return parsed, GradeOutcome(text="{}", provider="verifier", model="m"), 0.0
+
+        with patch.object(staged, "_run_stage", side_effect=fake_run_stage):
+            note, _ = await staged._verify_question_numbers(
+                [q], [(b"x", "image/jpeg")], settings, ["p1"], None)
+        self.assertEqual(seen["chain"], ["verifier"])
+        self.assertFalse(q.number_uncertain)
+
+    async def test_bad_provider_falls_back_to_chain(self):
+        from unittest.mock import patch
+        settings = make_settings("p1")
+        settings.staged_grading.number_verify_provider = "nope"
+        q = staged.ExtractedQuestion(no="1", stem="s", student_answer="a", page="1")
+        parsed = staged.NumberVerifyResult(numbers=["1"])
+        seen = {}
+
+        async def fake_run_stage(stage, model_cls, chain, settings_, call,
+                                 semantic_check=None, provider_factory=None,
+                                 base_max_tokens=0):
+            seen["chain"] = list(chain)
+            return parsed, GradeOutcome(text="{}", provider="p1", model="m"), 0.0
+
+        with patch.object(staged, "_run_stage", side_effect=fake_run_stage):
+            await staged._verify_question_numbers(
+                [q], [(b"x", "image/jpeg")], settings, ["p1"], None)
+        self.assertEqual(seen["chain"], ["p1"])

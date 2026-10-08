@@ -1112,26 +1112,28 @@ async function pageHistory(app, r, alive) {
       const link = done
         ? `#/${t.task_type === "training" ? "practice" : "result"}/${t.id}`
         : `#/task/${t.id}`;
-      const deletable = t.status === "failed" || t.status === "interrupted";
+      const deletable = t.status === "failed" || t.status === "interrupted" || t.orientation_pending;
+      const stateText = t.orientation_pending ? "待确认方向" : (statusLabel[t.status] || t.status);
+      const delHint = t.orientation_pending ? "确定放弃这次方向确认吗？图片会一起删除。" : "确定删除这条失败记录吗？相关图片也会一起删除。";
       return `
       <div class="ledger-item">
         <a href="${link}" style="text-decoration:none;color:inherit;display:block">
           <div class="ledger-top">
             <span class="tag">${esc(t.subject || "")}</span>
             <span class="tag">${esc(TASK_TYPE_LABEL[t.task_type] || t.task_type || "")}</span>
-            <span class="ledger-state">${esc(statusLabel[t.status] || t.status)}</span>
+            <span class="ledger-state">${esc(stateText)}</span>
           </div>
           ${t.summary ? `<div class="ledger-stem">${esc(t.summary.slice(0, 80))}</div>` : ""}
           <div class="ledger-meta muted small">${fmtDT(t.created_at)}${t.missing_info_count ? ` · 缺${t.missing_info_count}项信息` : ""}</div>
         </a>
-        ${deletable ? `<div style="margin-top:8px;text-align:right"><button class="btn ghost small del-task" data-id="${esc(t.id)}">删除</button></div>` : ""}
+        ${deletable ? `<div style="margin-top:8px;text-align:right"><button class="btn ghost small del-task" data-id="${esc(t.id)}" data-hint="${esc(delHint)}">删除</button></div>` : ""}
       </div>`;
     }).join("")}</div>` : `<div class="card center"><p>还没有任务，去「学习」提交第一份作业吧</p>
       <a class="btn primary" href="#/learn">去提交</a></div>`}
   </div>`);
   app.querySelectorAll(".del-task").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      if (!confirm("确定删除这条失败记录吗？相关图片也会一起删除。")) return;
+      if (!confirm(btn.dataset.hint || "确定删除吗？")) return;
       btn.disabled = true;
       try {
         await S.api(`/tasks/${encodeURIComponent(btn.dataset.id)}`, { method: "DELETE" });

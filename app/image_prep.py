@@ -169,6 +169,37 @@ def prepare_extract_image(image_bytes: bytes, mime: str,
         return image_bytes, mime, info
 
 
+def check_rotation(image_bytes: bytes, rotation: int) -> str:
+    """验证按 rotation（顺时针）旋转后，页面文字是否真正朝上。
+
+    用于方向确认后的二次复核，消除"确认即信任"的单点风险：
+    - "ok"：OSD 高置信度判定已正（无需再转）；
+    - "wrong"：OSD 高置信度判定仍需旋转 → 确认的角度很可能是错的；
+    - "unknown"：OSD 无法判断（tesseract 缺失/超时/置信度不足）→
+      无法证伪，交给人工结论（人本来就是最终 fallback）。
+    任何异常都返回 "unknown"，不阻断人工确认流程。
+    """
+    if rotation not in (0, 90, 180, 270):
+        raise ValueError("rotation must be 0/90/180/270 clockwise")
+    if not _PIL_OK or not image_bytes:
+        return "unknown"
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        img = ImageOps.exif_transpose(img)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        if rotation:
+            img = img.rotate(-rotation, expand=True)
+        result = _detect_text_rotation(img)
+        if result["status"] == "upright":
+            return "ok"
+        if result["status"] == "rotated":
+            return "wrong"
+        return "unknown"
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
 def make_zoom_tiles(image_bytes: bytes, mime: str, page: int,
                     grid: int = 2, overlap: float = 0.12,
                     tile_min_long_side: int = 1600,

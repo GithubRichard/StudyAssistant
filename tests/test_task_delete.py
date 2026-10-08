@@ -200,3 +200,101 @@ class TaskDeleteApiTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+async def seed_run(db_path: str, task_id: str, stage: str, run_no: int = 1) -> None:
+    now = time.time()
+    async with aiosqlite.connect(db_path) as d:
+        await d.execute(
+            """INSERT INTO task_runs(id, task_id, run_no, kind, status, stage, created_at)
+               VALUES(?,?,?,?,?,?,?)""",
+            (f"run-{task_id}-{run_no}", task_id, run_no, "initial",
+             "waiting_input", stage, now))
+        await d.commit()
+
+
+class OrientationWaitDeleteTest(unittest.IsolatedAsyncioTestCase):
+    """方向待确认的 waiting_input 任务可删除（无批改结果、无台账）；
+    补充材料阶段的 waiting_input 仍不可删。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.settings = make_settings(self.tmp.name)
+        self.db_path = self.settings.db_path
+        await db.init_db(self.db_path)
+        api.settings = self.settings
+        app = FastAPI()
+        app.include_router(api.router)
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test")
+        res = await self.client.post("/api/web/login",
+                                     data={"username": "kid1", "password": "pw-one"})
+        self.assertEqual(res.status_code, 200)
+        self.headers = {"Authorization": f"Bearer {res.json()['token']}"}
+        self.openid = web_openid("kid1")
+
+    async def asyncTearDown(self):
+        await self.client.aclose()
+        self.tmp.cleanup()
+
+    async def test_delete_orientation_waiting_input_allowed(self):
+        await seed_raw_task(self.db_path, self.openid, "tw1", "waiting_input")
+        await seed_run(self.db_path, "tw1", "orientation")
+        res = await self.client.delete("/api/tasks/tw1", headers=self.headers)
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertIsNone(await db.get_task(self.db_path, "tw1"))
+
+    async def test_delete_missing_info_waiting_input_rejected(self):
+        await seed_raw_task(self.db_path, self.openid, "tw2", "waiting_input")
+        await seed_run(self.db_path, "tw2", "staged")
+        res = await self.client.delete("/api/tasks/tw2", headers=self.headers)
+        self.assertEqual(res.status_code, 400)
+        self.assertIsNotNone(await db.get_task(self.db_path, "tw2"))
+
+    async def test_list_marks_orientation_pending(self):
+        await seed_raw_task(self.db_path, self.openid, "tw3", "waiting_input")
+        await seed_run(self.db_path, "tw3", "orientation")
+        await seed_raw_task(self.db_path, self.openid, "tw4", "waiting_input")
+        await seed_run(self.db_path, "tw4", "staged")
+        res = await self.client.get("/api/tasks?limit=50", headers=self.headers)
+        self.assertEqual(res.status_code, 200)
+        items = {t["id"]: t for t in res.json()}
+        self.assertTrue(items["tw3"]["orientation_pending"])
+        self.assertFalse(items["tw4"]["orientation_pending"])
+
+
+class ExpireOrientationWaitTest(unittest.IsolatedAsyncioTestCase):
+    """超期未确认方向的任务自动转 interrupted（可删除）；补充材料的不动。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.settings = make_settings(self.tmp.name)
+        self.db_path = self.settings.db_path
+        await db.init_db(self.db_path)
+        self.openid = web_openid("kid1")
+
+    async def asyncTearDown(self):
+        self.tmp.cleanup()
+
+    async def _seed_wait(self, task_id: str, stage: str, days_ago: float) -> None:
+        await seed_raw_task(self.db_path, self.openid, task_id, "waiting_input")
+        await seed_run(self.db_path, task_id, stage)
+        old = time.time() - days_ago * 86400.0
+        async with aiosqlite.connect(self.db_path) as d:
+            await d.execute("UPDATE tasks SET updated_at=? WHERE id=?", (old, task_id))
+            await d.commit()
+
+    async def test_expires_stale_orientation_wait(self):
+        await self._seed_wait("old1", "orientation", 8)
+        await self._seed_wait("fresh1", "orientation", 1)
+        await self._seed_wait("old2", "staged", 8)
+        n = await db.expire_stale_orientation_waits(self.db_path, 7)
+        self.assertEqual(n, 1)
+        self.assertEqual((await db.get_task(self.db_path, "old1"))["status"], "interrupted")
+        self.assertEqual((await db.get_task(self.db_path, "fresh1"))["status"], "waiting_input")
+        self.assertEqual((await db.get_task(self.db_path, "old2"))["status"], "waiting_input")
+
+    async def test_disabled_when_zero(self):
+        await self._seed_wait("old3", "orientation", 30)
+        self.assertEqual(await db.expire_stale_orientation_waits(self.db_path, 0), 0)
+        self.assertEqual((await db.get_task(self.db_path, "old3"))["status"], "waiting_input")

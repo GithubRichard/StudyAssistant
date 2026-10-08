@@ -192,7 +192,7 @@ async def _weekly_summary_loop(settings: "Settings") -> None:
 
 
 async def _retention_purge_loop(settings: "Settings") -> None:
-    """每日一次：按账号清理超期错题台账。失败只记录日志，不影响服务。"""
+    """每日一次：按账号清理超期错题台账；将超期未确认方向的任务转 interrupted。失败只记录日志，不影响服务。"""
     while True:
         try:
             await asyncio.sleep(24 * 3600)
@@ -203,6 +203,10 @@ async def _retention_purge_loop(settings: "Settings") -> None:
                 if removed["mistakes"]:
                     log.info("自动清理超期错题: %s 删除 %d 条，关联事件 %d 条",
                              openid, removed["mistakes"], removed["question_events"])
+            expired = await db.expire_stale_orientation_waits(
+                settings.db_path, settings.staged_grading.orientation_wait_days)
+            if expired:
+                log.info("方向确认超时转中断: %d 个任务", expired)
         except asyncio.CancelledError:
             raise
         except Exception:

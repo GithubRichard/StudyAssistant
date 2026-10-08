@@ -579,6 +579,66 @@ async def list_runs(db_path: str, task_id: str) -> List[dict]:
             return [dict(r) for r in await cur.fetchall()]
 
 
+async def latest_run_stages(db_path: str, task_ids: List[str]) -> Dict[str, str]:
+    """取一批任务各自最新轮次的 stage（列表页用：区分 waiting_input 是待确认方向还是待补充材料）。"""
+    if not task_ids:
+        return {}
+    placeholders = ",".join("?" for _ in task_ids)
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            f"""SELECT task_id, stage FROM task_runs
+                WHERE task_id IN ({placeholders})
+                  AND run_no = (SELECT MAX(run_no) FROM task_runs r2
+                                WHERE r2.task_id = task_runs.task_id)""",
+            tuple(task_ids),
+        ) as cur:
+            return {str(r[0]): str(r[1] or "") for r in await cur.fetchall()}
+
+
+async def expire_stale_orientation_waits(db_path: str, wait_days: int) -> int:
+    """将超期未确认方向的任务转 interrupted（之后可删除），避免永久残留。
+
+    只处理方向确认阶段（最新轮次 stage='orientation'）的 waiting_input；
+    补充材料（missing_info）的 waiting_input 不受影响。返回转换的任务数。
+    wait_days<=0 时关闭。
+    """
+    if wait_days <= 0:
+        return 0
+    now = time.time()
+    cutoff = now - wait_days * 86400.0
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            """SELECT id FROM tasks
+               WHERE status='waiting_input' AND updated_at < ?
+               AND EXISTS (
+                   SELECT 1 FROM task_runs r
+                   WHERE r.task_id = tasks.id AND r.stage='orientation'
+                   AND r.run_no = (SELECT MAX(run_no) FROM task_runs r2
+                                   WHERE r2.task_id = tasks.id))""",
+            (cutoff,),
+        ) as cur:
+            ids = [r[0] for r in await cur.fetchall()]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        await db.execute(
+            f"""UPDATE tasks SET status='interrupted',
+                   error='方向确认超时未处理，任务已中止，可删除或重新提交',
+                   claim_owner='', claim_expires_at=0, updated_at=?
+               WHERE id IN ({placeholders})""",
+            (now, *ids),
+        )
+        await db.execute(
+            f"""UPDATE task_runs SET status='interrupted', finished_at=?
+               WHERE task_id IN ({placeholders})
+               AND run_no = (SELECT MAX(run_no) FROM task_runs r2
+                             WHERE r2.task_id = task_runs.task_id)""",
+            (now, *ids),
+        )
+        await db.commit()
+        return len(ids)
+
+
 async def has_unconfirmed_run(db_path: str, task_id: str) -> bool:
     """是否存在执行结果未确认的轮次：存在时不允许同任务继续派发。"""
     async with aiosqlite.connect(db_path) as db:
