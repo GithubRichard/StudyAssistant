@@ -371,8 +371,11 @@ class WebStaticCacheTest(unittest.IsolatedAsyncioTestCase):
         res = await self.client.get("/api/web/meta")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.headers["cache-control"], "no-store")
-        version = res.json()["asset_version"]
+        body = res.json()
+        version = body["asset_version"]
         self.assertTrue(version)
+        # 服务端 git 版本号必须带上，界面顶栏与"我的"页展示
+        self.assertTrue(body["git_version"])
         # 版本号必须随前端内容变化，否则探针永远发现不了新前端
         self.write_assets("console.log('v2 with longer source');")
         res2 = await self.client.get("/api/web/meta")

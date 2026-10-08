@@ -248,7 +248,10 @@ if [[ -z "$COMPOSE_KIND" ]]; then
 elif [[ "$changed" != "1" && "$FORCE_REBUILD" != "1" ]]; then
   ok "代码无变更，跳过重建（加 --force-rebuild 可强制）"
 else
-  run "${COMPOSE[@]}" up -d --build --force-recreate "$SERVICE"
+  # 构建参数烘入 git 版本号：界面顶栏与"我的"页展示，方便核对线上跑的是哪版代码
+  gv="${after:0:8}"; [[ -n "$gv" ]] || gv="unknown"
+  run "${COMPOSE[@]}" build --build-arg "GIT_VERSION=$gv" "$SERVICE"
+  run "${COMPOSE[@]}" up -d --force-recreate "$SERVICE"
   if [[ "$DRY_RUN" == "1" ]]; then
     ok "将重建容器"
   else

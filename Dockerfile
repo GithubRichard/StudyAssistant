@@ -22,6 +22,11 @@ COPY scripts ./scripts
 COPY config.example.yaml ./config.example.yaml
 COPY prompt_system.txt ./prompt_system.txt
 
+# git 版本号：构建时由 --build-arg GIT_VERSION 传入（.git 不会 COPY 进镜像），
+# 运行时 SA_GIT_VERSION 为空时回落到 git rev-parse（本地直接跑的场景）。
+ARG GIT_VERSION=unknown
+ENV SA_GIT_VERSION=${GIT_VERSION}
+
 # 非 root 运行；运行数据与工作区通过 volume 挂载
 RUN useradd --system --uid 10001 --create-home appuser \
     && mkdir -p /srv/app/data /srv/app/workspace \

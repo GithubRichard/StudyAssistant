@@ -334,6 +334,8 @@ cd /opt/study-assistant && scripts/update-and-logs.sh
 
 它**不**做这些事：不改 `config.yaml` 与 `.env`（二者不进版本库，`git pull` 不会更新服务器上那两份，账号配置要手工改）、不做数据库迁移（见上文 `scripts/migrate_workspace_accounts.py`）、不碰 git 历史（没有 `reset`/`checkout`）；工作区有已跟踪文件的未提交改动时默认中止，避免 pull 冲突或覆盖。
 
+**核对线上版本**：网页顶栏标题旁与"我的 → 关于"里显示服务端代码的 git 短哈希（如 `9689b9b`），构建时由 `scripts/update-and-logs.sh` 以 `--build-arg GIT_VERSION=` 烘入镜像（Dockerfile 的 `ARG GIT_VERSION`）；本地直接跑时回落到 `git rev-parse`。显示 `unknown` 说明构建时没传参，用脚本更新即恢复。
+
 ## 9. 常见问题
 
 | 现象 | 排查 |

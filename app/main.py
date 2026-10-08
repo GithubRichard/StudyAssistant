@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import api, db, thinking, workspace
+from . import api, db, thinking, version, workspace
 from .config import Settings, load_settings, resolve_web_dir
 from .hermes import HermesClient
 from .tasks import TaskRunner
@@ -74,6 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     _configure_logging()
     settings = settings or load_settings()
     api.settings = settings
+    log.info("服务启动，代码版本 %s", version.git_version())
 
     # 思考过程调试：SA_DEBUG_THINKING=1 时写入按天轮转的日志文件（保留 5 天）
     if thinking.is_enabled():

@@ -19,7 +19,7 @@ from fastapi import (APIRouter, Depends, File, Form, Header, HTTPException, Quer
                      Request, Response, UploadFile)
 from fastapi.responses import FileResponse
 
-from . import auth, db, tasks, wechat, weekly, workspace, orientation_tasks
+from . import auth, db, tasks, wechat, weekly, workspace, orientation_tasks, version
 from .config import Settings, provider_chain, web_asset_version
 from .hermes import HermesClient
 from .schemas import (FamilySettingsUpdate, FollowupCreate, LedgerEventCreate,
@@ -144,6 +144,9 @@ async def web_meta(response: Response):
     `asset_version` 是当前前端资源的版本号：前端的版本探针用它发现
     "服务端已换新前端、本标签页还在跑旧脚本"（单页应用不整页刷新时
     不会重新下载 app.js）。因此这个响应本身必须禁止缓存。
+
+    `git_version` 是服务端代码的 git 短哈希（构建时烘入，见 Dockerfile 的
+    GIT_VERSION），界面顶栏与"我的"页展示，方便核对线上跑的是哪版代码。
     """
     s = get_settings()
     response.headers["Cache-Control"] = "no-store"
@@ -154,6 +157,7 @@ async def web_meta(response: Response):
         "password_required": True,
         "configured": s.web.configured,
         "asset_version": web_asset_version(s),
+        "git_version": version.git_version(),
     }
 
 

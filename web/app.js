@@ -302,7 +302,7 @@ function shell(active, title, content) {
     ["mine", "我的", "👤"],
   ];
   return `
-  <header class="topbar"><div class="topbar-title">${esc(title || (S.meta && S.meta.title) || "学习助手")}</div>
+  <header class="topbar"><div class="topbar-title">${esc(title || (S.meta && S.meta.title) || "学习助手")}${S.meta && S.meta.git_version && S.meta.git_version !== "unknown" ? `<span class="topbar-ver" title="服务端代码版本">${esc(S.meta.git_version)}</span>` : ""}</div>
     ${S.user ? `<div class="topbar-user">${esc(S.user.display_name || S.user.username)}</div>` : ""}
   </header>
   <main class="main">${content}</main>
@@ -1327,6 +1327,7 @@ async function pageMine(app, r, alive) {
     </div>
     <div class="card">
       <div class="card-title">关于</div>
+      <div class="q-row"><span class="q-label">版本</span><div>${esc((S.meta && S.meta.git_version) || "未知")}</div></div>
       <p class="muted small">学习助手网页版 v1 · 内测中<br>一个账号对应一个孩子，数据按账号隔离保存。</p>
       <button class="btn danger block" id="logoutBtn">退出登录</button>
     </div>
