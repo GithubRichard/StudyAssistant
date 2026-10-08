@@ -1,46 +1,42 @@
-grader-1  | 2026-10-08T06:50:45.024186479Z 2026-10-08 14:50:45,022 INFO app.main: 服务启动，代码版本 57913293
-grader-1  | 2026-10-08T06:50:45.024243757Z 2026-10-08 14:50:45,022 INFO app.main: 思考过程日志 → data/logs/thinking.log（按天轮转，保留5天；不再进 docker 日志）
-grader-1  | 2026-10-08T06:50:45.024250069Z 2026-10-08 14:50:45,023 INFO app.main: 网页版入口: /web/ （目录 /srv/app/web）
-grader-1  | 2026-10-08T06:50:45.024252924Z INFO:     Started server process [7]
-grader-1  | 2026-10-08T06:50:45.024255189Z INFO:     Waiting for application startup.
-grader-1  | 2026-10-08T06:50:45.033514489Z 2026-10-08 14:50:45,033 INFO app.main: 学习工作区: /srv/app/workspace（账号 leo、binbin、anna、wx-oCjElxp24iDQz5fK6UgBShmXLUC8、family；学科 语文、数学、英语；新建 0 项；README 新建=False；.gitignore 新建=False；升级=False）
-grader-1  | 2026-10-08T06:50:45.085969256Z 2026-10-08 14:50:45,085 WARNING app.main: Hermes 未就绪: 技能列表接口不可用（Hermes 服务错误 HTTP 500），无法确认技能是否已安装，任务仍会尝试执行
-grader-1  | 2026-10-08T06:50:45.088088391Z INFO:     Application startup complete.
-grader-1  | 2026-10-08T06:50:45.097276859Z INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-grader-1  | 2026-10-08T06:54:03.220467434Z 2026-10-08 14:54:03,220 INFO app.tasks: 创建学习任务 task_id=b1ba5d265d9542ee type=grading kind= scope=-~- assets=1
-grader-1  | 2026-10-08T06:54:03.250333494Z 2026-10-08 14:54:03,250 INFO app.tasks: 开始执行 task_id=b1ba5d265d9542ee run_no=1 budget=1200s assets=1
-grader-1  | 2026-10-08T06:54:03.251101348Z 2026-10-08 14:54:03,251 INFO app.tasks: 分阶段批改 task_id=b1ba5d265d9542ee run_no=1 images=1 followup=False
-grader-1  | 2026-10-08T06:54:16.318536156Z 2026-10-08 14:54:16,318 INFO app.staged: 分阶段批改[extract]成功 provider=ds tokens=1732/2478 cost≈0.0000元
-grader-1  | 2026-10-08T06:54:23.348160238Z 2026-10-08 14:54:23,347 INFO app.staged: 分阶段批改[number_verify]成功 provider=ds tokens=1236/928 cost≈0.0000元
-grader-1  | 2026-10-08T06:54:23.348387465Z 2026-10-08 14:54:23,348 INFO app.staged: 分阶段批改[extract] 题号复核完成：题号序列一致。
-grader-1  | 2026-10-08T06:55:14.835232940Z 2026-10-08 14:55:14,835 INFO app.staged: 分阶段批改[extract_zoom]成功 provider=ds tokens=5533/9714 cost≈0.0000元
-grader-1  | 2026-10-08T06:55:14.835511163Z 2026-10-08 14:55:14,835 INFO app.staged: 分阶段批改[extract] 放大复核完成：2 题待复核，1 题转写被更新
-grader-1  | 2026-10-08T06:55:14.836483462Z 2026-10-08 14:55:14,835 INFO app.tasks: 【提取阶段转写】task_id=b1ba5d265d9542ee run_no=1
-grader-1  | 2026-10-08T06:55:14.836504020Z 共提取 16 题（只转写、不判定）：
-grader-1  | 2026-10-08T06:55:14.836508228Z   题9｜题干：Father often tells me ______ too much time on…｜学生答案：C
-grader-1  | 2026-10-08T06:55:14.836511745Z   题10｜题干：As teenagers, we're old enough to ______ hous…｜学生答案：B
-grader-1  | 2026-10-08T06:55:14.836515051Z   题V.1｜题干：He always provides a context that makes his c…｜学生答案：believed
-grader-1  | 2026-10-08T06:55:14.836518478Z   题V.2｜题干：She had thought very ______ (depth) about thi…｜学生答案：deeply
-grader-1  | 2026-10-08T06:55:14.836521814Z   题V.3｜题干：There is little hope that they will be found …｜学生答案：alive
-grader-1  | 2026-10-08T06:55:14.836534568Z   题V.4｜题干：The staff is busy making ______ (prepare) for…｜学生答案：preparation
-grader-1  | 2026-10-08T06:55:14.836537193Z   题V.5｜题干：All the tickets having been sold out, they we…｜学生答案：disappointed
-grader-1  | 2026-10-08T06:55:14.836539747Z   题V.6｜题干：I will meet you at one of the main ______ (en…｜学生答案：entrances
-grader-1  | 2026-10-08T06:55:14.836542262Z   题V.7｜题干：The waiters threaded between the ______ (crow…｜学生答案：crowded
-grader-1  | 2026-10-08T06:55:14.836544917Z   题V.8｜题干：Graduates have to fight for jobs in a highly …｜学生答案：competitive
-grader-1  | 2026-10-08T06:55:14.836547452Z   题VI.1｜题干：Mum's words rang in his head. (改为否定句) Mum's w…｜学生答案：didn't ring
-grader-1  | 2026-10-08T06:55:14.836549846Z   题VI.2｜题干：He deals with the problem carefully. (改为现在完成时…｜学生答案：has dealt
-grader-1  | 2026-10-08T06:55:14.836552381Z   题VI.3｜题干：I hope to be a football player. (保持句意基本不变) My…｜学生答案：dream; to
-grader-1  | 2026-10-08T06:55:14.836554946Z   题VI.4｜题干：He didn't take up paper cutting. He took up c…｜学生答案：instead of
-grader-1  | 2026-10-08T06:55:14.836557571Z   题VI.5｜题干：your understanding, every disappointment, of,…｜学生答案：What comes with every disappointment is a new chance of your understanding
-grader-1  | 2026-10-08T06:55:14.836560296Z   题VII.1【字迹存疑】【题干存疑】｜题干：Some children undergo a complete transformati…｜学生答案：（未作答/空白）｜备注：图片底部被截断，首字母 t 之后的作答内容无法辨认，学生答案视为空｜题干备注：图片底部被截断，题干结尾部分无法完整辨认
-grader-1  | 2026-10-08T06:55:37.502295524Z 2026-10-08 14:55:37,501 INFO app.staged: 分阶段批改[solve]成功 provider=ds tokens=809/5048 cost≈0.0000元
-grader-1  | 2026-10-08T06:55:45.175904409Z 2026-10-08 14:55:45,175 INFO app.staged: 分阶段批改[compare]成功 provider=ds tokens=639/1402 cost≈0.0000元
-grader-1  | 2026-10-08T06:55:52.669054940Z 2026-10-08 14:55:52,668 INFO app.staged: 分阶段批改[diagnose]成功 provider=ds tokens=511/1348 cost≈0.0000元
-grader-1  | 2026-10-08T06:55:52.884820185Z 2026-10-08 14:55:52,884 INFO app.tasks: 开始复查 task_id=b1ba5d265d9542ee run_no=1 送审=4 超限=0 timeout=600s coverage=reread images=1
-grader-1  | 2026-10-08T06:55:52.885051400Z 2026-10-08 14:55:52,884 INFO app.hermes: 调用复查模型 session=review-b1ba5d265d9542ee-1 model=hy4（provider=tencent-tokenhub） timeout=600.0s
-grader-1  | 2026-10-08T06:56:22.449657923Z 2026-10-08 14:56:22,449 INFO app.api: 任务已删除: task_id=1f8c2065ef21477c openid=web:leo 文件=1
-grader-1  | 2026-10-08T06:57:25.616900669Z 2026-10-08 14:57:25,616 INFO app.hermes: 复查请求耗时 93s session=review-b1ba5d265d9542ee-1
-grader-1  | 2026-10-08T06:57:25.617156099Z 2026-10-08 14:57:25,617 INFO app.hermes: 复查完成 session=review-b1ba5d265d9542ee-1 题数=4 网关报告模型=hy4 tokens=19597/1561
-grader-1  | 2026-10-08T06:57:25.617337300Z 2026-10-08 14:57:25,617 WARNING app.tasks: 复查模型身份仅核对到模型名 task_id=b1ba5d265d9542ee: 网关报告模型 hy4 与期望一致且不同于首轮模型，但网关未报告 provider，无法核对是否为 tencent-tokenhub
-grader-1  | 2026-10-08T06:57:25.618337520Z 2026-10-08 14:57:25,618 INFO app.tasks: 复查完成 task_id=b1ba5d265d9542ee run_no=1 state=partial disagreed=0 unverified=4
-grader-1  | 2026-10-08T06:57:25.687992438Z 2026-10-08 14:57:25,687 INFO app.tasks: 任务完成 task_id=b1ba5d265d9542ee run_no=1 status=waiting_input archive=failed git=- ledger=4
+grader-1  | 2026-10-08T07:37:37.725167828Z 2026-10-08 15:37:37,724 INFO app.main: 服务启动，代码版本 57913293
+grader-1  | 2026-10-08T07:37:37.725465718Z 2026-10-08 15:37:37,725 INFO app.main: 思考过程日志 → data/logs/thinking.log（按天轮转，保留5天；不再进 docker 日志）
+grader-1  | 2026-10-08T07:37:37.726461821Z 2026-10-08 15:37:37,726 INFO app.main: 网页版入口: /web/ （目录 /srv/app/web）
+grader-1  | 2026-10-08T07:37:37.726928088Z INFO:     Started server process [8]
+grader-1  | 2026-10-08T07:37:37.726934991Z INFO:     Waiting for application startup.
+grader-1  | 2026-10-08T07:37:37.770971347Z 2026-10-08 15:37:37,770 INFO app.main: 学习工作区: /srv/app/workspace（账号 leo、binbin、anna、wx-oCjElxp24iDQz5fK6UgBShmXLUC8、family；学科 语文、数学、英语；新建 0 项；README 新建=False；.gitignore 新建=False；升级=False）
+grader-1  | 2026-10-08T07:37:37.861939472Z 2026-10-08 15:37:37,861 WARNING app.main: Hermes 未就绪: 技能列表接口不可用（Hermes 服务错误 HTTP 500），无法确认技能是否已安装，任务仍会尝试执行
+grader-1  | 2026-10-08T07:37:37.864601448Z INFO:     Application startup complete.
+grader-1  | 2026-10-08T07:37:37.875293333Z INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+grader-1  | 2026-10-08T07:37:58.470311560Z 2026-10-08 15:37:58,470 INFO app.tasks: 创建学习任务 task_id=9fe9a943360a4d5a type=grading kind= scope=-~- assets=1
+grader-1  | 2026-10-08T07:37:59.909625647Z 2026-10-08 15:37:59,909 INFO app.tasks: 开始执行 task_id=9fe9a943360a4d5a run_no=1 budget=1200s assets=1
+grader-1  | 2026-10-08T07:37:59.910467551Z 2026-10-08 15:37:59,910 INFO app.tasks: 分阶段批改 task_id=9fe9a943360a4d5a run_no=1 images=1 followup=False
+grader-1  | 2026-10-08T07:38:26.737028260Z 2026-10-08 15:38:26,736 INFO app.staged: 分阶段批改[extract]成功 provider=ds tokens=1732/5992 cost≈0.0000元
+grader-1  | 2026-10-08T07:38:37.596667117Z 2026-10-08 15:38:37,596 WARNING app.providers: provider=ds 输出被截断（max_tokens=2000），不再重试
+grader-1  | 2026-10-08T07:38:37.596700310Z 2026-10-08 15:38:37,596 WARNING app.staged: 分阶段批改[number_verify]输出截断，同一模型放大额度重试: provider=ds 2000->4000
+grader-1  | 2026-10-08T07:38:40.595280572Z 2026-10-08 15:38:40,594 INFO app.staged: 分阶段批改[number_verify]成功 provider=ds tokens=1236/250 cost≈0.0000元
+grader-1  | 2026-10-08T07:38:40.595312542Z 2026-10-08 15:38:40,594 INFO app.staged: 分阶段批改[extract] 题号复核完成：题号序列一致。
+grader-1  | 2026-10-08T07:38:53.358949687Z 2026-10-08 15:38:53,358 INFO app.staged: 分阶段批改[extract_zoom]成功 provider=ds tokens=5467/1245 cost≈0.0000元
+grader-1  | 2026-10-08T07:38:53.359248278Z 2026-10-08 15:38:53,359 INFO app.staged: 分阶段批改[extract] 放大复核完成：1 题待复核，1 题转写被更新
+grader-1  | 2026-10-08T07:38:53.359630556Z 2026-10-08 15:38:53,359 INFO app.tasks: 【提取阶段转写】task_id=9fe9a943360a4d5a run_no=1
+grader-1  | 2026-10-08T07:38:53.359640595Z 共提取 16 题（只转写、不判定）：
+grader-1  | 2026-10-08T07:38:53.359644673Z   题9｜题干：Father often tells me ______ too much time on…｜学生答案：C
+grader-1  | 2026-10-08T07:38:53.359648240Z   题10｜题干：As teenagers, we're old enough to ______ hous…｜学生答案：B
+grader-1  | 2026-10-08T07:38:53.359651706Z   题1｜题干：He always provides a context that makes his c…｜学生答案：belieable
+grader-1  | 2026-10-08T07:38:53.359674760Z   题2｜题干：She had thought very ______ (depth) about thi…｜学生答案：deeply
+grader-1  | 2026-10-08T07:38:53.359677726Z   题3｜题干：There is little hope that they will be found …｜学生答案：alive
+grader-1  | 2026-10-08T07:38:53.359680100Z   题4｜题干：The staff is busy making ______ (prepare) for…｜学生答案：preparation
+grader-1  | 2026-10-08T07:38:53.359682555Z   题5｜题干：All the tickets having been sold out, they we…｜学生答案：disappoint
+grader-1  | 2026-10-08T07:38:53.359684980Z   题6｜题干：I will meet you at one of the main ______ (en…｜学生答案：entrances
+grader-1  | 2026-10-08T07:38:53.359687374Z   题7｜题干：The waiters threaded between the ______ (crow…｜学生答案：crowded
+grader-1  | 2026-10-08T07:38:53.359689899Z   题8｜题干：Graduates have to fight for jobs in a highly …｜学生答案：competitive
+grader-1  | 2026-10-08T07:38:53.359692373Z   题1｜题干：Mum's words rang in his head. (改为否定句) Mum's w…｜学生答案：didn't ring
+grader-1  | 2026-10-08T07:38:53.359694858Z   题2｜题干：He deals with the problem carefully. (改为现在完成时…｜学生答案：has dealt
+grader-1  | 2026-10-08T07:38:53.359697343Z   题3｜题干：I hope to be a football player. (保持句意基本不变) My…｜学生答案：dream; to
+grader-1  | 2026-10-08T07:38:53.359699867Z   题4｜题干：He didn't take up paper cutting. He took up c…｜学生答案：instead of
+grader-1  | 2026-10-08T07:38:53.359702192Z   题5｜题干：your understanding, every disappointment, of,…｜学生答案：What is your understanding of "with every disappointment comes a new chance"?
+grader-1  | 2026-10-08T07:38:53.359705047Z   题1【字迹存疑】｜题干：Some children undergo a complete transformati…｜学生答案：（未作答/空白）｜备注：该题空格（become t____）处字迹极淡且处于页面底端，局部放大图中仅见模糊笔画，无法确认学生所写内容，故无法转写。
+grader-1  | 2026-10-08T07:39:30.118449723Z 2026-10-08 15:39:30,118 INFO app.staged: 分阶段批改[solve]成功 provider=ds tokens=791/8541 cost≈0.0000元
+grader-1  | 2026-10-08T07:39:37.150884069Z 2026-10-08 15:39:37,150 INFO app.staged: 分阶段批改[compare]成功 provider=ds tokens=830/1709 cost≈0.0000元
+grader-1  | 2026-10-08T07:39:59.405932634Z 2026-10-08 15:39:59,405 WARNING app.staged: 分阶段批改[diagnose]切换备胎（输出非法）: 诊断缺题：['1', '2', '4']
+grader-1  | 2026-10-08T07:40:04.489901347Z 2026-10-08 15:40:04,489 WARNING app.staged: 分阶段批改[diagnose]切换备胎（输出非法）: 诊断缺题：['1', '2', '3', '4', '5']
+grader-1  | 2026-10-08T07:40:04.516971480Z 2026-10-08 15:40:04,516 ERROR app.tasks: 任务失败 task_id=9fe9a943360a4d5a: 分阶段批改失败: 所有模型都失败了: ds: 输出校验失败(诊断缺题：['1', '2', '4']) | glm: 输出校验失败(诊断缺题：['1', '2', '3', '4', '5'])
