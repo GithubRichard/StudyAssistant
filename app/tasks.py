@@ -657,27 +657,27 @@ class TaskRunner:
             arch["content_markdown"] = f"{md}\n\n{review_md}" if md else review_md
 
         # 数学题示意图：结果定稿时按题干 AI 重绘 SVG（不依赖台账，
-        # 未记入台账的题结果页也要能看）
+        # 未记入台账的题结果页也要能看）。科目为空时按题干几何关键词判断。
         subject = result.get("subject") or task.get("subject") or ""
-        if diagram.is_math_subject(subject):
+        qs = [q for q in (result.get("questions") or [])
+              if q.get("uid") and not q.get("diagram_svg") and q.get("stem")
+              and diagram.should_attempt_diagram(subject, q.get("stem", ""))]
+        if qs:
             try:
                 chain = provider_chain(s)
                 if chain:
                     prov = make_provider(chain[0], s.llm.providers[chain[0]])
-                    qs = [q for q in (result.get("questions") or [])
-                          if q.get("uid") and not q.get("diagram_svg")]
-                    if qs:
-                        svgs = await asyncio.gather(
-                            *(diagram.generate_diagram_svg(q.get("stem", ""), prov)
-                              for q in qs),
-                            return_exceptions=True)
-                        n = 0
-                        for q, r in zip(qs, svgs):
-                            if isinstance(r, str) and r:
-                                q["diagram_svg"] = r
-                                n += 1
-                        if n:
-                            log.info("task_id=%s 示意图已生成 %d 张", task_id, n)
+                    svgs = await asyncio.gather(
+                        *(diagram.generate_diagram_svg(q.get("stem", ""), prov)
+                          for q in qs),
+                        return_exceptions=True)
+                    n = 0
+                    for q, r in zip(qs, svgs):
+                        if isinstance(r, str) and r:
+                            q["diagram_svg"] = r
+                            n += 1
+                    if n:
+                        log.info("task_id=%s 示意图已生成 %d 张", task_id, n)
             except Exception as e:
                 log.warning("task_id=%s 示意图生成跳过：%s", task_id, e)
 
@@ -766,32 +766,32 @@ async def build_task_view(settings: Settings, task: Dict[str, Any]) -> Dict[str,
     result = normalize_result(task.get("result_json"))
 
     # 示意图懒嵌入：老任务结果里没有 diagram_svg，查看时生成并直接存回结果
-    # （嵌在错题里），下次打开直接有。
+    # （嵌在错题里），下次打开直接有。科目为空时按题干几何关键词判断。
     if result and task.get("status") == "done":
         subj = task.get("subject") or result.get("subject", "") or ""
-        if diagram.is_math_subject(subj):
-            missing = [q for q in (result.get("questions") or [])
-                       if q.get("uid") and not q.get("diagram_svg") and q.get("stem")]
-            if missing:
-                try:
-                    chain = provider_chain(settings)
-                    if chain:
-                        prov = make_provider(chain[0], settings.llm.providers[chain[0]])
-                        svgs = await asyncio.gather(
-                            *(diagram.generate_diagram_svg(q["stem"], prov) for q in missing),
-                            return_exceptions=True)
-                        n = 0
-                        for q, r in zip(missing, svgs):
-                            if isinstance(r, str) and r:
-                                q["diagram_svg"] = r
-                                n += 1
-                        if n:
-                            await db.update_task(
-                                settings.db_path, task["id"],
-                                result_json=json.dumps(result, ensure_ascii=False))
-                            log.info("task_id=%s 懒嵌入示意图 %d 张", task["id"], n)
-                except Exception as e:
-                    log.warning("task_id=%s 示意图懒嵌入跳过：%s", task["id"], e)
+        missing = [q for q in (result.get("questions") or [])
+                   if q.get("uid") and not q.get("diagram_svg") and q.get("stem")
+                   and diagram.should_attempt_diagram(subj, q.get("stem", ""))]
+        if missing:
+            try:
+                chain = provider_chain(settings)
+                if chain:
+                    prov = make_provider(chain[0], settings.llm.providers[chain[0]])
+                    svgs = await asyncio.gather(
+                        *(diagram.generate_diagram_svg(q["stem"], prov) for q in missing),
+                        return_exceptions=True)
+                    n = 0
+                    for q, r in zip(missing, svgs):
+                        if isinstance(r, str) and r:
+                            q["diagram_svg"] = r
+                            n += 1
+                    if n:
+                        await db.update_task(
+                            settings.db_path, task["id"],
+                            result_json=json.dumps(result, ensure_ascii=False))
+                        log.info("task_id=%s 懒嵌入示意图 %d 张", task["id"], n)
+            except Exception as e:
+                log.warning("task_id=%s 示意图懒嵌入跳过：%s", task["id"], e)
 
     ledger = await db.list_ledger_by_task(settings.db_path, task["openid"], task["id"])
     return {

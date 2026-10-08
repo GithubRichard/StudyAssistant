@@ -764,7 +764,8 @@ async def get_ledger_entry(entry_id: int, ctx: dict = Session):
     if not row:
         raise HTTPException(404, "台账条目不存在")
     # 懒生成示意图：老错题（升级前写入）没有 diagram_svg，查看时补上
-    if not row.get("diagram_svg") and diagram.is_math_subject(row.get("subject", "")):
+    if (not row.get("diagram_svg") and row.get("stem")
+            and diagram.should_attempt_diagram(row.get("subject", ""), row.get("stem", ""))):
         try:
             chain = provider_chain(s)
             if chain and row.get("stem"):

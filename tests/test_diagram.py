@@ -78,3 +78,21 @@ class GenerateDiagramTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             await diagram.generate_diagram_svg("正方形", BadProvider()), "")
+
+
+class ShouldAttemptDiagramTest(unittest.TestCase):
+    def test_math_subject(self):
+        self.assertTrue(diagram.should_attempt_diagram("数学", "解方程"))
+        self.assertTrue(diagram.should_attempt_diagram("初中数学", "x=1"))
+
+    def test_empty_subject_with_geometry(self):
+        self.assertTrue(diagram.should_attempt_diagram("", "图1中两正方形底边共线"))
+        self.assertTrue(diagram.should_attempt_diagram("", "求阴影面积"))
+
+    def test_empty_subject_without_geometry(self):
+        self.assertFalse(diagram.should_attempt_diagram("", "exciting"))
+        self.assertFalse(diagram.should_attempt_diagram("", ""))
+
+    def test_other_subject(self):
+        self.assertFalse(diagram.should_attempt_diagram("英语", "图1中两正方形"))
+        self.assertFalse(diagram.should_attempt_diagram("语文", "阅读理解"))

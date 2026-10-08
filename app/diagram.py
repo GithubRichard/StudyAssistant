@@ -83,3 +83,27 @@ async def generate_diagram_svg(stem: str, provider) -> str:
 
 def is_math_subject(subject: str) -> bool:
     return "数学" in (subject or "")
+
+
+# 几何关键词：科目未填时，用题干判断是否值得尝试生成示意图
+_GEOMETRY_KEYWORDS = ("图", "正方形", "长方形", "三角形", "圆形", "圆", "梯形",
+                      "平行四边形", "菱形", "几何", "∠", "△", "⊙", "阴影", "面积")
+
+
+def stem_looks_geometric(stem: str) -> bool:
+    s = stem or ""
+    return any(k in s for k in _GEOMETRY_KEYWORDS)
+
+
+def should_attempt_diagram(subject: str, stem: str = "") -> bool:
+    """是否尝试生成示意图。
+
+    - 科目为数学：是
+    - 科目为空：按题干几何关键词判断（prompt 会对非几何题返回空）
+    - 其他科目：否
+    """
+    if is_math_subject(subject):
+        return True
+    if not (subject or "").strip():
+        return stem_looks_geometric(stem)
+    return False
