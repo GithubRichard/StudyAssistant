@@ -417,6 +417,19 @@ async def list_tasks(db_path: str, openid: str, limit: int = 20,
             return [dict(r) for r in await cur.fetchall()]
 
 
+async def list_all_tasks(db_path: str, limit: int = 50,
+                         offset: int = 0) -> List[dict]:
+    """管理员用：全量任务列表（不限 openid）。"""
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT * FROM tasks
+               ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            (limit, max(0, offset)),
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
 async def delete_task(db_path: str, task_id: str) -> List[str]:
     """删除任务及其全部关联数据（轮次、附件关联、错题、事件、成果索引、归档日志）。
 

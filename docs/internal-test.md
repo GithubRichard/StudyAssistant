@@ -103,3 +103,9 @@ staged_grading:
 - 家长聚合账号（一个家长看多个孩子）。
 - HTTPS 域名、变式题完整能力。
 - 真实模型联调（当前无真实 AppID/API Key）。
+
+## 五、管理员页面
+
+- 网页「我的」→「🛠️ 管理员」（仅管理员账号可见）：删除任意批改任务、实时查看服务器日志（thinking.log / grader.log）。
+- 配置：`config.yaml` 的 `auth.admin_users` 填 web 用户名（如 `["zhou"]`），或环境变量 `SA_ADMIN_USERS=zhou`，重启生效。
+- 删除任务会连带清理台账、事件、附件，不可恢复，请谨慎操作。

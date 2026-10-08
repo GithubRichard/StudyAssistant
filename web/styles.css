@@ -360,6 +360,7 @@ button.mini { padding: 7px 12px; font-size: 13px; }
 .q-stem.large { font-size: 17px; }
 .diagram-wrap { background: #fff; border: 1px solid #e5e5e5; border-radius: 8px; padding: 12px; margin: 4px 0; }
 .diagram-wrap svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+.log-view { background: #1a1a1a; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.5; padding: 12px; border-radius: 8px; max-height: 60vh; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin: 0; }
 .q-row { margin: 8px 0; font-size: 14px; line-height: 1.6; }
 .q-row p { margin: 4px 0; }
 .q-label { display: inline-block; font-size: 12px; color: #888; background: #f3f4f6; border-radius: 6px; padding: 1px 8px; margin-bottom: 4px; }

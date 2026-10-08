@@ -77,6 +77,14 @@ def web_openid(user: str) -> str:
     return WEB_OPENID_PREFIX + name
 
 
+def is_admin(openid: str, admin_users) -> bool:
+    """是否为管理员：openid 为 web:<admin_user> 且用户名在 admin_users 名单。"""
+    if not openid or not str(openid).startswith(WEB_OPENID_PREFIX):
+        return False
+    user = str(openid)[len(WEB_OPENID_PREFIX):]
+    return user in (admin_users or [])
+
+
 def is_authorized(openid: str, allowed: Iterable[str] | None) -> bool:
     """白名单为空表示不做账号限制（本地开发）；配置后只允许名单内账号。"""
     allowed = list(allowed or [])

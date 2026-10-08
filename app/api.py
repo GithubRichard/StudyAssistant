@@ -542,6 +542,16 @@ async def update_family_settings(payload: FamilySettingsUpdate, ctx: dict = Sess
     }
 
 
+@router.get("/web/me")
+async def web_me(ctx: dict = Session):
+    """当前登录用户信息（含是否为管理员）。"""
+    s = get_settings()
+    return {
+        "openid": ctx.get("openid", ""),
+        "is_admin": auth.is_admin(ctx.get("openid", ""), s.auth.admin_users),
+    }
+
+
 @router.get("/web/overview")
 async def web_overview(ctx: dict = Session):
     """今日学习台聚合：待办计数、本周正确率（全学科）、高频错因 TOP3。

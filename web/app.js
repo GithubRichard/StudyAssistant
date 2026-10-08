@@ -275,7 +275,7 @@ async function render() {
     const pages = {
       login: pageLogin, home: pageHome, learn: pageLearn, task: pageTask,
       result: pageResult, practice: pagePractice, review: pageReview,
-      history: pageHistory, mine: pageMine, weekly: pageWeekly,
+      history: pageHistory, mine: pageMine, weekly: pageWeekly, admin: pageAdmin,
     };
     // 复习详情复用 review 路由（带 param 即为详情）
     const fn = pages[r.name] || pageHome;
@@ -1291,16 +1291,150 @@ async function pageWeekly(app, r, alive) {
   };
 }
 
+/* 管理员页：删除批改任务 + 实时查看服务器日志 */
+async function pageAdmin(app, r, alive) {
+  document.title = "管理员";
+  app.innerHTML = shell("mine", "管理员", `<div class="page"><div class="loading">加载中…</div></div>`);
+  const me = await S.api("/web/me").catch(() => null);
+  if (!alive()) return;
+  if (!me || !me.is_admin) {
+    app.innerHTML = shell("mine", "管理员", `<div class="page"><div class="card center">
+      <p>需要管理员权限</p><a class="btn ghost" href="#/mine">返回我的</a></div></div>`);
+    return;
+  }
+
+  const tab = r.query.tab || "tasks";
+  app.innerHTML = shell("mine", "管理员", `
+  <div class="page">
+    <div class="seg">${["tasks", "logs"].map((k) =>
+      `<a href="#/admin?tab=${k}" class="seg-item${k === tab ? " on" : ""}">${k === "tasks" ? "🗑️ 批改任务" : "📋 服务器日志"}</a>`).join("")}</div>
+    <div id="adminBody"><div class="loading">加载中…</div></div>
+  </div>`);
+  if (!alive()) return;
+  if (tab === "logs") renderAdminLogs($("#adminBody"), alive);
+  else renderAdminTasks($("#adminBody"), alive);
+}
+
+async function renderAdminTasks(body, alive) {
+  const data = await S.api("/admin/tasks?limit=50").catch((e) => ({ error: e.message }));
+  if (!alive()) return;
+  if (data.error) {
+    body.innerHTML = `<div class="card center"><p class="muted">${esc(data.error)}</p></div>`;
+    return;
+  }
+  const fmtT = (t) => t ? new Date(t * 1000).toLocaleString("zh-CN", { hour12: false }) : "-";
+  body.innerHTML = `
+    <div class="card">
+      <div class="card-title">批改任务（${data.tasks.length}）</div>
+      <p class="muted small">删除会连带清理台账、事件、附件，请谨慎操作。</p>
+      ${data.tasks.map((t) => `
+      <div class="ledger-item" data-task="${esc(t.id)}">
+        <div class="ledger-top">
+          <span style="font-weight:700">${esc(t.subject || "未指定学科")}</span>
+          <span class="ledger-state">${esc(t.status || "")}</span>
+        </div>
+        <div class="ledger-meta muted small">${esc(t.id.slice(0, 8))} · ${fmtT(t.created_at)}</div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <a class="btn ghost small" href="#/task/${esc(t.id)}">查看</a>
+          <button class="btn danger small" data-del="${esc(t.id)}">删除</button>
+        </div>
+      </div>`).join("") || `<p class="muted">暂无任务</p>`}
+    </div>`;
+  body.querySelectorAll("[data-del]").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.dataset.del;
+      if (!confirm(`确定删除任务 ${id.slice(0, 8)} 吗？台账与附件将一并清理，不可恢复。`)) return;
+      btn.disabled = true;
+      try {
+        await S.api(`/admin/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+        toast("已删除");
+        renderAdminTasks(body, alive);
+      } catch (e) {
+        toast(e.message || "删除失败");
+        btn.disabled = false;
+      }
+    };
+  });
+}
+
+async function renderAdminLogs(body, alive) {
+  const data = await S.api("/admin/logs").catch(() => ({ logs: [] }));
+  if (!alive()) return;
+  const files = (data.logs || []).filter((l) => l.exists);
+  let cur = files[0] ? files[0].name : "thinking.log";
+  let es = null;
+  let paused = false;
+
+  body.innerHTML = `
+    <div class="card">
+      <div class="card-title">服务器日志 <span class="muted small" id="logLive">● 实时</span></div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+        ${files.map((f) => `<button class="btn ghost small log-file${f.name === cur ? " primary" : ""}" data-f="${esc(f.name)}">${esc(f.name)}</button>`).join("")}
+        <button class="btn ghost small" id="logPause">⏸ 暂停</button>
+        <button class="btn ghost small" id="logClear">清空显示</button>
+      </div>
+      <pre id="logView" class="log-view"></pre>
+    </div>`;
+  const view = body.querySelector("#logView");
+  const liveDot = body.querySelector("#logLive");
+
+  const append = (text) => {
+    if (paused) return;
+    const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 60;
+    view.textContent += text + "\n";
+    // 只保留最近 2000 行，防止内存膨胀
+    const lines = view.textContent.split("\n");
+    if (lines.length > 2000) view.textContent = lines.slice(-2000).join("\n");
+    if (atBottom) view.scrollTop = view.scrollHeight;
+  };
+
+  const startStream = () => {
+    stopStream();
+    view.textContent = "";
+    // 先拉最近 200 行，再接实时流
+    S.api(`/admin/logs/tail?file=${encodeURIComponent(cur)}&lines=200`)
+      .then((d) => { if (alive()) (d.lines || []).forEach((l) => append(l)); })
+      .catch(() => {});
+    const token = S.token || "";
+    es = new EventSource(`/admin/logs/stream?file=${encodeURIComponent(cur)}&token=${encodeURIComponent(token)}`);
+    es.onmessage = (ev) => append(ev.data);
+    es.onerror = () => { liveDot.textContent = "○ 断开，重试中…"; };
+    es.onopen = () => { liveDot.textContent = "● 实时"; };
+  };
+  const stopStream = () => { if (es) { es.close(); es = null; } };
+
+  body.querySelectorAll(".log-file").forEach((b) => {
+    b.onclick = () => {
+      cur = b.dataset.f;
+      body.querySelectorAll(".log-file").forEach((x) => x.classList.remove("primary"));
+      b.classList.add("primary");
+      startStream();
+    };
+  });
+  body.querySelector("#logPause").onclick = (e) => {
+    paused = !paused;
+    e.target.textContent = paused ? "▶ 继续" : "⏸ 暂停";
+    liveDot.textContent = paused ? "○ 已暂停" : "● 实时";
+  };
+  body.querySelector("#logClear").onclick = () => { view.textContent = ""; };
+  startStream();
+  // 离开页面时断开
+  const origAlive = alive;
+  const check = setInterval(() => { if (!origAlive()) { stopStream(); clearInterval(check); } }, 1000);
+}
+
 async function pageMine(app, r, alive) {
   document.title = "我的";
   app.innerHTML = shell("mine", "我的", `<div class="page"><div class="loading">加载中…</div></div>`);
-  const [settings, ov] = await Promise.all([
+  const [settings, ov, me] = await Promise.all([
     S.api("/settings").catch(() => null),
     S.api("/web/overview").catch(() => null),
+    S.api("/web/me").catch(() => null),
   ]);
   if (!alive()) return;
   const user = S.user || {};
   const retention = (ov && ov.retention_days) || 730;
+  const isAdmin = !!(me && me.is_admin);
 
   app.innerHTML = shell("mine", "我的", `
   <div class="page">
@@ -1328,6 +1462,14 @@ async function pageMine(app, r, alive) {
         <button class="btn primary block" type="submit">保存设置</button>
       </form>
     </div>
+    ${isAdmin ? `<div class="card">
+      <div class="card-title">管理</div>
+      <a href="#/admin" class="ledger-item" style="margin:0">
+        <div class="ledger-top"><span style="font-size:15px;font-weight:700">🛠️ 管理员</span>
+          <span class="ledger-state">进入 &gt;</span></div>
+        <div class="ledger-meta muted small">删除批改任务、实时查看服务器日志</div>
+      </a>
+    </div>` : ""}
     <div class="card">
       <div class="card-title">关于</div>
       <div class="q-row"><span class="q-label">版本</span><div>${esc((S.meta && S.meta.git_version) || "未知")}</div></div>

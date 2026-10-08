@@ -131,6 +131,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Leo 学习任务服务", version="0.2.0", lifespan=lifespan)
     app.include_router(api.router)
+    from . import admin_api
+    app.include_router(admin_api.router)
 
     @app.get("/healthz")
     async def healthz():

@@ -221,6 +221,18 @@ class AuthConfig(BaseModel):
 
     allowed_openids: List[str] = Field(default_factory=list)
     session_ttl_days: int = 30
+    # 管理员账号（web 用户名，如 ["zhou"]，对应 openid web:zhou）：
+    # 可删除任意批改任务、查看服务器日志。环境变量 SA_ADMIN_USERS 逗号分隔。
+    admin_users: List[str] = Field(default_factory=list)
+
+    @field_validator("admin_users", mode="before")
+    @classmethod
+    def _admin_users_from_env(cls, v):
+        if not v:
+            env = os.environ.get("SA_ADMIN_USERS", "").strip()
+            if env:
+                return [u.strip() for u in env.split(",") if u.strip()]
+        return v or []
 
 
 class WebUserConfig(BaseModel):
