@@ -327,14 +327,17 @@ async def generate_task_diagrams(task_id: str, ctx: dict = Session):
         *(_diagram.generate_diagram_svg(q["stem"], prov) for q in missing),
         return_exceptions=True)
     n = 0
+    failures = []
     for q, r in zip(missing, svgs):
         if isinstance(r, str) and r:
             q["diagram_svg"] = r
             n += 1
+        elif isinstance(r, Exception):
+            failures.append(f"{q.get('no', '?')}: {type(r).__name__}: {r}")
     if n:
         await db.update_task(s.db_path, task_id,
                              result_json=_json.dumps(result, ensure_ascii=False))
-    return {"generated": n, "total": len(missing)}
+    return {"generated": n, "total": len(missing), "failures": failures[:5]}
 
 
 @router.get("/tasks/{task_id}/orientation/{page}")

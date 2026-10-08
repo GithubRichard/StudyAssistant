@@ -920,6 +920,9 @@ function bindDiagramButton(app, task, alive) {
       if (r.generated > 0) {
         msg.textContent = `已生成 ${r.generated} 张，刷新页面查看`;
         setTimeout(() => location.reload(), 1200);
+      } else if (r.failures && r.failures.length) {
+        msg.textContent = `生成失败：${r.failures[0]}`;
+        btn.disabled = false;
       } else {
         msg.textContent = r.message || "无需生成";
         btn.disabled = false;
