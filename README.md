@@ -334,7 +334,7 @@ cd /opt/study-assistant && scripts/update-and-logs.sh
 
 它**不**做这些事：不改 `config.yaml` 与 `.env`（二者不进版本库，`git pull` 不会更新服务器上那两份，账号配置要手工改）、不做数据库迁移（见上文 `scripts/migrate_workspace_accounts.py`）、不碰 git 历史（没有 `reset`/`checkout`）；工作区有已跟踪文件的未提交改动时默认中止，避免 pull 冲突或覆盖。
 
-**推送思考日志**：`scripts/push-thinking-log.sh` 把服务器 `data/logs/thinking.log` 推送到远端 `server-logs` 分支（`--all` 一并推轮转历史；`--branch` 改分支；`--dry-run` 预演）。用 git worktree 做临时工作区，主工作树不动；日志无变化时跳过。注意推送需要该仓库的写权限。
+**推送思考日志**：`scripts/push-thinking-log.sh` 把服务器 `data/logs/thinking.log` 与 grader 容器日志（`docker compose logs`，默认最近 5000 行）推送到远端 `server-logs` 分支（`--all` 一并推轮转历史；`--branch` 改分支；`--no-grader` 只推 thinking.log；`--grader-tail N` 改行数；`--dry-run` 预演）。用 git worktree 做临时工作区，主工作树不动；日志无变化时跳过。注意推送需要该仓库的写权限。
 
 **核对线上版本**：网页顶栏标题旁与"我的 → 关于"里显示服务端代码的 git 短哈希（如 `9689b9b`），构建时由 `scripts/update-and-logs.sh` 以 `--build-arg GIT_VERSION=` 烘入镜像（Dockerfile 的 `ARG GIT_VERSION`）；本地直接跑时回落到 `git rev-parse`。显示 `unknown` 说明构建时没传参，用脚本更新即恢复。
 
