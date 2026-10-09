@@ -425,6 +425,18 @@ const AUTO_SUBJECT = "自动识别（按试卷判断）";
 function qaMarkdown(src) {
   let s = esc(src || "");
   const blocks = [];
+  // 公式：先提取，避免被 markdown 处理破坏
+  const formulas = [];
+  // 块级公式 $$...$$
+  s = s.replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) => {
+    formulas.push({ tex: tex.trim(), display: true });
+    return `\u0001${formulas.length - 1}\u0001`;
+  });
+  // 行内公式 $...$（避开 $$ 已处理的）
+  s = s.replace(/\$([^$\n]+?)\$/g, (_, tex) => {
+    formulas.push({ tex: tex.trim(), display: false });
+    return `\u0002${formulas.length - 1}\u0002`;
+  });
   s = s.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
     blocks.push(`<pre><code>${code.replace(/\n$/, "")}</code></pre>`);
     return `\u0000${blocks.length - 1}\u0000`;
@@ -445,7 +457,31 @@ function qaMarkdown(src) {
   });
   s = s.replace(/\n/g, "<br>");
   s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[+i]);
+  // 还原公式为待渲染的 span（转义 tex 防止 XSS）
+  s = s.replace(/\u0001(\d+)\u0001/g, (_, i) => {
+    const f = formulas[+i];
+    return `<span class="qa-formula" data-tex="${esc(f.tex)}" data-display="1"></span>`;
+  });
+  s = s.replace(/\u0002(\d+)\u0002/g, (_, i) => {
+    const f = formulas[+i];
+    return `<span class="qa-formula" data-tex="${esc(f.tex)}" data-display="0"></span>`;
+  });
   return s;
+}
+
+// 渲染消息容器内的 KaTeX 公式
+function qaRenderFormulas(root) {
+  if (typeof katex === "undefined") return;
+  root.querySelectorAll(".qa-formula").forEach((el) => {
+    if (el.dataset.rendered) return;
+    try {
+      katex.render(el.dataset.tex, el, {
+        displayMode: el.dataset.display === "1",
+        throwOnError: false,
+      });
+      el.dataset.rendered = "1";
+    } catch (e) { /* 保留原文 */ }
+  });
 }
 
 async function pageQaChat(app, alive) {
@@ -473,6 +509,12 @@ async function pageQaChat(app, alive) {
   let sessions = [], curSid = "", sending = false, photos = []; // photos: dataURL[]
 
   const scrollBottom = () => { msgsEl.scrollTop = msgsEl.scrollHeight; };
+  // 输入框自适应高度
+  const autoResize = () => {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 120) + "px";
+  };
+  input.addEventListener("input", autoResize);
 
   function bubble(role, content, images, extra) {
     const div = document.createElement("div");
@@ -485,6 +527,7 @@ async function pageQaChat(app, alive) {
     html += role === "user" ? esc(content) : qaMarkdown(content);
     if (extra) html += extra;
     div.innerHTML = html;
+    qaRenderFormulas(div);
     msgsEl.appendChild(div);
     scrollBottom();
     return div;
@@ -584,6 +627,7 @@ async function pageQaChat(app, alive) {
             aiText += ev.text;
             if (!aiDiv) { typing.remove(); aiDiv = bubble("ai", ""); }
             aiDiv.innerHTML = qaMarkdown(aiText);
+            qaRenderFormulas(aiDiv);
             scrollBottom();
           } else if (ev.t === "done") {
             // 完成：只刷新会话标题，不重载消息（避免重复）
