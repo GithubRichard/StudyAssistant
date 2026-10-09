@@ -52,7 +52,7 @@ if __name__ == "__main__":
 class GenerateDiagramTest(unittest.IsolatedAsyncioTestCase):
     async def test_generates_and_sanitizes(self):
         class FakeOutcome:
-            text = '这是示意图：<svg width="400" height="300"><rect x="0" y="0" width="100" height="100"/></svg>'
+            text = '[{"t":"rect","x":0,"y":0,"w":100,"h":100,"fill":"none"}]'
 
         class FakeProvider:
             async def complete_text(self, system, user, max_tokens=0):
