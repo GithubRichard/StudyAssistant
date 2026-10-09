@@ -669,9 +669,9 @@ class TaskRunner:
                 if not chain:
                     log.warning("task_id=%s 示意图跳过：无可用模型（provider_chain 为空）", task_id)
                 else:
-                    prov = make_provider(chain[0], s.llm.providers[chain[0]])
+                    provs = [make_provider(name, s.llm.providers[name]) for name in chain]
                     svgs = await asyncio.gather(
-                        *(diagram.generate_diagram_svg(q.get("stem", ""), prov)
+                        *(diagram.generate_diagram_svg(q.get("stem", ""), provs)
                           for q in qs),
                         return_exceptions=True)
                     n = 0

@@ -116,41 +116,49 @@ def sanitize_svg(raw: str) -> str:
     return svg
 
 
-async def generate_diagram_svg(stem: str, provider) -> str:
-    """按题干生成示意图 SVG。失败返回 ""（fail-open，不阻断台账写入）。"""
+async def generate_diagram_svg(stem: str, providers) -> str:
+    """按题干生成示意图 SVG。失败返回 ""（fail-open，不阻断台账写入）。
+    
+    providers: 单个 provider 或 provider 列表。列表时逐个尝试，
+    直到某个返回非空（DeepSeek 等推理模型可能把输出全放在 thinking 里导致 text 为空）。
+    """
     stem = (stem or "").strip()
     if not stem:
         return ""
-    try:
-        outcome = await provider.complete_text(
-            DIAGRAM_SYSTEM,
-            f"题目：\n{stem}",
-            max_tokens=2000,
-        )
-        text = (outcome.text or "").strip()
-        thinking = (getattr(outcome, "thinking", "") or "").strip()
-        log.warning("示意图模型原始返回 text_len=%d thinking_len=%d text=%r thinking=%r",
-                    len(text), len(thinking), text[:2000], thinking[:2000])
-        if not text:
-            log.warning("示意图模型返回空")
-            return ""
-        # 提取 JSON 数组
-        m = re.search(r"\[.*\]", text, re.S)
-        if not m:
-            log.warning("示意图未含 JSON 数组，已丢弃（前200字）：%s", text[:200])
-            return ""
+    if not isinstance(providers, (list, tuple)):
+        providers = [providers]
+    for prov in providers:
         try:
-            shapes = json.loads(m.group(0))
-        except json.JSONDecodeError as e:
-            log.warning("示意图 JSON 非法，已丢弃：%s", e)
-            return ""
-        if not isinstance(shapes, list) or not shapes:
-            return ""
-        svg = shapes_to_svg(shapes)
-        return sanitize_svg(svg)
-    except Exception as e:
-        log.warning("示意图生成失败，已跳过：%s", e)
-        return ""
+            outcome = await prov.complete_text(
+                DIAGRAM_SYSTEM,
+                f"题目：\n{stem}",
+                max_tokens=2000,
+            )
+            text = (outcome.text or "").strip()
+            if not text:
+                log.warning("示意图模型 %s 返回空，尝试下一个",
+                            getattr(prov, "name", "?"))
+                continue
+            # 提取 JSON 数组
+            m = re.search(r"\[.*\]", text, re.S)
+            if not m:
+                log.warning("示意图未含 JSON 数组，已丢弃（前200字）：%s", text[:200])
+                continue
+            try:
+                shapes = json.loads(m.group(0))
+            except json.JSONDecodeError as e:
+                log.warning("示意图 JSON 非法，已丢弃：%s", e)
+                continue
+            if not isinstance(shapes, list) or not shapes:
+                continue
+            svg = shapes_to_svg(shapes)
+            svg = sanitize_svg(svg)
+            if svg:
+                return svg
+        except Exception as e:
+            log.warning("示意图生成失败，已跳过：%s", e)
+            continue
+    return ""
 
 
 def is_math_subject(subject: str) -> bool:

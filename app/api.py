@@ -335,9 +335,9 @@ async def generate_task_diagrams(task_id: str, ctx: dict = Session):
     chain = _chain(s)
     if not chain:
         raise HTTPException(500, "无可用模型")
-    prov = _make_provider(chain[0], s.llm.providers[chain[0]])
+    provs = [_make_provider(name, s.llm.providers[name]) for name in chain]
     svgs = await _asyncio.gather(
-        *(_diagram.generate_diagram_svg(q["stem"], prov) for q in missing),
+        *(_diagram.generate_diagram_svg(q["stem"], provs) for q in missing),
         return_exceptions=True)
     n = 0
     failures = []
