@@ -184,6 +184,13 @@ async def generate_diagram(stem: str, providers) -> DiagramResult:
         return DiagramResult("skipped", reason="empty_stem", message="题干为空，未绘图")
     if not isinstance(providers, (list, tuple)):
         providers = [providers]
+    # 绘图优先用非推理模型（glmf）：ds 等推理模型会把输出吞进 thinking 通道，
+    # 导致 text 为空。主批改流程不受影响（仍按 chain 原顺序）。
+    # 稳定排序：含 glm 的提前，其余保持原相对顺序。
+    def _diagram_key(p):
+        n = (getattr(p, "name", "") or "").lower()
+        return 0 if "glm" in n else 1
+    providers = sorted(providers, key=_diagram_key)
     attempts = 0
     last = DiagramResult("failed", reason="no_provider", message="没有可用绘图模型")
     for prov in providers:
