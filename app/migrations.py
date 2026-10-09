@@ -375,6 +375,35 @@ async def run_migrations(path: str) -> dict:
                              (time.time(),))
             applied.append(6)
 
+        if 7 not in versions:
+            # v7：问问题聊天（#/learn?tab=qa）：会话 + 多轮消息，按 openid 隔离
+            await db.executescript(
+                """CREATE TABLE IF NOT EXISTS qa_sessions(
+                     id TEXT PRIMARY KEY,
+                     openid TEXT NOT NULL,
+                     title TEXT NOT NULL DEFAULT '',
+                     created_at REAL NOT NULL,
+                     updated_at REAL NOT NULL
+                   );
+                   CREATE INDEX IF NOT EXISTS idx_qa_sessions_openid
+                     ON qa_sessions(openid, updated_at DESC);
+                   CREATE TABLE IF NOT EXISTS qa_messages(
+                     id TEXT PRIMARY KEY,
+                     session_id TEXT NOT NULL,
+                     role TEXT NOT NULL,
+                     content TEXT NOT NULL DEFAULT '',
+                     images_json TEXT NOT NULL DEFAULT '[]',
+                     created_at REAL NOT NULL
+                   );
+                   CREATE INDEX IF NOT EXISTS idx_qa_messages_session
+                     ON qa_messages(session_id, created_at);""")
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS schema_version("
+                "version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)")
+            await db.execute("INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES(7, ?)",
+                             (time.time(),))
+            applied.append(7)
+
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA busy_timeout=5000")
         await db.commit()

@@ -420,9 +420,229 @@ const DEFAULT_SUBJECTS = ["数学", "语文", "英语", "物理", "化学", "生
 // 学科留空交给模型按材料判断：试卷/题目本身就能推断出学科，不必让用户先选
 const AUTO_SUBJECT = "自动识别（按试卷判断）";
 
+/* ---------------- 问问题：聊天式 ---------------- */
+/** 极简安全 Markdown：先转义，再处理 code 块/行内 code/粗体/斜体/列表/换行。 */
+function qaMarkdown(src) {
+  let s = esc(src || "");
+  const blocks = [];
+  s = s.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    blocks.push(`<pre><code>${code.replace(/\n$/, "")}</code></pre>`);
+    return `\u0000${blocks.length - 1}\u0000`;
+  });
+  s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  // 列表：连续的 - / * / 数字. 行
+  s = s.replace(/((?:^|\n)(?:\s*[-*]\s+[^\n]+\n?)+)/g, (m) => {
+    const items = m.trim().split("\n").map((l) =>
+      `<li>${l.replace(/^\s*[-*]\s+/, "")}</li>`).join("");
+    return `\n<ul>${items}</ul>`;
+  });
+  s = s.replace(/((?:^|\n)(?:\s*\d+[.)]\s+[^\n]+\n?)+)/g, (m) => {
+    const items = m.trim().split("\n").map((l) =>
+      `<li>${l.replace(/^\s*\d+[.)]\s+/, "")}</li>`).join("");
+    return `\n<ol>${items}</ol>`;
+  });
+  s = s.replace(/\n/g, "<br>");
+  s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[+i]);
+  return s;
+}
+
+async function pageQaChat(app, alive) {
+  document.title = "问问题";
+  app.innerHTML = shell("home", "问问题", `
+  <div class="page">
+    <div class="qa-wrap">
+      <div class="qa-bar">
+        <select id="qaSel" aria-label="选择对话"></select>
+        <button id="qaNew" class="btn ghost">＋新对话</button>
+        <button id="qaDel" class="btn ghost">删除</button>
+      </div>
+      <div class="qa-msgs" id="qaMsgs"><div class="loading">加载中…</div></div>
+      <div class="qa-inputbar">
+        <label class="qa-photo" title="拍照提问">📷<input type="file" id="qaPhoto" accept="image/*" hidden></label>
+        <textarea id="qaInput" rows="1" placeholder="输入问题，比如哪一步卡住了…"></textarea>
+        <button id="qaSend" class="btn primary">发送</button>
+      </div>
+      <div class="qa-photo-prev" id="qaPhotoPrev"></div>
+    </div>
+  </div>`);
+
+  const msgsEl = $("#qaMsgs"), sel = $("#qaSel"), input = $("#qaInput");
+  const sendBtn = $("#qaSend"), photoInput = $("#qaPhoto"), photoPrev = $("#qaPhotoPrev");
+  let sessions = [], curSid = "", sending = false, photos = []; // photos: dataURL[]
+
+  const scrollBottom = () => { msgsEl.scrollTop = msgsEl.scrollHeight; };
+
+  function bubble(role, content, images, extra) {
+    const div = document.createElement("div");
+    div.className = "qa-msg " + (role === "user" ? "user" : "ai");
+    let html = "";
+    if (images && images.length) {
+      html += `<div class="qa-imgs">${images.map((u) =>
+        `<img src="${esc(u)}" loading="lazy">`).join("")}</div>`;
+    }
+    html += role === "user" ? esc(content) : qaMarkdown(content);
+    if (extra) html += extra;
+    div.innerHTML = html;
+    msgsEl.appendChild(div);
+    scrollBottom();
+    return div;
+  }
+
+  async function loadSessions(selectId, skipMessages) {
+    const data = await S.api("/qa/sessions").catch(() => ({ sessions: [] }));
+    sessions = data.sessions || [];
+    const keep = sel.value;
+    sel.innerHTML = sessions.map((s) =>
+      `<option value="${esc(s.id)}">${esc(s.title || "新对话")}</option>`).join("");
+    if (!sessions.length) {
+      const r = await S.api("/qa/sessions", { method: "POST", body: {} }).catch(() => null);
+      if (r && r.id) return loadSessions(r.id);
+      msgsEl.innerHTML = `<div class="qa-empty">AI 暂时不可用，请稍后再试</div>`;
+      return;
+    }
+    curSid = selectId && sessions.some((s) => s.id === selectId)
+      ? selectId : (sessions.some((s) => s.id === keep) ? keep : sessions[0].id);
+    sel.value = curSid;
+    if (!skipMessages) await loadMessages();
+  }
+
+  async function loadMessages() {
+    msgsEl.innerHTML = `<div class="loading">加载中…</div>`;
+    const data = await S.api(`/qa/sessions/${encodeURIComponent(curSid)}/messages`)
+      .catch(() => ({ messages: [] }));
+    msgsEl.innerHTML = "";
+    const list = data.messages || [];
+    if (!list.length) {
+      msgsEl.innerHTML = `<div class="qa-empty">👋 你好！把不会的题拍下来，或者直接打字问我。<br>我会先给提示、带你思考，卡住再讲步骤。</div>`;
+      return;
+    }
+    list.forEach((m) => bubble(m.role, m.content, m.images));
+  }
+
+  function renderPhotoPrev() {
+    photoPrev.innerHTML = "";
+    photos.forEach((u, i) => {
+      const w = document.createElement("div");
+      w.className = "thumb-wrap";
+      w.innerHTML = `<img src="${esc(u)}"><button class="thumb-del" aria-label="移除">×</button>`;
+      w.querySelector("button").onclick = () => { photos.splice(i, 1); renderPhotoPrev(); };
+      photoPrev.appendChild(w);
+    });
+  }
+
+  photoInput.onchange = () => {
+    const files = Array.from(photoInput.files || []).slice(0, 4 - photos.length);
+    photoInput.value = "";
+    files.forEach((f) => {
+      const rd = new FileReader();
+      rd.onload = () => { photos.push(rd.result); renderPhotoPrev(); };
+      rd.readAsDataURL(f);
+    });
+  };
+
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 120) + "px";
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); }
+  });
+
+  async function doSend(retryBody) {
+    if (sending) return;
+    const content = (retryBody && retryBody.content) || input.value.trim();
+    const imgs = (retryBody && retryBody.images) || photos.slice();
+    if (!content && !imgs.length) return;
+    sending = true;
+    sendBtn.disabled = true;
+    bubble("user", content, imgs);
+    if (!retryBody) { input.value = ""; input.style.height = "auto"; photos = []; renderPhotoPrev(); }
+    const typing = bubble("ai", "", null, `<span class="qa-msg typing">正在思考…</span>`);
+    // 流式：fetch + ReadableStream 解析 SSE
+    let aiText = "", aiDiv = null, failed = false;
+    try {
+      const res = await fetch("/api/qa/sessions/" + encodeURIComponent(curSid) + "/messages", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + S.token, "Content-Type": "application/json" },
+        body: JSON.stringify({ content, images: imgs }),
+      });
+      if (!res.ok) throw new Error(`请求失败（${res.status}）`);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      const flush = () => {
+        const parts = buf.split("\n\n");
+        buf = parts.pop();
+        for (const p of parts) {
+          const line = p.trim().split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue;
+          let ev;
+          try { ev = JSON.parse(line.slice(5).trim()); } catch (_) { continue; }
+          if (ev.t === "delta" && ev.text) {
+            aiText += ev.text;
+            if (!aiDiv) { typing.remove(); aiDiv = bubble("ai", ""); }
+            aiDiv.innerHTML = qaMarkdown(aiText);
+            scrollBottom();
+          } else if (ev.t === "done") {
+            // 完成：只刷新会话标题，不重载消息（避免重复）
+            loadSessions(curSid, true).catch(() => {});
+          } else if (ev.t === "error") {
+            throw new Error(ev.message || "AI 返回异常");
+          }
+        }
+      };
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        flush();
+      }
+      flush();
+      if (!aiText) throw new Error("AI 返回为空，请重试");
+    } catch (e) {
+      failed = true;
+      typing.remove();
+      const errBody = { content, images: imgs };
+      const errDiv = bubble("ai", `⚠️ ${e.message || "发送失败"}`,
+        null, `<button class="qa-retry">重试</button>`);
+      errDiv.querySelector(".qa-retry").onclick = () => { errDiv.remove(); doSend(errBody); };
+    } finally {
+      sending = false;
+      sendBtn.disabled = false;
+    }
+  }
+
+  sendBtn.onclick = () => doSend();
+  sel.onchange = () => { curSid = sel.value; if (alive()) loadMessages(); };
+  $("#qaNew").onclick = async () => {
+    const r = await S.api("/qa/sessions", { method: "POST", body: {} }).catch(() => null);
+    if (r && r.id) loadSessions(r.id);
+  };
+  $("#qaDel").onclick = async () => {
+    if (!curSid || !confirm("删除这个对话？")) return;
+    await S.api(`/qa/sessions/${encodeURIComponent(curSid)}`, { method: "DELETE" }).catch(() => {});
+    loadSessions();
+  };
+
+  // 图片点击放大：复用全局图片查看（如有 lightbox 则用，否则新窗口）
+  msgsEl.addEventListener("click", (e) => {
+    const img = e.target.closest(".qa-imgs img");
+    if (img && typeof openImageViewer === "function") openImageViewer(img.src);
+    else if (img) window.open(img.src, "_blank");
+  });
+
+  loadSessions();
+}
+
 async function pageLearn(app, r, alive) {
   document.title = "提交";
   const tab = LEARN_TABS.some(([k]) => k === r.query.tab) ? r.query.tab : "grading";
+  if (tab === "qa") {
+    pageQaChat(app, alive);
+    return;
+  }
   app.innerHTML = shell("home", "提交", `<div class="page"><div class="loading">加载中…</div></div>`);
   const settings = await S.api("/settings").catch(() => null);
   if (!alive()) return;

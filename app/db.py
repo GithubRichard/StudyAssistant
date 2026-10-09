@@ -1407,3 +1407,89 @@ async def list_question_events(db_path: str, openid: str, question_uid: str = ""
         db.row_factory = aiosqlite.Row
         async with db.execute(sql, args) as cur:
             return [dict(r) for r in await cur.fetchall()]
+
+
+# ---------- 问问题聊天（v7） ----------
+
+async def create_qa_session(db_path: str, session_id: str, openid: str,
+                            title: str = "") -> None:
+    now = time.time()
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT INTO qa_sessions(id, openid, title, created_at, updated_at)"
+            " VALUES(?,?,?,?,?)",
+            (session_id, openid, title, now, now),
+        )
+        await db.commit()
+
+
+async def list_qa_sessions(db_path: str, openid: str,
+                           limit: int = 50) -> List[dict]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+                "SELECT id, title, created_at, updated_at FROM qa_sessions"
+                " WHERE openid=? ORDER BY updated_at DESC LIMIT ?",
+                (openid, limit)) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_qa_session(db_path: str, session_id: str) -> Optional[dict]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM qa_sessions WHERE id=?",
+                             (session_id,)) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def touch_qa_session(db_path: str, session_id: str,
+                           title: Optional[str] = None) -> None:
+    async with aiosqlite.connect(db_path) as db:
+        if title is not None:
+            await db.execute(
+                "UPDATE qa_sessions SET title=?, updated_at=? WHERE id=?",
+                (title, time.time(), session_id))
+        else:
+            await db.execute("UPDATE qa_sessions SET updated_at=? WHERE id=?",
+                             (time.time(), session_id))
+        await db.commit()
+
+
+async def delete_qa_session(db_path: str, session_id: str) -> None:
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("DELETE FROM qa_messages WHERE session_id=?",
+                         (session_id,))
+        await db.execute("DELETE FROM qa_sessions WHERE id=?", (session_id,))
+        await db.commit()
+
+
+async def add_qa_message(db_path: str, msg_id: str, session_id: str, role: str,
+                         content: str, images: Optional[list] = None) -> None:
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT INTO qa_messages(id, session_id, role, content, images_json, created_at)"
+            " VALUES(?,?,?,?,?,?)",
+            (msg_id, session_id, role, content,
+             json.dumps(images or []), time.time()),
+        )
+        await db.execute("UPDATE qa_sessions SET updated_at=? WHERE id=?",
+                         (time.time(), session_id))
+        await db.commit()
+
+
+async def list_qa_messages(db_path: str, session_id: str,
+                           limit: int = 200) -> List[dict]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+                "SELECT id, role, content, images_json, created_at FROM qa_messages"
+                " WHERE session_id=? ORDER BY created_at ASC LIMIT ?",
+                (session_id, limit)) as cur:
+            rows = [dict(r) for r in await cur.fetchall()]
+    for r in rows:
+        try:
+            r["images"] = json.loads(r.pop("images_json") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            r["images"] = []
+    return rows

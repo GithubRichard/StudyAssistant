@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from abc import ABC, abstractmethod
+from typing import AsyncIterator
 
 import httpx
 from pydantic import BaseModel
@@ -59,6 +61,16 @@ class BaseProvider(ABC):
                           user_prompt: str, max_tokens: int = 8000) -> GradeOutcome:
         """多图批改：images 为 [(image_bytes, mime)]，一次调用看全所有图片。"""
 
+    async def stream_text(self, system_prompt: str, user_prompt: str,
+                          max_tokens: int = 4000,
+                          timeout: float | None = None) -> AsyncIterator[str]:
+        """流式纯文本补全，逐块产出正文增量。默认实现走非流式 complete_text
+        （整段一次产出），OpenAI 兼容类可覆盖为真流式。"""
+        outcome = await self.complete_text(system_prompt, user_prompt,
+                                           max_tokens=max_tokens, timeout=timeout)
+        if outcome.text:
+            yield outcome.text
+
 
 class OpenAICompatibleProvider(BaseProvider):
     """走 /chat/completions 的厂商：千问 / GLM / DeepSeek / 豆包 / Kimi…"""
@@ -85,6 +97,52 @@ class OpenAICompatibleProvider(BaseProvider):
             {"role": "user", "content": user_prompt},
         ]
         return await self._chat(messages, max_tokens=max_tokens, timeout=timeout)
+
+    async def stream_text(self, system_prompt: str, user_prompt: str,
+                          max_tokens: int = 4000,
+                          timeout: float | None = None) -> AsyncIterator[str]:
+        """真流式：SSE 解析 /chat/completions 的 delta 增量。"""
+        url = self.cfg.base_url.rstrip("/") + "/chat/completions"
+        payload = {
+            "model": self.cfg.model,
+            "temperature": 0.2,
+            "max_tokens": max_tokens,
+            "stream": True,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        headers = {"Authorization": f"Bearer {self.cfg.api_key}"}
+        try:
+            async with httpx.AsyncClient(timeout=timeout or self.cfg.timeout) as client:
+                async with client.stream("POST", url, json=payload,
+                                         headers=headers) as resp:
+                    if resp.status_code != 200:
+                        body = await resp.aread()
+                        raise ProviderError(
+                            f"HTTP {resp.status_code}: {body[:300]!r}")
+                    async for line in resp.aiter_lines():
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            obj = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        choices = obj.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = (choices[0].get("delta") or {}).get("content") or ""
+                        if delta:
+                            yield delta
+        except Exception as e:  # noqa: BLE001
+            log.warning("provider=%s 流式调用失败（%s）: %s",
+                        self.name, type(e).__name__, e)
+            raise
 
     async def grade_multi(self, images: list, system_prompt: str,
                           user_prompt: str, max_tokens: int = 8000) -> GradeOutcome:

@@ -133,6 +133,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(api.router)
     from . import admin_api
     app.include_router(admin_api.router)
+    from . import qa_api
+    app.include_router(qa_api.router)
 
     @app.get("/healthz")
     async def healthz():

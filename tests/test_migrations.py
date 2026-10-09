@@ -41,10 +41,10 @@ class MigrationTest(unittest.IsolatedAsyncioTestCase):
         await build_legacy_db(self.db_path)
         result = await migrations.run_migrations(self.db_path)
 
-        self.assertEqual(sorted(result["applied"]), [1, 2, 3, 4, 5, 6])
+        self.assertEqual(sorted(result["applied"]), [1, 2, 3, 4, 5, 6, 7])
         self.assertIsNotNone(result["backup"], "旧库升级前必须备份")
         self.assertTrue(Path(result["backup"]).exists())
-        self.assertEqual(await migrations.current_version(self.db_path), 6)
+        self.assertEqual(await migrations.current_version(self.db_path), 7)
 
         # 旧任务保留且可读
         task = await db.get_task(self.db_path, "old-task")
@@ -63,7 +63,7 @@ class MigrationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_fresh_db_has_no_backup(self):
         result = await migrations.run_migrations(self.db_path)
-        self.assertEqual(sorted(result["applied"]), [1, 2, 3, 4, 5, 6])
+        self.assertEqual(sorted(result["applied"]), [1, 2, 3, 4, 5, 6, 7])
         self.assertIsNone(result["backup"])
 
     async def test_new_tables_exist(self):
