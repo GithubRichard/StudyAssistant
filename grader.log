@@ -1,12 +1,13 @@
-grader-1  | 2026-10-09T02:38:34.387290859Z 2026-10-09 10:38:34,387 INFO app.main: 服务启动，代码版本 da71714e
-grader-1  | 2026-10-09T02:38:34.387490736Z 2026-10-09 10:38:34,387 INFO app.main: 思考过程日志 → data/logs/thinking.log（按天轮转，保留5天；不再进 docker 日志）
-grader-1  | 2026-10-09T02:38:34.394850314Z 2026-10-09 10:38:34,394 INFO app.main: 网页版入口: /web/ （目录 /srv/app/web）
-grader-1  | 2026-10-09T02:38:34.395131143Z INFO:     Started server process [7]
-grader-1  | 2026-10-09T02:38:34.395137315Z INFO:     Waiting for application startup.
-grader-1  | 2026-10-09T02:38:34.433798662Z 2026-10-09 10:38:34,433 INFO app.main: 学习工作区: /srv/app/workspace（账号 leo、binbin、anna、wx-oCjElxp24iDQz5fK6UgBShmXLUC8、family；学科 语文、数学、英语；新建 0 项；README 新建=False；.gitignore 新建=False；升级=False）
-grader-1  | 2026-10-09T02:38:34.519249494Z 2026-10-09 10:38:34,519 WARNING app.main: Hermes 未就绪: 技能列表接口不可用（Hermes 服务错误 HTTP 500），无法确认技能是否已安装，任务仍会尝试执行
-grader-1  | 2026-10-09T02:38:34.521371186Z INFO:     Application startup complete.
-grader-1  | 2026-10-09T02:38:34.529546041Z INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-grader-1  | 2026-10-09T02:43:54.619551504Z WARNING:  Invalid HTTP request received.
-grader-1  | 2026-10-09T02:49:59.823426624Z 2026-10-09 10:49:59,823 WARNING app.providers: provider=ds 输出被截断（max_tokens=8000），不再重试
-grader-1  | 2026-10-09T02:50:01.341271080Z 2026-10-09 10:50:01,341 WARNING app.providers: provider=ds 输出被截断（max_tokens=8000），不再重试
+grader-1  | 2026-10-09T03:01:09.764338365Z 2026-10-09 11:01:09,764 INFO app.main: 服务启动，代码版本 5ea65a6c
+grader-1  | 2026-10-09T03:01:09.764755030Z 2026-10-09 11:01:09,764 INFO app.main: 思考过程日志 → data/logs/thinking.log（按天轮转，保留5天；不再进 docker 日志）
+grader-1  | 2026-10-09T03:01:09.772019540Z 2026-10-09 11:01:09,771 INFO app.main: 网页版入口: /web/ （目录 /srv/app/web）
+grader-1  | 2026-10-09T03:01:09.772246659Z INFO:     Started server process [6]
+grader-1  | 2026-10-09T03:01:09.772381332Z INFO:     Waiting for application startup.
+grader-1  | 2026-10-09T03:01:09.781236913Z 2026-10-09 11:01:09,781 INFO app.main: 学习工作区: /srv/app/workspace（账号 leo、binbin、anna、wx-oCjElxp24iDQz5fK6UgBShmXLUC8、family；学科 语文、数学、英语；新建 0 项；README 新建=False；.gitignore 新建=False；升级=False）
+grader-1  | 2026-10-09T03:01:09.830987397Z 2026-10-09 11:01:09,830 WARNING app.main: Hermes 未就绪: 技能列表接口不可用（Hermes 服务错误 HTTP 500），无法确认技能是否已安装，任务仍会尝试执行
+grader-1  | 2026-10-09T03:01:09.833595255Z INFO:     Application startup complete.
+grader-1  | 2026-10-09T03:01:09.841949530Z INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+grader-1  | 2026-10-09T03:01:55.281267498Z 2026-10-09 11:01:55,281 WARNING app.providers: provider=ds 输出被截断（max_tokens=8000），不再重试
+grader-1  | 2026-10-09T03:01:55.281301302Z 2026-10-09 11:01:55,281 WARNING studyassistant.diagram: 示意图模型返回空
+grader-1  | 2026-10-09T03:01:57.035650606Z 2026-10-09 11:01:57,035 WARNING app.providers: provider=ds 输出被截断（max_tokens=8000），不再重试
+grader-1  | 2026-10-09T03:01:57.035679129Z 2026-10-09 11:01:57,035 WARNING studyassistant.diagram: 示意图模型返回空
