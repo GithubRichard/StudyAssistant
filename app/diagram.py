@@ -33,9 +33,11 @@ def sanitize_svg(raw: str) -> str:
     - 大小上限 100KB
     """
     if not raw:
+        log.warning("示意图模型返回空")
         return ""
     m = re.search(r"<svg\b.*?</svg>", raw, re.S | re.I)
     if not m:
+        log.warning("示意图未含 <svg> 标签，已丢弃（前200字）：%s", raw[:200])
         return ""
     svg = m.group(0).strip()
     if len(svg.encode("utf-8")) > _MAX_SVG_BYTES:
@@ -70,7 +72,7 @@ async def generate_diagram_svg(stem: str, provider) -> str:
         outcome = await provider.complete_text(
             DIAGRAM_SYSTEM,
             f"题目：\n{stem}",
-            max_tokens=2000,
+            max_tokens=8000,
         )
         text = (outcome.text or "").strip()
         if not text:
