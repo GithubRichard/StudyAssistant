@@ -1,17 +1,29 @@
-grader-1  | 2026-10-09T03:45:09.401288276Z 2026-10-09 11:45:09,400 INFO app.main: 服务启动，代码版本 19711af4
-grader-1  | 2026-10-09T03:45:09.401331227Z 2026-10-09 11:45:09,401 INFO app.main: 思考过程日志 → data/logs/thinking.log（按天轮转，保留5天；不再进 docker 日志）
-grader-1  | 2026-10-09T03:45:09.408599555Z 2026-10-09 11:45:09,408 INFO app.main: 网页版入口: /web/ （目录 /srv/app/web）
-grader-1  | 2026-10-09T03:45:09.408783732Z INFO:     Started server process [7]
-grader-1  | 2026-10-09T03:45:09.408910952Z INFO:     Waiting for application startup.
-grader-1  | 2026-10-09T03:45:09.419102088Z 2026-10-09 11:45:09,418 INFO app.main: 学习工作区: /srv/app/workspace（账号 leo、binbin、anna、wx-oCjElxp24iDQz5fK6UgBShmXLUC8、family；学科 语文、数学、英语；新建 0 项；README 新建=False；.gitignore 新建=False；升级=False）
-grader-1  | 2026-10-09T03:45:09.502822708Z 2026-10-09 11:45:09,502 WARNING app.main: Hermes 未就绪: 技能列表接口不可用（Hermes 服务错误 HTTP 500），无法确认技能是否已安装，任务仍会尝试执行
-grader-1  | 2026-10-09T03:45:09.504798643Z INFO:     Application startup complete.
-grader-1  | 2026-10-09T03:45:09.512433441Z INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-grader-1  | 2026-10-09T03:45:38.234820886Z 2026-10-09 11:45:38,234 WARNING app.providers: provider=ds 输出被截断（max_tokens=4000），不再重试
-grader-1  | 2026-10-09T03:45:38.234874125Z 2026-10-09 11:45:38,234 WARNING studyassistant.diagram: 示意图 provider=ds budget=4000 reason=truncated attempt=1
-grader-1  | 2026-10-09T03:45:38.636635208Z 2026-10-09 11:45:38,636 WARNING app.providers: provider=ds 输出被截断（max_tokens=4000），不再重试
-grader-1  | 2026-10-09T03:45:38.636662449Z 2026-10-09 11:45:38,636 WARNING studyassistant.diagram: 示意图 provider=ds budget=4000 reason=truncated attempt=1
-grader-1  | 2026-10-09T03:46:17.836284987Z 2026-10-09 11:46:17,836 WARNING app.providers: provider=ds 输出被截断（max_tokens=8000），不再重试
-grader-1  | 2026-10-09T03:46:17.836319753Z 2026-10-09 11:46:17,836 WARNING studyassistant.diagram: 示意图 provider=ds budget=8000 reason=truncated attempt=2
-grader-1  | 2026-10-09T03:46:37.118991949Z 2026-10-09 11:46:37,118 WARNING app.providers: provider=glmf 输出被截断（max_tokens=1024），不再重试
-grader-1  | 2026-10-09T03:46:37.119087810Z 2026-10-09 11:46:37,118 WARNING studyassistant.diagram: 示意图 provider=glmf budget=1024 reason=truncated attempt=3
+grader-1  | 2026-10-09T05:49:35.994665549Z 2026-10-09 13:49:35,994 INFO app.main: 服务启动，代码版本 91524dcf
+grader-1  | 2026-10-09T05:49:35.994947361Z 2026-10-09 13:49:35,994 INFO app.main: 思考过程日志 → data/logs/thinking.log（按天轮转，保留5天；不再进 docker 日志）
+grader-1  | 2026-10-09T05:49:36.001910993Z 2026-10-09 13:49:36,001 INFO app.main: 网页版入口: /web/ （目录 /srv/app/web）
+grader-1  | 2026-10-09T05:49:36.002229904Z INFO:     Started server process [7]
+grader-1  | 2026-10-09T05:49:36.002238400Z INFO:     Waiting for application startup.
+grader-1  | 2026-10-09T05:49:36.042253314Z 2026-10-09 13:49:36,042 INFO app.main: 学习工作区: /srv/app/workspace（账号 leo、binbin、anna、wx-oCjElxp24iDQz5fK6UgBShmXLUC8、family；学科 语文、数学、英语；新建 0 项；README 新建=False；.gitignore 新建=False；升级=False）
+grader-1  | 2026-10-09T05:49:36.102313250Z 2026-10-09 13:49:36,102 WARNING app.main: Hermes 未就绪: 技能列表接口不可用（Hermes 服务错误 HTTP 500），无法确认技能是否已安装，任务仍会尝试执行
+grader-1  | 2026-10-09T05:49:36.104742111Z INFO:     Application startup complete.
+grader-1  | 2026-10-09T05:49:36.113729570Z INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+grader-1  | 2026-10-09T05:52:48.432228928Z 2026-10-09 13:52:48,432 WARNING app.providers: provider=glmf 输出被截断（max_tokens=4000），不再重试
+grader-1  | 2026-10-09T05:52:48.432364623Z 2026-10-09 13:52:48,432 WARNING studyassistant.diagram: 示意图 provider=glmf budget=4000 reason=truncated attempt=1
+grader-1  | 2026-10-09T05:54:18.459465554Z 2026-10-09 13:54:18,457 WARNING app.providers: provider=glmf 第1次调用失败: 
+grader-1  | 2026-10-09T05:55:48.488467777Z 2026-10-09 13:55:48,488 WARNING app.providers: provider=glmf 第2次调用失败: 
+grader-1  | 2026-10-09T05:55:48.491369018Z 2026-10-09 13:55:48,488 ERROR studyassistant.diagram: 示意图调用失败 provider=glmf
+grader-1  | 2026-10-09T05:55:48.491386922Z Traceback (most recent call last):
+grader-1  | 2026-10-09T05:55:48.491389727Z   File "/srv/app/app/diagram.py", line 204, in generate_diagram
+grader-1  | 2026-10-09T05:55:48.491392252Z     outcome = await prov.complete_text(DIAGRAM_SYSTEM, f"题目：\n{stem}",
+grader-1  | 2026-10-09T05:55:48.491394787Z               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+grader-1  | 2026-10-09T05:55:48.491397091Z   File "/srv/app/app/providers.py", line 82, in complete_text
+grader-1  | 2026-10-09T05:55:48.491399466Z     return await self._chat(messages, max_tokens=max_tokens)
+grader-1  | 2026-10-09T05:55:48.491401690Z            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+grader-1  | 2026-10-09T05:55:48.491403944Z   File "/srv/app/app/providers.py", line 137, in _chat
+grader-1  | 2026-10-09T05:55:48.491406699Z     raise ProviderError(f"{self.name} 调用失败: {last_err}")
+grader-1  | 2026-10-09T05:55:48.491860214Z app.providers.ProviderError: glmf 调用失败: 
+grader-1  | 2026-10-09T05:55:48.491867729Z 2026-10-09 13:55:48,491 WARNING studyassistant.diagram: 示意图 provider=glmf budget=8000 reason=provider_error attempt=2
+grader-1  | 2026-10-09T05:56:09.908612229Z 2026-10-09 13:56:09,908 WARNING app.providers: provider=ds 输出被截断（max_tokens=4000），不再重试
+grader-1  | 2026-10-09T05:56:09.908721024Z 2026-10-09 13:56:09,908 WARNING studyassistant.diagram: 示意图 provider=ds budget=4000 reason=truncated attempt=3
+grader-1  | 2026-10-09T05:56:50.382291115Z 2026-10-09 13:56:50,382 WARNING app.providers: provider=ds 输出被截断（max_tokens=8000），不再重试
+grader-1  | 2026-10-09T05:56:50.382524386Z 2026-10-09 13:56:50,382 WARNING studyassistant.diagram: 示意图 provider=ds budget=8000 reason=truncated attempt=4
