@@ -128,6 +128,9 @@ async def generate_diagram_svg(stem: str, provider) -> str:
             max_tokens=2000,
         )
         text = (outcome.text or "").strip()
+        thinking = (getattr(outcome, "thinking", "") or "").strip()
+        log.warning("示意图模型原始返回 text_len=%d thinking_len=%d text=%r thinking=%r",
+                    len(text), len(thinking), text[:2000], thinking[:2000])
         if not text:
             log.warning("示意图模型返回空")
             return ""
