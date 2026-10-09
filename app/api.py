@@ -315,7 +315,7 @@ async def generate_task_diagrams(task_id: str, ctx: dict = Session):
         raise HTTPException(400, "任务无可用结果")
     subj = task.get("subject") or result.get("subject", "") or ""
     missing = [q for q in (result.get("questions") or [])
-               if q.get("uid") and not q.get("diagram_svg") and q.get("stem")
+               if not q.get("diagram_svg") and q.get("stem")
                and _diagram.should_attempt_diagram(subj, q.get("stem", ""))]
     if not missing:
         return {"generated": 0, "message": "无需生成（已有示意图或无几何题）"}

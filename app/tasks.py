@@ -658,14 +658,17 @@ class TaskRunner:
 
         # 数学题示意图：结果定稿时按题干 AI 重绘 SVG（不依赖台账，
         # 未记入台账的题结果页也要能看）。科目为空时按题干几何关键词判断。
+        # 注意：不依赖 uid（fill_question_uids 可能填的是 question_uid）。
         subject = result.get("subject") or task.get("subject") or ""
         qs = [q for q in (result.get("questions") or [])
-              if q.get("uid") and not q.get("diagram_svg") and q.get("stem")
+              if not q.get("diagram_svg") and q.get("stem")
               and diagram.should_attempt_diagram(subject, q.get("stem", ""))]
         if qs:
             try:
                 chain = provider_chain(s)
-                if chain:
+                if not chain:
+                    log.warning("task_id=%s 示意图跳过：无可用模型（provider_chain 为空）", task_id)
+                else:
                     prov = make_provider(chain[0], s.llm.providers[chain[0]])
                     svgs = await asyncio.gather(
                         *(diagram.generate_diagram_svg(q.get("stem", ""), prov)
@@ -678,6 +681,8 @@ class TaskRunner:
                             n += 1
                     if n:
                         log.info("task_id=%s 示意图已生成 %d 张", task_id, n)
+                    else:
+                        log.warning("task_id=%s 示意图生成 0 张（模型返回空或清洗失败）", task_id)
             except Exception as e:
                 log.warning("task_id=%s 示意图生成跳过：%s", task_id, e)
 
