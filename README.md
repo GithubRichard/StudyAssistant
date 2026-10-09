@@ -365,6 +365,8 @@ cd /opt/study-assistant && scripts/update-and-logs.sh
 | 分阶段批改报「复核返回了未要求的题号」 | 已修：放大复核回传的题号（如「题1」）现在做有限映射；仍不匹配时只忽略该条并在提取阶段记录 `zoom_note`，不再让整单失败 |
 | 分阶段批改报 `questions.N.page Input should be a valid string` | 已修：题号/页码等文本字段现在容错模型写成数字（`"page": 1`）；`steps`/`explanation` 写成单字符串也会包装成数组。旧版本这会让整阶段失败并切备胎 |
 | 分阶段批改报 `Extra data: line 8 column 6` | 已修：模型在结果 JSON 后面又输出了一段 JSON/说明，现在按 `raw_decode` 取第一个完整对象，不再整体解析失败 |
+| 示意图报 `provider_error`，日志里是「第N次调用失败（ReadTimeout）」且异常消息为空 | provider 的 `timeout`（默认 90 秒）不够：思考型模型出图会写几百字思考，把一次调用拖过 90 秒。在 `llm.providers.<名>` 下把 `timeout` 调大（例如 300）；异常消息为空是 httpx 超时的固有特征，2026-10-09 已让日志带上异常类型名 |
+| 示意图反复「输出被截断」 | 看同一条日志里的「正文 N 字，思考 M 字」：正文为 0 说明输出额度被思考吃光（不是额度太小），加大额度只会更慢；应压思考（网关侧 `reasoning.effort=low`，GLM-5.3 只接受 low/high/max）或换非思考模型 |
 
 ## 10. 目录结构
 
@@ -426,10 +428,17 @@ python3 scripts/split_thinking.py thinking.txt -o data/logs/thinking-export-sess
 
 ### 数学示意图与失败排查
 
-绘图继续优先使用 `llm.default_provider`（可保持现有 DS），再按 `fallback_order`
-尝试备选模型。单个模型先用 4000 tokens；输出被截断或只有思考、没有正式输出时，
-最多放大到 8000 tokens 重试一次。实际额度不超过该模型的 `max_output_tokens`；
-达到配置上限时不重复同参数重试。无需新增配置，也不向网关发送未经确认的禁用思考参数。
+绘图会把名字里含 `glm` 的 provider 提到最前（非思考模型优先），其余保持调用链原顺序；
+只有绘图这一条链路调整顺序，主批改流程不受影响。单个模型先用 4000 tokens；
+输出被截断或只有思考、没有正式输出时，最多放大到 8000 tokens 重试一次。
+实际额度不超过该模型的 `max_output_tokens`；达到配置上限时不重复同参数重试。
+不向网关发送未经确认的禁用思考参数。
+
+2026-10-09 实测：`ds`（deepseek-flash）和 `glmf`（glm-5.3-flash）都会返回
+`reasoning_content`，即两者都是思考模型，4000/8000 两档全被思考吃光
+（`finish_reason=length`、正文 0 字）；`glmf` 在 8000 额度下还会超过 provider
+的 `timeout`（默认 90 秒）而读超时。所以绘图要么压思考（网关侧 `reasoning.effort=low`）、
+要么换非思考模型，单靠加大额度只会更慢、更容易超时。
 
 模型只画题干明确描述的结构，不求解、不猜点位或阴影。不从思考内容中提取图形。
 题干几何信息不足时明确提示补充原图或点位关系，不把猜测当成可靠的原图重绘。

@@ -118,23 +118,31 @@ class OpenAICompatibleProvider(BaseProvider):
                 content = message.get("content") or ""
                 usage = data.get("usage", {}) or {}
                 finish_reason = str(choice.get("finish_reason") or "")
+                reasoning = thinking.extract_reasoning(message)
                 if finish_reason == "length":
-                    # 输出被 max_tokens 截断：同参数重试没有意义，交由上层换备胎
-                    log.warning("provider=%s 输出被截断（max_tokens=%d），不再重试",
-                                self.name, max_tokens)
+                    # 输出被 max_tokens 截断：同参数重试没有意义，交由上层换备胎。
+                    # 必须记下正文/思考字数：正文为 0 说明思考吃光了输出额度，
+                    # 此时加大额度只会更慢（甚至超时），要压思考或换非思考模型。
+                    log.warning(
+                        "provider=%s 输出被截断（max_tokens=%d，正文 %d 字，思考 %d 字），不再重试",
+                        self.name, max_tokens, len(content), len(reasoning))
                 return GradeOutcome(
                     text=content,
                     input_tokens=int(usage.get("prompt_tokens", 0)),
                     output_tokens=int(usage.get("completion_tokens", 0)),
                     provider=self.name,
                     model=self.cfg.model,
-                    thinking=thinking.extract_reasoning(message),
+                    thinking=reasoning,
                     finish_reason=finish_reason,
                 )
             except Exception as e:  # noqa: BLE001 - 统一重试
                 last_err = e
-                log.warning("provider=%s 第%d次调用失败: %s", self.name, attempt, e)
-        raise ProviderError(f"{self.name} 调用失败: {last_err}")
+                # 超时类异常（httpx.ReadTimeout 等）的 str() 是空串，必须带上类型名，
+                # 否则日志只剩「第N次调用失败: 」，看不出是超时还是别的失败。
+                log.warning("provider=%s 第%d次调用失败（%s）: %s",
+                            self.name, attempt, type(e).__name__, e)
+        raise ProviderError(
+            f"{self.name} 调用失败（{type(last_err).__name__}）: {last_err}")
 
 
 def make_provider(name: str, cfg) -> BaseProvider:
