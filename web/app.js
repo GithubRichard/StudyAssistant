@@ -923,6 +923,10 @@ function bindDiagramButton(app, task, alive) {
       } else if (r.failures && r.failures.length) {
         msg.textContent = `生成失败：${r.failures[0]}`;
         btn.disabled = false;
+      } else if (r.debug) {
+        const d = r.debug.questions.map((q) => `${q.no}: 图${q.has_diagram ? "有" : "无"}/干${q.has_stem ? "有" : "无"}/判${q.should_attempt ? "是" : "否"}`).join("；");
+        msg.textContent = `科目[${r.debug.subject || "空"}] ${d}`;
+        btn.disabled = false;
       } else {
         msg.textContent = r.message || "无需生成";
         btn.disabled = false;

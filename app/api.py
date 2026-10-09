@@ -314,11 +314,24 @@ async def generate_task_diagrams(task_id: str, ctx: dict = Session):
     if not result:
         raise HTTPException(400, "任务无可用结果")
     subj = task.get("subject") or result.get("subject", "") or ""
-    missing = [q for q in (result.get("questions") or [])
-               if not q.get("diagram_svg") and q.get("stem")
-               and _diagram.should_attempt_diagram(subj, q.get("stem", ""))]
+    questions = result.get("questions") or []
+    debug = []
+    missing = []
+    for q in questions:
+        has_svg = bool(q.get("diagram_svg"))
+        has_stem = bool(q.get("stem"))
+        should = _diagram.should_attempt_diagram(subj, q.get("stem", ""))
+        debug.append({
+            "no": q.get("no", "?"),
+            "has_diagram": has_svg,
+            "has_stem": has_stem,
+            "should_attempt": should,
+        })
+        if not has_svg and has_stem and should:
+            missing.append(q)
     if not missing:
-        return {"generated": 0, "message": "无需生成（已有示意图或无几何题）"}
+        return {"generated": 0, "message": "无需生成（已有示意图或无几何题）",
+                "debug": {"subject": subj, "questions": debug}}
     chain = _chain(s)
     if not chain:
         raise HTTPException(500, "无可用模型")
