@@ -47,8 +47,12 @@ class BaseProvider(ABC):
 
     @abstractmethod
     async def complete_text(self, system_prompt: str, user_prompt: str,
-                            max_tokens: int = 4000) -> GradeOutcome:
-        """纯文本补全（分阶段批改的求解/比对/诊断阶段用，不传图）。"""
+                            max_tokens: int = 4000,
+                            timeout: float | None = None) -> GradeOutcome:
+        """纯文本补全（分阶段批改的求解/比对/诊断阶段用，不传图）。
+
+        timeout：本次调用的超时（秒），None = 沿用 provider 配置的 timeout。
+        """
 
     @abstractmethod
     async def grade_multi(self, images: list, system_prompt: str,
@@ -74,12 +78,13 @@ class OpenAICompatibleProvider(BaseProvider):
         return await self._chat(messages, max_tokens=4000)
 
     async def complete_text(self, system_prompt: str, user_prompt: str,
-                            max_tokens: int = 4000) -> GradeOutcome:
+                            max_tokens: int = 4000,
+                            timeout: float | None = None) -> GradeOutcome:
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        return await self._chat(messages, max_tokens=max_tokens)
+        return await self._chat(messages, max_tokens=max_tokens, timeout=timeout)
 
     async def grade_multi(self, images: list, system_prompt: str,
                           user_prompt: str, max_tokens: int = 8000) -> GradeOutcome:
@@ -95,7 +100,8 @@ class OpenAICompatibleProvider(BaseProvider):
         ]
         return await self._chat(messages, max_tokens=max_tokens)
 
-    async def _chat(self, messages: list, max_tokens: int) -> GradeOutcome:
+    async def _chat(self, messages: list, max_tokens: int,
+                    timeout: float | None = None) -> GradeOutcome:
         url = self.cfg.base_url.rstrip("/") + "/chat/completions"
         payload = {
             "model": self.cfg.model,
@@ -108,7 +114,7 @@ class OpenAICompatibleProvider(BaseProvider):
         last_err: Exception | None = None
         for attempt in range(1, self.cfg.max_retries + 1):
             try:
-                async with httpx.AsyncClient(timeout=self.cfg.timeout) as client:
+                async with httpx.AsyncClient(timeout=timeout or self.cfg.timeout) as client:
                     resp = await client.post(url, json=payload, headers=headers)
                 if resp.status_code != 200:
                     raise ProviderError(f"HTTP {resp.status_code}: {resp.text[:300]}")

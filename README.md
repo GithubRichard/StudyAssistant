@@ -428,17 +428,28 @@ python3 scripts/split_thinking.py thinking.txt -o data/logs/thinking-export-sess
 
 ### 数学示意图与失败排查
 
-绘图会把名字里含 `glm` 的 provider 提到最前（非思考模型优先），其余保持调用链原顺序；
-只有绘图这一条链路调整顺序，主批改流程不受影响。单个模型先用 4000 tokens；
-输出被截断或只有思考、没有正式输出时，最多放大到 8000 tokens 重试一次。
-实际额度不超过该模型的 `max_output_tokens`；达到配置上限时不重复同参数重试。
+绘图按 `llm` 调用链原顺序（`default_provider` + `fallback_order`）逐个尝试候选。
+额度与时限由 `config.yaml` 的 `diagram` 段控制（见 `config.example.yaml`），
+改完 `docker compose up -d --force-recreate grader` 即生效，不用重建镜像：
+
+| 配置 | 默认 | 说明 |
+| --- | --- | --- |
+| `diagram.max_tokens` | 32000 | 首次调用额度（含思考），仍受 `llm.providers.<名>.max_output_tokens` 限制 |
+| `diagram.retry_max_tokens` | 0 | 仅「正文非空但被截断」时用此额度再试一次；0 = 不重试 |
+| `diagram.timeout_seconds` | 300 | 单次调用超时，只对绘图生效，不改 provider 的 `timeout`；0 = 沿用 provider |
+| `diagram.deadline_seconds` | 600 | 单题所有候选合计时限；自动绘图在任务定稿时同步执行，任务完成最多被推迟这么久 |
+
+正文 0 字（额度被思考占满）不在同一模型上重试，直接换下一个候选，原因标 `thinking_exhausted`；
+超过时限标 `timeout`。台账详情页的懒生成在 GET 请求里同步执行，合计时限固定收紧到 90 秒。
 不向网关发送未经确认的禁用思考参数。
 
 2026-10-09 实测：`ds`（deepseek-flash）和 `glmf`（glm-5.3-flash）都会返回
-`reasoning_content`，即两者都是思考模型，4000/8000 两档全被思考吃光
-（`finish_reason=length`、正文 0 字）；`glmf` 在 8000 额度下还会超过 provider
-的 `timeout`（默认 90 秒）而读超时。所以绘图要么压思考（网关侧 `reasoning.effort=low`）、
-要么换非思考模型，单靠加大额度只会更慢、更容易超时。
+`reasoning_content`，两者都是思考模型。旧的 4000/8000 两档全被思考占满、正文 0 字
+（思考字数：glmf 12181/22831；ds 6243/11935）；同额度下 glmf 耗时约是 ds 的两倍，
+8000 额度要 85 秒以上，贴着 provider 默认 90 秒超时。因此去掉了「glm 提前」的排序，
+并把默认额度提到 32000。32000 是否足够尚未在线上验证：若日志仍是
+「输出被截断（max_tokens=32000，正文 0 字…）」，说明靠加额度解决不了，
+需要压思考（网关侧 `reasoning.effort=low`）、换非思考模型或补充原图。
 
 模型只画题干明确描述的结构，不求解、不猜点位或阴影。不从思考内容中提取图形。
 题干几何信息不足时明确提示补充原图或点位关系，不把猜测当成可靠的原图重绘。

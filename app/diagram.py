@@ -6,12 +6,16 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from html import escape
+from typing import Optional
+
+from .config import DiagramConfig
 
 log = logging.getLogger("studyassistant.diagram")
 
@@ -31,7 +35,8 @@ DIAGRAM_SYSTEM = """你是几何示意图助手。根据题目文字，用 JSON 
 """
 
 _MAX_SVG_BYTES = 100 * 1024
-_TOKEN_BUDGETS = (4000, 8000)  # 推理也可能占输出额度；每个模型最多放大重试一次
+# 台账详情页（GET 请求）里的懒生成要同步等结果，不能套用自动绘图的长时限。
+LAZY_DEADLINE_SECONDS = 90.0
 
 
 @dataclass(frozen=True)
@@ -177,41 +182,73 @@ def sanitize_svg(raw: str) -> str:
     return svg
 
 
-async def generate_diagram(stem: str, providers) -> DiagramResult:
-    """返回可诊断的状态；失败不阻断批改。不解析 reasoning_content 中的半成品。"""
+def _budgets(cfg: DiagramConfig, cap: int) -> list:
+    """本候选的额度档位：首档 + 可选的正文截断重试档，均不超过厂商上限。"""
+    tiers = [cfg.max_tokens]
+    if cfg.retry_max_tokens > cfg.max_tokens:
+        tiers.append(cfg.retry_max_tokens)
+    return list(dict.fromkeys(min(b, cap) if cap > 0 else b for b in tiers))
+
+
+async def generate_diagram(stem: str, providers,
+                           cfg: Optional[DiagramConfig] = None) -> DiagramResult:
+    """返回可诊断的状态；失败不阻断批改。不解析 reasoning_content 中的半成品。
+
+    按调用链原顺序逐个尝试候选（不再把 glm 提前：2026-10-09 实测 glm-5.3-flash
+    同样是思考模型，且同额度下比 deepseek-flash 慢约一倍）。
+    """
+    cfg = cfg or DiagramConfig()
     stem = (stem or "").strip()
     if not stem:
         return DiagramResult("skipped", reason="empty_stem", message="题干为空，未绘图")
     if not isinstance(providers, (list, tuple)):
         providers = [providers]
-    # 绘图优先用非推理模型（glmf）：ds 等推理模型会把输出吞进 thinking 通道，
-    # 导致 text 为空。主批改流程不受影响（仍按 chain 原顺序）。
-    # 稳定排序：含 glm 的提前，其余保持原相对顺序。
-    def _diagram_key(p):
-        n = (getattr(p, "name", "") or "").lower()
-        return 0 if "glm" in n else 1
-    providers = sorted(providers, key=_diagram_key)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + cfg.deadline_seconds if cfg.deadline_seconds > 0 else None
     attempts = 0
     last = DiagramResult("failed", reason="no_provider", message="没有可用绘图模型")
     for prov in providers:
         name = getattr(prov, "name", "?")
         cap = int(getattr(getattr(prov, "cfg", None), "max_output_tokens", 0) or 0)
-        budgets = list(dict.fromkeys(min(b, cap) if cap > 0 else b for b in _TOKEN_BUDGETS))
-        for budget in budgets:
+        for budget in _budgets(cfg, cap):
+            remaining = None if deadline is None else deadline - loop.time()
+            if remaining is not None and remaining <= 0:
+                log.warning("示意图超过合计时限 %.0fs，停止尝试（已尝试 %d 次）",
+                            cfg.deadline_seconds, attempts)
+                return DiagramResult("failed", reason="timeout",
+                                     message="绘图超时，请稍后重试",
+                                     provider=last.provider, attempts=attempts)
+            call_timeout = cfg.timeout_seconds or None
+            if remaining is not None:
+                call_timeout = min(call_timeout, remaining) if call_timeout else remaining
             attempts += 1
             retry = False
             try:
-                outcome = await prov.complete_text(DIAGRAM_SYSTEM, f"题目：\n{stem}",
-                                                   max_tokens=budget)
+                call = prov.complete_text(DIAGRAM_SYSTEM, f"题目：\n{stem}",
+                                          max_tokens=budget, timeout=call_timeout)
+                # provider 内部会按 max_retries 重试超时，这里用合计时限兜底，
+                # 保证单题绘图不会超过 deadline_seconds。
+                outcome = await (asyncio.wait_for(call, remaining)
+                                 if remaining is not None else call)
                 text = (outcome.text or "").strip()
+                thinking = getattr(outcome, "thinking", "") or ""
                 finish = getattr(outcome, "finish_reason", "")
-                if finish == "length":
+                if finish == "length" and text:
+                    # 正文确实被截断：放大额度重试有意义（需配置 retry_max_tokens）。
                     # 即使碰巧拿到合法 JSON，也不能把截断内容当完整图放行。
                     reason, message = "truncated", f"绘图输出被截断（额度 {budget} tokens）"
                     retry = True
+                elif finish == "length":
+                    # 正文 0 字：额度被思考占满。实测 4000/8000 两档思考都把额度用满
+                    # （glmf 12181/22831 字、ds 6243/11935 字），说明首档就该给足；
+                    # 首档都不够时，再放大到哪一档够没有依据，同一模型再试只会徒增耗时。
+                    # 因此不重试，直接换下一个候选。
+                    reason = "thinking_exhausted" if thinking else "truncated"
+                    message = ("绘图模型把额度都用在了思考上，未产出图形数据" if thinking
+                               else f"绘图输出被截断且没有正文（额度 {budget} tokens）")
                 elif not text:
+                    # 只有思考、没有正式输出：同样不是额度不够，不重试，换下一个候选。
                     reason, message = "empty_output", "绘图模型未返回图形数据"
-                    retry = bool(getattr(outcome, "thinking", ""))
                 else:
                     m = re.search(r"\[.*\]", text, re.S)
                     shapes = json.loads(m.group(0)) if m else None
@@ -231,6 +268,8 @@ async def generate_diagram(stem: str, providers) -> DiagramResult:
                         reason, message = "invalid_shapes", "绘图数据残缺或 SVG 校验失败"
             except json.JSONDecodeError:
                 reason, message = "invalid_json", "绘图模型返回了不完整或非法的 JSON"
+            except asyncio.TimeoutError:
+                reason, message = "timeout", "绘图超时，请稍后重试"
             except Exception:
                 # 不把含网关响应/凭证的异常原文透传到页面。
                 log.exception("示意图调用失败 provider=%s", name)
@@ -244,9 +283,17 @@ async def generate_diagram(stem: str, providers) -> DiagramResult:
     return last
 
 
-async def generate_diagram_svg(stem: str, providers) -> str:
+async def generate_diagram_svg(stem: str, providers,
+                               cfg: Optional[DiagramConfig] = None) -> str:
     """旧调用兼容：失败返回空，不影响台账写入；新调用请使用 generate_diagram。"""
-    return (await generate_diagram(stem, providers)).svg
+    return (await generate_diagram(stem, providers, cfg)).svg
+
+
+def lazy_config(cfg: DiagramConfig) -> DiagramConfig:
+    """GET 请求里同步懒生成用：合计时限收紧到 LAZY_DEADLINE_SECONDS，避免页面长时间挂起。"""
+    deadline = cfg.deadline_seconds
+    deadline = min(deadline, LAZY_DEADLINE_SECONDS) if deadline > 0 else LAZY_DEADLINE_SECONDS
+    return cfg.model_copy(update={"deadline_seconds": deadline})
 
 
 def is_math_subject(subject: str) -> bool:

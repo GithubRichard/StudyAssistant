@@ -338,7 +338,7 @@ async def generate_task_diagrams(task_id: str, ctx: dict = Session):
         raise HTTPException(500, "无可用模型")
     provs = [_make_provider(name, s.llm.providers[name]) for name in chain]
     outcomes = await _asyncio.gather(
-        *(_diagram.generate_diagram(q["stem"], provs) for q in missing),
+        *(_diagram.generate_diagram(q["stem"], provs, s.diagram) for q in missing),
         return_exceptions=True)
     n = 0
     failures = []
@@ -843,7 +843,8 @@ async def get_ledger_entry(entry_id: int, ctx: dict = Session):
             chain = provider_chain(s)
             if chain and row.get("stem"):
                 prov = make_provider(chain[0], s.llm.providers[chain[0]])
-                svg = await diagram.generate_diagram_svg(row["stem"], prov)
+                svg = await diagram.generate_diagram_svg(
+                    row["stem"], prov, diagram.lazy_config(s.diagram))
                 if svg:
                     await db.update_ledger_diagram(s.db_path, ctx["openid"], entry_id, svg)
                     row["diagram_svg"] = svg

@@ -118,6 +118,39 @@ class WeeklySummaryConfig(BaseModel):
     analysis_max_tokens: int = 4000
 
 
+class DiagramConfig(BaseModel):
+    """数学示意图（AI 按题干重绘）的调用额度与时限。
+
+    2026-10-09 实测：deepseek-flash、glm-5.3-flash 都是思考模型，思考计入输出额度，
+    4000/8000 两档都被思考占满、正文 0 字，所以默认给一档大额度。
+    额度仍受 llm.providers.<名>.max_output_tokens 限制（取较小者）。
+    """
+    # 首次调用额度（含思考）
+    max_tokens: int = 32000
+    # 仅当「正文非空但被截断」时用此额度再试一次；不大于 max_tokens 视为不重试。
+    # 正文 0 字（额度被思考占满）一律不重试，直接换下一个候选。
+    retry_max_tokens: int = 0
+    # 单次调用超时（秒），只对绘图生效，不改 provider 的 timeout；0 = 沿用 provider.timeout
+    timeout_seconds: float = 300.0
+    # 单题所有候选、所有尝试的合计时限（秒）；0 = 不限。
+    # 自动绘图在任务定稿时同步执行，这个值就是任务完成最多被推迟的时长。
+    deadline_seconds: float = 600.0
+
+    @field_validator("max_tokens")
+    @classmethod
+    def _positive_tokens(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("diagram.max_tokens 必须为正数")
+        return v
+
+    @field_validator("retry_max_tokens", "timeout_seconds", "deadline_seconds")
+    @classmethod
+    def _non_negative(cls, v, info):
+        if v < 0:
+            raise ValueError(f"diagram.{info.field_name} 不能为负数")
+        return v
+
+
 class LlmConfig(BaseModel):
     default_provider: str = "qwen"
     fallback_order: List[str] = Field(default_factory=list)
@@ -382,6 +415,7 @@ class Settings(BaseModel):
     user_prompt_template: str = "请批改这张{subject}作业照片（{grade_level}）。严格按系统指令要求的 JSON 格式输出。"
     staged_grading: StagedGradingConfig = Field(default_factory=StagedGradingConfig)
     weekly_summary: WeeklySummaryConfig = Field(default_factory=WeeklySummaryConfig)
+    diagram: DiagramConfig = Field(default_factory=DiagramConfig)
 
     @property
     def db_path(self) -> str:

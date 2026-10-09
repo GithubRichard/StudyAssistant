@@ -674,7 +674,7 @@ class TaskRunner:
                 else:
                     provs = [make_provider(name, s.llm.providers[name]) for name in chain]
                     outcomes = await asyncio.gather(
-                        *(diagram.generate_diagram(q.get("stem", ""), provs)
+                        *(diagram.generate_diagram(q.get("stem", ""), provs, s.diagram)
                           for q in qs),
                         return_exceptions=True)
                     n = 0

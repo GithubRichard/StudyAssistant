@@ -199,6 +199,16 @@ staged_grading:
   per_question_verify: false   # 逐题复核（每题一次聚焦调用，只核对题号+括号原词）；默认关闭
   per_question_verify_max_items: 10   # 逐题复核的题数上限（超过整批跳过）
 
+# 数学示意图（AI 按题干重绘 SVG）：候选模型按 llm 调用链顺序尝试。
+# 当前可用模型（deepseek-flash、glm-5.3-flash）都是思考模型，思考计入输出额度，
+# 4000/8000 实测都被思考占满、正文 0 字，所以默认一档给足。改这里只需
+# docker compose up -d --force-recreate grader，不用重建镜像。
+diagram:
+  max_tokens: 32000        # 首次调用额度（含思考）；仍受 providers.<名>.max_output_tokens 限制
+  retry_max_tokens: 0      # 仅「正文非空但被截断」时用此额度再试一次；0 = 不重试
+  timeout_seconds: 300     # 单次调用超时，只对绘图生效，不改 provider 的 timeout；0 = 沿用 provider
+  deadline_seconds: 600    # 单题所有候选合计时限；自动绘图会把任务完成最多推迟这么久；0 = 不限
+
 weekly_summary:
   ai_analysis: true          # 是否用大模型做错题归类分析与知识点总结；false 则周总结只有统计部分
   analysis_max_mistakes: 30  # 送分析的最大错题数

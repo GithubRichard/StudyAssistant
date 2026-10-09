@@ -8,7 +8,7 @@ from unittest import mock
 import httpx
 
 from app import api, auth, db, diagram, schemas, tasks
-from tests.test_diagram import RECT_JSON, SequenceProvider, outcome
+from tests.test_diagram import RECT_JSON, TIERED, SequenceProvider, outcome
 from tests.test_web_v1 import make_app, make_settings, seed_task
 
 
@@ -48,6 +48,7 @@ class DiagramApiTest(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.settings = make_settings(self.tmp.name, llm={"default_provider": "ds",
             "providers": {"ds": {"base_url": "http://model.invalid", "model": "ds", "api_key": "fake"}}})
+        self.settings.diagram = TIERED
         self.previous_settings = api.settings
         await db.init_db(self.settings.db_path)
         self.app = make_app(self.settings)
@@ -76,7 +77,8 @@ class DiagramApiTest(unittest.IsolatedAsyncioTestCase):
         return response.json()["result"]["questions"][0]
 
     async def test_ds_retry_svg_persists_and_is_returned_without_ledger(self):
-        provider = SequenceProvider([outcome(finish="length"), outcome(RECT_JSON)])
+        provider = SequenceProvider([outcome(RECT_JSON[:20], finish="length"),
+                                     outcome(RECT_JSON)])
         response = await self.generate(provider)
         self.assertEqual(response["generated"], 1)
         self.assertEqual(response["failures"], [])
@@ -136,6 +138,7 @@ class AutoDiagramTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             settings = task_settings(tmp, llm={"default_provider": "ds", "providers": {
                 "ds": {"base_url": "http://model.invalid", "model": "ds", "api_key": "fake"}}})
+            settings.diagram = TIERED
             await db.init_db(settings.db_path)
             await seed_user(settings, "u1")
             created = await tasks.create_study_task(settings, "u1", {
@@ -143,7 +146,7 @@ class AutoDiagramTest(unittest.IsolatedAsyncioTestCase):
             raw = result()
             raw["task_type"] = "qa"
             with mock.patch("app.tasks.make_provider", return_value=SequenceProvider([
-                outcome(finish="length"), outcome(RECT_JSON)])):
+                outcome(RECT_JSON[:20], finish="length"), outcome(RECT_JSON)])):
                 await run_executor(settings, FakeClient(result=raw))
             task = await db.get_task(settings.db_path, created["task_id"])
             self.assertEqual(task["status"], "done", task.get("error"))
