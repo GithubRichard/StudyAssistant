@@ -426,10 +426,10 @@ button.mini { padding: 7px 12px; font-size: 13px; }
 .qa-msg .qa-imgs img { width: 96px; height: 96px; object-fit: cover; border-radius: 8px; cursor: zoom-in; }
 .qa-msg.typing { color: #888; font-size: 14px; }
 .qa-msg .qa-retry { margin-top: 6px; font-size: 13px; color: #c00; background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
-.qa-inputbar { display: flex; gap: 8px; align-items: flex-end; width: 100%; }
-.qa-photo { font-size: 24px; cursor: pointer; padding: 6px 4px; flex: 0 0 auto; }
-.qa-inputbar textarea { flex: 1 1 0%; min-width: 0; width: 0; min-height: 44px; max-height: 120px; border: 1px solid #ddd; border-radius: 12px; padding: 10px 12px; font-size: 15px; resize: none; }
-.qa-inputbar .btn { flex: 0 0 auto; padding: 10px 16px; white-space: nowrap; }
+.qa-inputbar { display: flex !important; gap: 8px; align-items: flex-end; width: 100% !important; }
+.qa-photo { font-size: 24px; cursor: pointer; padding: 6px 4px; flex: 0 0 auto !important; }
+.qa-inputbar textarea { flex: 1 1 0% !important; min-width: 0 !important; width: 0 !important; min-height: 44px; max-height: 120px; border: 1px solid #ddd; border-radius: 12px; padding: 10px 12px; font-size: 15px; resize: none; }
+.qa-inputbar .btn { flex: 0 0 auto !important; width: auto !important; padding: 10px 16px; white-space: nowrap; }
 .qa-photo-prev { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .qa-photo-prev .thumb-wrap { width: 72px; height: 72px; }
 .qa-photo-prev img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; }
