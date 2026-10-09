@@ -198,6 +198,11 @@ staged_grading:
   number_verify_provider: ""
   per_question_verify: false   # 逐题复核（每题一次聚焦调用，只核对题号+括号原词）；默认关闭
   per_question_verify_max_items: 10   # 逐题复核的题数上限（超过整批跳过）
+  # 配图识别：数学（或科目为空）且题干命中几何关键词时，转写后带原图调用一次视觉模型，
+  # 写出配图描述（点位/连线/阴影），交给独立求解和示意图重绘；失败只降级为纯文字，不阻断批改
+  figure_extract: true
+  figure_max_items: 10       # 几何大题数超过该值时跳过（小题共用大题的配图，按大题计数）
+  figure_max_tokens: 16000   # 识别调用的输出额度（含思考）
 
 # 数学示意图（AI 按题干重绘 SVG）：候选模型按 llm 调用链顺序尝试。
 # 当前可用模型（deepseek-flash、glm-5.3-flash）都是思考模型，思考计入输出额度，

@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field, ValidationError
 from . import providers, thinking
 from . import image_prep
 from .config import Settings, provider_chain
+from .diagram import is_math_subject, stem_looks_geometric
 from .grading import extract_json
 from .hermes import validate_result
 from .providers import ProviderError
@@ -75,6 +76,9 @@ class ExtractedQuestion(BaseModel):
     number_verified: bool = False
     # 答案归属存疑（服务端去重检测填入）：该题答案疑似与另一题为同一组作答
     attribution_note: LooseStr = ""
+    # 配图描述（服务端配图识别填入，转写阶段不要求模型输出）：
+    # 印刷配图上的点位、连线、阴影与标注，供独立求解和示意图重绘使用
+    figure: LooseStr = ""
 
 
 class ExtractionResult(BaseModel):
@@ -110,6 +114,30 @@ class ZoomRereadResult(BaseModel):
 class NumberVerifyResult(BaseModel):
     """题号序列复核单次结果：只列题号，不做别的。"""
     numbers: List[LooseStr] = Field(default_factory=list)
+
+
+class FigureItem(BaseModel):
+    """配图识别单题结果。"""
+    no: LooseStr
+    figure: LooseStr = ""
+
+
+class FigureResult(BaseModel):
+    figures: List[FigureItem] = Field(default_factory=list)
+
+
+FIGURE_SYSTEM = """你是试卷配图识别员。你会看到作业原图（已做预处理）。
+你的唯一任务：只针对用户列出的题号，用文字描述该题所配的印刷几何图形（如"图1""图2"），供看不到原图的人照着把图画出来。
+1. 写清：图由哪些图形组成及相对位置（如"甲、乙两个正方形底边共线并排，甲在左"）；每个字母标注点在哪里（如"A 为甲的左下顶点"）；有哪些连线；阴影区域由哪些点围成；图上标注的数字、长度、角度。
+2. 一题有多个图时分别写（"图1：……；图2：……"）。
+3. 只描述印刷的图形：学生手写、学生画的辅助线和红笔批改痕迹一律不写。
+4. 只描述看得到的内容：不求解、不计算、不推理；看不清的地方写"看不清"，绝不猜。
+5. 找不到该题的配图，figure 写空字符串。
+6. 每题不超过 300 字；输出的 no 必须与给出的 no 完全一致。
+最终回答必须包含且仅包含一个 ```json 代码块，不要输出其他文字。"""
+
+# 配图描述长度上限：防模型把整道题解一遍塞进来，撑爆下游提示词
+_FIGURE_MAX_CHARS = 600
 
 
 NUMBER_VERIFY_SYSTEM = """你是试卷题号核对员。你会看到作业原图（已做预处理）。
@@ -155,6 +183,9 @@ def format_extraction_log(data: Dict[str, Any]) -> str:
                 line += f"｜题干备注：{snote}"
             if nnote:
                 line += f"｜题号备注：{nnote}"
+            figure = (q.get("figure", "") or "").replace("\n", " ")
+            if figure:
+                line += f"｜配图：{figure}"
             lines.append(line)
         return "\n".join(lines)
     # 补充轮次：只转写受影响题
@@ -254,7 +285,8 @@ SOLVE_SYSTEM = """你是{subject}解题专家。你的唯一任务是根据题�
 1. 你看不到学生的作答，只能根据题干求解，不受任何外界信息干扰。
 2. 每道题输出：no（题号，原样照抄）、correct_answer（标准答案）、steps（关键解题步骤，字符串数组）。
 3. 题干缺失、图片截断或信息不足导致无法求解时：undeterminable 写 true，correct_answer 写空字符串，steps 只写一句原因（如"题干未在图片中显示，无法求解"）——绝不编造答案。
-4. 最终回答必须包含且仅包含一个 ```json 代码块，不要输出其他文字。"""
+4. 题目带 figure 字段时，它是看原图识别出的配图描述（点位、连线、阴影）：用它确定图中各点、各区域的位置，不要另行假设图形；figure 与题干文字冲突时以题干为准。
+5. 最终回答必须包含且仅包含一个 ```json 代码块，不要输出其他文字。"""
 
 COMPARE_SYSTEM = """你是答案等价性裁判。判断学生的答案与标准答案是否等价（equivalent 取 true/false）。
 等价规则：
@@ -899,6 +931,111 @@ async def _per_question_verify(
     return note, calls
 
 
+_SUB_NO_RE = re.compile(r"^(.+?)\s*[(（]\s*\d+\s*[)）]$")
+
+
+def _figure_group_key(no: str) -> str:
+    """小题归到大题：20(1)、20(2) 共用大题的配图，只识别一次。"""
+    text = unicodedata.normalize("NFKC", str(no or "")).strip()
+    m = _SUB_NO_RE.match(text)
+    return m.group(1).strip() if m else text
+
+
+def _needs_figure(questions: List[ExtractedQuestion],
+                  subject: str) -> List[List[ExtractedQuestion]]:
+    """需要配图识别的题，按大题分组。
+
+    条件：科目为数学（或科目为空）且题干命中几何关键词。英语/语文卷不触发；
+    数学卷里的纯代数题也不触发。题干存疑的题题干不可信，不据此判断。
+    """
+    if (subject or "").strip() and not is_math_subject(subject):
+        return []
+    groups: Dict[str, List[ExtractedQuestion]] = {}
+    for q in questions:
+        if q.stem_uncertain or not stem_looks_geometric(q.stem):
+            continue
+        groups.setdefault(_figure_group_key(q.no), []).append(q)
+    return list(groups.values())
+
+
+def _figure_user(reps: List[ExtractedQuestion], n_images: int) -> str:
+    lines = ["请描述以下题号所配的印刷几何图形（题干供定位参考）："]
+    for q in reps:
+        stem = (q.stem or "").replace("\n", " ")
+        if len(stem) > 120:
+            stem = stem[:120] + "…"
+        lines.append(f'- no="{q.no}"（图片{q.page or "?"}）：题干：{stem}')
+    lines.append(f"共 {n_images} 张图片，按上传顺序为图片1、图片2……"
+                 "输出的 no 必须与上面给出的 no 完全一致（原样回传）。"
+                 'JSON 格式：{"figures": [{"no": "与上面完全一致的 no", "figure": "配图描述"}]}')
+    return "\n".join(lines)
+
+
+async def _figure_extract(questions: List[ExtractedQuestion],
+                          prepped: List[Tuple[bytes, str]], subject: str,
+                          settings: Settings, chain: List[str],
+                          provider_factory: Optional[Callable] = None
+                          ) -> Tuple[str, List[tuple]]:
+    """数学几何题配图识别：带原图调用一次视觉模型，把图形描述写进 q.figure。
+
+    是增强而非必需：失败、超限、输出不可用时只记录说明，不阻断主流程
+    （没有 figure 时，求解与示意图回到只看题干文字的旧行为）。
+    返回 (说明文字, [(outcome, cost)])。
+    """
+    cfg = settings.staged_grading
+    if not getattr(cfg, "figure_extract", True) or not questions:
+        return "", []
+    groups = _needs_figure(questions, subject)
+    if not groups:
+        return "", []
+    max_items = int(getattr(cfg, "figure_max_items", 10) or 0)
+    if max_items and len(groups) > max_items:
+        note = f"配图识别跳过：{len(groups)} 道几何大题超过上限 {max_items}"
+        log.info("分阶段批改[extract] %s", note)
+        return note, []
+
+    reps = [g[0] for g in groups]
+    user = _figure_user(reps, len(prepped))
+    max_tokens = int(getattr(cfg, "figure_max_tokens", 16000) or 16000)
+
+    async def call(provider, max_tokens_want: int = 0):
+        return await provider.grade_multi(
+            prepped, FIGURE_SYSTEM, user,
+            max_tokens=_stage_max_tokens(getattr(provider, "cfg", None),
+                                         max_tokens_want or max_tokens))
+
+    try:
+        parsed, outcome, cost = await _run_stage(
+            "figure", FigureResult, chain, settings, call, None,
+            provider_factory, base_max_tokens=max_tokens)
+    except StageError as e:
+        reason = (e.message or "").strip()[:120]
+        log.warning("分阶段批改[extract] 配图识别未完成，求解按纯文字进行：%s", e.message)
+        return f"配图识别未完成（{reason}），几何题按题干文字求解", []
+
+    rep_by_no = {str(q.no): q for q in reps}
+    group_by_rep = {str(g[0].no): g for g in groups}
+    filled: List[str] = []
+    unmatched: List[str] = []
+    for item in parsed.figures:
+        target = _match_zoom_target(item.no, rep_by_no)
+        if target is None:
+            unmatched.append(str(item.no))
+            continue
+        text = (item.figure or "").strip()[:_FIGURE_MAX_CHARS]
+        if not text or str(target.no) in filled:
+            continue
+        filled.append(str(target.no))
+        for q in group_by_rep[str(target.no)]:
+            q.figure = text
+    parts = [f"配图识别完成：{len(reps)} 道几何大题中 {len(filled)} 道写出配图描述"]
+    if unmatched:
+        parts.append(f"{len(unmatched)} 条题号无法匹配已忽略（{', '.join(unmatched[:5])}）")
+    note = "；".join(parts) + "。"
+    log.info("分阶段批改[extract] %s", note)
+    return note, [(outcome, cost)]
+
+
 async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_level: str,
                         input_text: str, settings: Settings, chain: List[str],
                         provider_factory: Optional[Callable] = None,
@@ -1039,6 +1176,13 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
         if zoomed.note:
             # 随提取阶段记录落库（runs[].stages.extract.zoom_note），不只留一行日志
             parsed.zoom_note = zoomed.note
+
+    # 配图识别：数学几何题看原图写出图形描述，供求解与示意图使用（失败即降级）
+    f_note, f_calls = await _figure_extract(qs, prepped, subject, settings, chain,
+                                            provider_factory)
+    calls.extend(f_calls)
+    if f_note:
+        stage_notes.append(f_note)
     if stage_notes:
         extra = "；".join(stage_notes)
         parsed.zoom_note = f"{parsed.zoom_note}；{extra}" if parsed.zoom_note else extra
@@ -1054,7 +1198,7 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
 def _solve_user(items: List[Dict[str, str]], subject: str, grade_level: str) -> str:
     return (
         f"请独立求解以下 {len(items)} 道题（{subject or '学科未指定'}，{grade_level or '年级未指定'}）。"
-        "注意：你只拿到题干，没有任何学生作答，独立求解。\n"
+        "注意：你只拿到题干（几何题可能附 figure 配图描述），没有任何学生作答，独立求解。\n"
         "题目 JSON：\n```json\n"
         f"{json.dumps(items, ensure_ascii=False)}\n```\n"
         '输出 JSON：{"solutions": [{"no": "题号", "correct_answer": "标准答案", '
@@ -1063,11 +1207,20 @@ def _solve_user(items: List[Dict[str, str]], subject: str, grade_level: str) -> 
     )
 
 
+def _solve_item(item: Dict[str, Any]) -> Dict[str, str]:
+    """求解输入白名单：只放 no/stem/figure（figure 为空时不放），绝不混入学生答案。"""
+    safe = {"no": str(item.get("no", "")), "stem": str(item.get("stem", ""))}
+    figure = str(item.get("figure", "") or "").strip()
+    if figure:
+        safe["figure"] = figure
+    return safe
+
+
 async def solve_stage(items: List[Dict[str, str]], subject: str, grade_level: str,
                       settings: Settings, chain: List[str],
                       provider_factory: Optional[Callable] = None):
-    """Stage 2：只给题干求解。items 必须只含 no/stem，调用方保证不混入学生答案。"""
-    safe_items = [{"no": str(i.get("no", "")), "stem": str(i.get("stem", ""))} for i in items]
+    """Stage 2：只给题干（及配图描述）求解，调用方保证不混入学生答案。"""
+    safe_items = [_solve_item(i) for i in items]
     system = _stage_system(settings, "solve", SOLVE_SYSTEM, subject=subject or "学科")
     user = _solve_user(safe_items, subject, grade_level)
     max_tokens = settings.staged_grading.solve_max_tokens
@@ -1683,6 +1836,22 @@ def assemble_followup(prev_result: Dict[str, Any],
     return result
 
 
+def _attach_figures(raw: Dict[str, Any], extracted: List[ExtractedQuestion],
+                    subs: List[SubItem]) -> None:
+    """把配图描述写进结果题目（按小题 id 回查所属题），供示意图重绘与页面展示。
+
+    只写非空描述：补充轮次里未重新识别的题保留上一轮已有的 figure。
+    """
+    fig_by_no = {str(q.no): q.figure for q in extracted if (q.figure or "").strip()}
+    if not fig_by_no:
+        return
+    fig_by_sub = {s.sub_id: fig_by_no[s.no] for s in subs if s.no in fig_by_no}
+    for q in raw.get("questions") or []:
+        figure = fig_by_sub.get(str(q.get("no", "")))
+        if figure:
+            q["figure"] = figure
+
+
 # --------------------------------------------------------------------------
 # 编排器
 # --------------------------------------------------------------------------
@@ -1760,18 +1929,21 @@ async def grade_staged(images: List[Tuple[bytes, str]],
         for r in revisions:
             pq = prev_by_no.get(str(r.prev_no))
             stem = str(pq.get("stem", "")) if pq else ""
+            # 订正题沿用上一轮的配图描述（补充材料只改作答，不改题目）
+            figure = str(pq.get("figure", "") or "") if pq else ""
             sa = r.student_answer.strip() or (str(pq.get("student_answer", "")) if pq else "")
-            solve_items.append({"no": str(r.prev_no), "stem": stem})
+            solve_items.append({"no": str(r.prev_no), "stem": stem, "figure": figure})
             extracted_for_compare.append(ExtractedQuestion(
-                no=str(r.prev_no), stem=stem, student_answer=sa))
+                no=str(r.prev_no), stem=stem, student_answer=sa, figure=figure))
         for q in new_qs:
             # 题干/题号转写存疑：不送独立求解（比对阶段直接标存疑），
             # 避免在编造的题干或错位的题号上浪费调用
             if not q.stem_uncertain and not q.number_uncertain:
-                solve_items.append({"no": q.no, "stem": q.stem})
+                solve_items.append({"no": q.no, "stem": q.stem, "figure": q.figure})
             extracted_for_compare.append(q)
     else:
-        solve_items = [{"no": q.no, "stem": q.stem} for q in parsed.questions
+        solve_items = [{"no": q.no, "stem": q.stem, "figure": q.figure}
+                       for q in parsed.questions
                        if not q.stem_uncertain and not q.number_uncertain]
         extracted_for_compare = list(parsed.questions)
 
@@ -1818,6 +1990,7 @@ async def grade_staged(images: List[Tuple[bytes, str]],
         raw = assemble_followup(prev_result, subs_list, statuses, diagnoses, new_sub_ids)
     else:
         raw = assemble_initial(subject, grade_level, subs_list, statuses, diagnoses)
+    _attach_figures(raw, extracted_for_compare, subs_list)
     if attribution_notes:
         # 都有题干时的"疑似重复"只提示人工核对，不改判
         raw["missing_info"] = list(attribution_notes) + list(raw.get("missing_info") or [])

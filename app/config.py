@@ -106,6 +106,15 @@ class StagedGradingConfig(BaseModel):
     # 默认关闭：成本为每题一次调用；题数超限时整批跳过。
     per_question_verify: bool = False
     per_question_verify_max_items: int = 10
+    # ---- 配图识别：转写后对数学几何题看原图，写出图形描述（figure） ----
+    # 触发条件：科目为数学（或科目为空）且题干命中几何关键词（"图""阴影""三角形"等）。
+    # 描述只写印刷配图上的点位、连线、阴影与标注，供独立求解和示意图重绘使用，
+    # 不用再凭题干文字猜图。失败自动降级（没有 figure），不阻断主流程。
+    figure_extract: bool = True
+    # 待识别题数超过该值时跳过（同一大题的小题共用一次识别，按大题计数）
+    figure_max_items: int = 10
+    # 识别调用的输出额度（含思考）
+    figure_max_tokens: int = 16000
 
 
 class WeeklySummaryConfig(BaseModel):

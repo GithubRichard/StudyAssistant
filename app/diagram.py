@@ -28,6 +28,7 @@ DIAGRAM_SYSTEM = """你是几何示意图助手。根据题目文字，用 JSON 
 - poly 多边形: {"t":"poly","pts":[[x1,y1],[x2,y2],...],"fill":"none|gray"}
 - text 标注: {"t":"text","x":..,"y":..,"s":"A"}
 画布 400x300，坐标整数。只画题目明确描述的图形，不确定的不画。
+若给出「原图配图描述」（看原图识别所得），按它确定图形组成、各点位置、连线和阴影；与题干文字冲突时以题干为准。
 你只负责画图，不要求解、证明、计算答案或猜测原图的点位和阴影。
 最多 60 个图形，直接输出最终 JSON。若依赖原图但文字不足以确定结构，输出 []。
 纯代数题（无图形描述）输出 []。
@@ -190,17 +191,29 @@ def _budgets(cfg: DiagramConfig, cap: int) -> list:
     return list(dict.fromkeys(min(b, cap) if cap > 0 else b for b in tiers))
 
 
+def diagram_user(stem: str, figure: str = "") -> str:
+    """绘图 user prompt：题干 + 可选的原图配图描述（分阶段批改看图识别所得）。"""
+    text = f"题目：\n{stem}"
+    figure = (figure or "").strip()
+    if figure:
+        text += f"\n\n原图配图描述（看原图识别所得，按它确定点位、连线和阴影）：\n{figure}"
+    return text
+
+
 async def generate_diagram(stem: str, providers,
-                           cfg: Optional[DiagramConfig] = None) -> DiagramResult:
+                           cfg: Optional[DiagramConfig] = None,
+                           figure: str = "") -> DiagramResult:
     """返回可诊断的状态；失败不阻断批改。不解析 reasoning_content 中的半成品。
 
     按调用链原顺序逐个尝试候选（不再把 glm 提前：2026-10-09 实测 glm-5.3-flash
     同样是思考模型，且同额度下比 deepseek-flash 慢约一倍）。
+    figure：分阶段批改识别的原图配图描述；有它时模型不必凭文字猜图形结构。
     """
     cfg = cfg or DiagramConfig()
     stem = (stem or "").strip()
     if not stem:
         return DiagramResult("skipped", reason="empty_stem", message="题干为空，未绘图")
+    user = diagram_user(stem, figure)
     if not isinstance(providers, (list, tuple)):
         providers = [providers]
     loop = asyncio.get_running_loop()
@@ -224,7 +237,7 @@ async def generate_diagram(stem: str, providers,
             attempts += 1
             retry = False
             try:
-                call = prov.complete_text(DIAGRAM_SYSTEM, f"题目：\n{stem}",
+                call = prov.complete_text(DIAGRAM_SYSTEM, user,
                                           max_tokens=budget, timeout=call_timeout)
                 # provider 内部会按 max_retries 重试超时，这里用合计时限兜底，
                 # 保证单题绘图不会超过 deadline_seconds。

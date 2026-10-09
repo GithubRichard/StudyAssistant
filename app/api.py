@@ -338,7 +338,8 @@ async def generate_task_diagrams(task_id: str, ctx: dict = Session):
         raise HTTPException(500, "无可用模型")
     provs = [_make_provider(name, s.llm.providers[name]) for name in chain]
     outcomes = await _asyncio.gather(
-        *(_diagram.generate_diagram(q["stem"], provs, s.diagram) for q in missing),
+        *(_diagram.generate_diagram(q["stem"], provs, s.diagram,
+                                    figure=q.get("figure", "")) for q in missing),
         return_exceptions=True)
     n = 0
     failures = []

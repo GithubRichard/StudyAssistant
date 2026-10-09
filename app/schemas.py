@@ -332,6 +332,8 @@ class QuestionResult(StrictModel):
     source: str = ""
     page: str = ""
     stem: str = ""
+    # 配图描述：分阶段批改看原图识别的点位/连线/阴影（仅数学几何题），供求解与示意图重绘
+    figure: str = ""
     diagram_svg: str = ""        # 必须声明，否则 extra=ignore 会在页面读取时丢掉图
     diagram: DiagramInfo = Field(default_factory=DiagramInfo)
     student_answer: str = ""

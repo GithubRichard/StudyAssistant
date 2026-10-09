@@ -48,6 +48,9 @@ class FakeProvider:
                 # 没有专门剧本时：复核与转写一致
                 item = json.dumps({"numbers": self._last_extract_numbers},
                                   ensure_ascii=False)
+            elif stage == "figure":
+                # 没有专门剧本时：没识别出配图（不影响主流程）
+                item = json.dumps({"figures": []}, ensure_ascii=False)
             else:
                 raise AssertionError(f"fake provider {self.name} 没有 {stage} 的剧本")
         else:
@@ -72,6 +75,8 @@ class FakeProvider:
             stage = "per_question_verify"
         elif "题号核对员" in system:
             stage = "number_verify"
+        elif "配图识别员" in system:
+            stage = "figure"
         elif "复核员" in system:
             stage = "extract_zoom"
         else:
