@@ -434,3 +434,8 @@ button.mini { padding: 7px 12px; font-size: 13px; }
 .qa-photo-prev .thumb-wrap { width: 72px; height: 72px; }
 .qa-photo-prev img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; }
 .qa-empty { text-align: center; color: var(--muted); font-size: 14px; margin: auto; padding: 20px; }
+#qaLightbox { position: fixed; inset: 0; background: rgba(0,0,0,.9); display: none; align-items: center; justify-content: center; z-index: 9999; cursor: zoom-out; }
+#qaLightbox.on { display: flex; }
+#qaLightbox img { max-width: 96vw; max-height: 96vh; object-fit: contain; border-radius: 8px; }
+#qaLightbox .qa-lb-close { position: absolute; top: 16px; right: 20px; color: #fff; font-size: 28px; cursor: pointer; }
+.qa-imgs img { cursor: zoom-in; }

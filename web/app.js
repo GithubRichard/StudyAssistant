@@ -670,11 +670,18 @@ async function pageQaChat(app, alive) {
     loadSessions();
   };
 
-  // 图片点击放大：复用全局图片查看（如有 lightbox 则用，否则新窗口）
+  // 图片点击放大：应用内 lightbox
+  const lightbox = document.createElement("div");
+  lightbox.id = "qaLightbox";
+  lightbox.innerHTML = `<img alt="放大查看"><span class="qa-lb-close">✕</span>`;
+  document.body.appendChild(lightbox);
+  const lbImg = lightbox.querySelector("img");
+  lightbox.addEventListener("click", () => { lightbox.classList.remove("on"); });
   msgsEl.addEventListener("click", (e) => {
     const img = e.target.closest(".qa-imgs img");
-    if (img && typeof openImageViewer === "function") openImageViewer(img.src);
-    else if (img) window.open(img.src, "_blank");
+    if (!img) return;
+    lbImg.src = img.src;
+    lightbox.classList.add("on");
   });
 
   loadSessions();
