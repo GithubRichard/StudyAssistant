@@ -1,45 +1,11 @@
-grader-1  | 2026-10-09T02:07:10.013302374Z 2026-10-09 10:07:10,012 INFO app.main: 服务启动，代码版本 45811693
-grader-1  | 2026-10-09T02:07:10.014372151Z 2026-10-09 10:07:10,013 INFO app.main: 思考过程日志 → data/logs/thinking.log（按天轮转，保留5天；不再进 docker 日志）
-grader-1  | 2026-10-09T02:07:10.021174989Z 2026-10-09 10:07:10,020 INFO app.main: 网页版入口: /web/ （目录 /srv/app/web）
-grader-1  | 2026-10-09T02:07:10.021302390Z INFO:     Started server process [7]
-grader-1  | 2026-10-09T02:07:10.021486507Z INFO:     Waiting for application startup.
-grader-1  | 2026-10-09T02:07:10.066596742Z 2026-10-09 10:07:10,066 INFO app.main: 学习工作区: /srv/app/workspace（账号 leo、binbin、anna、wx-oCjElxp24iDQz5fK6UgBShmXLUC8、family；学科 语文、数学、英语；新建 0 项；README 新建=False；.gitignore 新建=False；升级=False）
-grader-1  | 2026-10-09T02:07:10.199588537Z 2026-10-09 10:07:10,199 WARNING app.main: Hermes 未就绪: 技能列表接口不可用（Hermes 服务错误 HTTP 500），无法确认技能是否已安装，任务仍会尝试执行
-grader-1  | 2026-10-09T02:07:10.201978735Z INFO:     Application startup complete.
-grader-1  | 2026-10-09T02:07:10.211189644Z INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-grader-1  | 2026-10-09T02:07:36.342463425Z 2026-10-09 10:07:36,342 INFO app.tasks: 创建学习任务 task_id=b52c9cb667724e2c type=grading kind= scope=-~- assets=1
-grader-1  | 2026-10-09T02:07:38.316109563Z 2026-10-09 10:07:38,315 INFO app.tasks: 开始执行 task_id=b52c9cb667724e2c run_no=1 budget=1200s assets=1
-grader-1  | 2026-10-09T02:07:38.317015942Z 2026-10-09 10:07:38,316 INFO app.tasks: 分阶段批改 task_id=b52c9cb667724e2c run_no=1 images=1 followup=False
-grader-1  | 2026-10-09T02:07:54.440034649Z 2026-10-09 10:07:54,439 INFO app.staged: 分阶段批改[extract]成功 provider=ds tokens=1935/1934 cost≈0.0000元
-grader-1  | 2026-10-09T02:07:58.453461636Z 2026-10-09 10:07:58,453 INFO app.staged: 分阶段批改[number_verify]成功 provider=glmf tokens=4406/69 cost≈0.0000元
-grader-1  | 2026-10-09T02:07:58.453623060Z 2026-10-09 10:07:58,453 INFO app.staged: 分阶段批改[extract] 题号复核完成：题号序列一致。
-grader-1  | 2026-10-09T02:07:58.454074933Z 2026-10-09 10:07:58,453 INFO app.tasks: 【提取阶段转写】task_id=b52c9cb667724e2c run_no=1
-grader-1  | 2026-10-09T02:07:58.454084841Z 共提取 2 题（只转写、不判定）：
-grader-1  | 2026-10-09T02:07:58.454087807Z   题20(1)｜题干：20. 甲、乙两张正方形纸片的边长分别为a、b，且a>b>0，a+b=12。图1中两纸片底…｜学生答案：解：(a-b)²=16
-grader-1  | 2026-10-09T02:07:58.454091003Z a+b=12
-grader-1  | 2026-10-09T02:07:58.454093277Z (a+b)²-4ab=(a+b)²-(a-b)²
-grader-1  | 2026-10-09T02:07:58.454095562Z =144-16
-grader-1  | 2026-10-09T02:07:58.454097676Z =128
-grader-1  | 2026-10-09T02:07:58.454099810Z ab=32
-grader-1  | 2026-10-09T02:07:58.454102004Z a²+b²=(a+b)²-2ab
-grader-1  | 2026-10-09T02:07:58.454104198Z =144-64=80
-grader-1  | 2026-10-09T02:07:58.454106432Z   题20(2)｜题干：20. 甲、乙两张正方形纸片的边长分别为a、b，且a>b>0，a+b=12。图1中两纸片底…｜学生答案：解：S=a²+b²-(a+b)a/2-(a+b)b/2
-grader-1  | 2026-10-09T02:07:58.454109167Z =80-(a²+ab)/2-(b²+ab)/2=80-(a²+2ab+b²)/2=80-(a+b)²/2=80-144/2=80-72
-grader-1  | 2026-10-09T02:07:58.454119046Z =8
-grader-1  | 2026-10-09T02:07:58.454120769Z S=a²+b²-(a+b)a/2-(a+b)b/2
-grader-1  | 2026-10-09T02:07:58.454122432Z =a²+b²-6a-6b
-grader-1  | 2026-10-09T02:07:58.454124095Z =80-72=8｜备注：第(2)问手写过程有较多涂改和划掉的笔迹，已按可辨认内容转写
-grader-1  | 2026-10-09T02:08:27.411417223Z 2026-10-09 10:08:27,411 INFO app.staged: 分阶段批改[solve]成功 provider=ds tokens=556/6134 cost≈0.0000元
-grader-1  | 2026-10-09T02:08:30.133083307Z 2026-10-09 10:08:30,132 INFO app.staged: 分阶段批改[compare]成功 provider=ds tokens=706/496 cost≈0.0000元
-grader-1  | 2026-10-09T02:08:36.441059785Z 2026-10-09 10:08:36,440 INFO app.staged: 分阶段批改[diagnose]成功 provider=ds tokens=629/1290 cost≈0.0000元
-grader-1  | 2026-10-09T02:08:36.661406348Z 2026-10-09 10:08:36,661 INFO app.tasks: 开始复查 task_id=b52c9cb667724e2c run_no=1 送审=1 超限=0 timeout=600s coverage=reread images=1
-grader-1  | 2026-10-09T02:08:36.661652782Z 2026-10-09 10:08:36,661 INFO app.hermes: 调用复查模型 session=review-b52c9cb667724e2c-1 model=glmf（provider=zai） timeout=600.0s
-grader-1  | 2026-10-09T02:12:51.893022730Z 2026-10-09 10:12:51,892 INFO app.hermes: 复查请求耗时 255s session=review-b52c9cb667724e2c-1
-grader-1  | 2026-10-09T02:12:51.893845442Z 2026-10-09 10:12:51,893 INFO app.hermes: 复查完成 session=review-b52c9cb667724e2c-1 题数=1 网关报告模型=glmf tokens=173735/2893
-grader-1  | 2026-10-09T02:12:51.893852214Z 2026-10-09 10:12:51,893 WARNING app.tasks: 复查模型身份仅核对到模型名 task_id=b52c9cb667724e2c: 网关报告模型 glmf 与期望一致且不同于首轮模型，但网关未报告 provider，无法核对是否为 zai
-grader-1  | 2026-10-09T02:12:51.893856543Z 2026-10-09 10:12:51,893 INFO app.tasks: 复查完成 task_id=b52c9cb667724e2c run_no=1 state=completed disagreed=0 unverified=0
-grader-1  | 2026-10-09T02:13:02.319721681Z 2026-10-09 10:13:02,319 WARNING app.providers: provider=ds 输出被截断（max_tokens=2000），不再重试
-grader-1  | 2026-10-09T02:13:02.344233805Z 2026-10-09 10:13:02,344 WARNING app.providers: provider=ds 输出被截断（max_tokens=2000），不再重试
-grader-1  | 2026-10-09T02:13:02.344368709Z 2026-10-09 10:13:02,344 WARNING app.tasks: task_id=b52c9cb667724e2c 示意图生成 0 张（模型返回空或清洗失败）
-grader-1  | 2026-10-09T02:13:02.394300176Z 2026-10-09 10:13:02,394 INFO app.tasks: 任务完成 task_id=b52c9cb667724e2c run_no=1 status=done archive=failed git=- ledger=1
-grader-1  | 2026-10-09T02:13:32.377630482Z 2026-10-09 10:13:32,377 WARNING app.providers: provider=ds 输出被截断（max_tokens=2000），不再重试
+grader-1  | 2026-10-09T02:19:53.298398947Z 2026-10-09 10:19:53,298 INFO app.main: 服务启动，代码版本 b8755e52
+grader-1  | 2026-10-09T02:19:53.298646865Z 2026-10-09 10:19:53,298 INFO app.main: 思考过程日志 → data/logs/thinking.log（按天轮转，保留5天；不再进 docker 日志）
+grader-1  | 2026-10-09T02:19:53.306085603Z 2026-10-09 10:19:53,305 INFO app.main: 网页版入口: /web/ （目录 /srv/app/web）
+grader-1  | 2026-10-09T02:19:53.306199988Z INFO:     Started server process [6]
+grader-1  | 2026-10-09T02:19:53.306372273Z INFO:     Waiting for application startup.
+grader-1  | 2026-10-09T02:19:53.315047773Z 2026-10-09 10:19:53,314 INFO app.main: 学习工作区: /srv/app/workspace（账号 leo、binbin、anna、wx-oCjElxp24iDQz5fK6UgBShmXLUC8、family；学科 语文、数学、英语；新建 0 项；README 新建=False；.gitignore 新建=False；升级=False）
+grader-1  | 2026-10-09T02:19:53.402999209Z 2026-10-09 10:19:53,402 WARNING app.main: Hermes 未就绪: 技能列表接口不可用（Hermes 服务错误 HTTP 500），无法确认技能是否已安装，任务仍会尝试执行
+grader-1  | 2026-10-09T02:19:53.404976918Z INFO:     Application startup complete.
+grader-1  | 2026-10-09T02:19:53.412601587Z INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+grader-1  | 2026-10-09T02:20:37.525893390Z 2026-10-09 10:20:37,525 WARNING app.providers: provider=ds 输出被截断（max_tokens=8000），不再重试
+grader-1  | 2026-10-09T02:20:37.958823504Z 2026-10-09 10:20:37,958 WARNING app.providers: provider=ds 输出被截断（max_tokens=8000），不再重试
