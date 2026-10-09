@@ -78,7 +78,9 @@ async def generate_diagram_svg(stem: str, provider) -> str:
         )
         text = (outcome.text or "").strip()
         if not text:
+            log.warning("示意图模型返回空")
             return ""
+        log.info("示意图模型返回 %d 字（前300字）：%s", len(text), text[:300])
         return sanitize_svg(text)
     except Exception as e:
         log.warning("示意图生成失败，已跳过：%s", e)
