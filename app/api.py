@@ -330,27 +330,38 @@ async def generate_task_diagrams(task_id: str, ctx: dict = Session):
         if not has_svg and has_stem and should:
             missing.append(q)
     if not missing:
-        return {"generated": 0, "message": "无需生成（已有示意图或无几何题）",
+        return {"generated": 0, "total": 0, "failures": [], "skipped": [],
+                "message": "无需生成（已有示意图或无几何题）",
                 "debug": {"subject": subj, "questions": debug}}
     chain = _chain(s)
     if not chain:
         raise HTTPException(500, "无可用模型")
     provs = [_make_provider(name, s.llm.providers[name]) for name in chain]
-    svgs = await _asyncio.gather(
-        *(_diagram.generate_diagram_svg(q["stem"], provs) for q in missing),
+    outcomes = await _asyncio.gather(
+        *(_diagram.generate_diagram(q["stem"], provs) for q in missing),
         return_exceptions=True)
     n = 0
     failures = []
-    for q, r in zip(missing, svgs):
-        if isinstance(r, str) and r:
-            q["diagram_svg"] = r
+    skipped = []
+    details = []
+    for q, r in zip(missing, outcomes):
+        if isinstance(r, Exception):
+            r = _diagram.DiagramResult("failed", reason="internal_error",
+                                       message="绘图处理失败，请稍后重试")
+        _diagram.apply_diagram_result(q, r)
+        details.append({"no": q.get("no", "?"), **r.metadata()})
+        if r.status == "generated":
             n += 1
-        elif isinstance(r, Exception):
-            failures.append(f"{q.get('no', '?')}: {type(r).__name__}: {r}")
-    if n:
-        await db.update_task(s.db_path, task_id,
-                             result_json=_json.dumps(result, ensure_ascii=False))
-    return {"generated": n, "total": len(missing), "failures": failures[:5]}
+        elif r.status == "failed":
+            failures.append(f"{q.get('no', '?')}: {r.message}")
+        else:
+            skipped.append(f"{q.get('no', '?')}: {r.message}")
+    # 失败/跳过也保存：刷新结果页后仍可见真实状态。
+    await db.update_task(s.db_path, task_id,
+                         result_json=_json.dumps(result, ensure_ascii=False))
+    return {"generated": n, "total": len(missing), "failures": failures[:5],
+            "skipped": skipped[:5], "results": details,
+            "message": "无需绘图（题目没有几何图形）" if not n and not failures else ""}
 
 
 @router.get("/tasks/{task_id}/orientation/{page}")

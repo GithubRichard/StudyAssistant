@@ -424,6 +424,26 @@ python3 scripts/split_thinking.py thinking.txt -o data/logs/thinking-export-sess
 输出目录必须不存在，避免覆盖；残缺段仍保存并提示，段外内容保存为 `unassigned`。
 不指定 `-o` 时，自动在输入文件旁新建带时间戳的目录。
 
+### 数学示意图与失败排查
+
+绘图继续优先使用 `llm.default_provider`（可保持现有 DS），再按 `fallback_order`
+尝试备选模型。单个模型先用 4000 tokens；输出被截断或只有思考、没有正式输出时，
+最多放大到 8000 tokens 重试一次。实际额度不超过该模型的 `max_output_tokens`；
+达到配置上限时不重复同参数重试。无需新增配置，也不向网关发送未经确认的禁用思考参数。
+
+模型只画题干明确描述的结构，不求解、不猜点位或阴影。不从思考内容中提取图形。
+题干几何信息不足时明确提示补充原图或点位关系，不把猜测当成可靠的原图重绘。
+当前绘图调用仍为纯文本；补充的图片需先由转写流程提供足够的几何关系。
+
+`questions[].diagram_svg` 保存清洗后的静态 SVG，结果校验/保存/读取均保留该字段。
+`questions[].diagram` 记录 `status`、`reason`、`message`、`provider` 和 `attempts`。
+失败不会中断批改，但会在结果页显示原因；老任务可点击「生成示意图」补生成。
+手动接口同时返回 `generated`、`failures`、`skipped` 和逐题 `results`，
+只有确实无几何图形时才显示「无需绘图」。
+
+离线回归：`python -m unittest tests.test_diagram tests.test_diagram_flow`；
+页面函数回归：`node tests/test_diagram_web.js`。
+
 ## 11. 尚未实现（如需启用请另行授权）
 
 - 与真实 Hermes 的联调（版本、工具权限、模型工具调用能力）

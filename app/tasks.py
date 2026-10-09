@@ -668,23 +668,36 @@ class TaskRunner:
                 chain = provider_chain(s)
                 if not chain:
                     log.warning("task_id=%s 示意图跳过：无可用模型（provider_chain 为空）", task_id)
+                    for q in qs:
+                        diagram.apply_diagram_result(q, diagram.DiagramResult(
+                            "failed", reason="no_provider", message="没有可用绘图模型"))
                 else:
                     provs = [make_provider(name, s.llm.providers[name]) for name in chain]
-                    svgs = await asyncio.gather(
-                        *(diagram.generate_diagram_svg(q.get("stem", ""), provs)
+                    outcomes = await asyncio.gather(
+                        *(diagram.generate_diagram(q.get("stem", ""), provs)
                           for q in qs),
                         return_exceptions=True)
                     n = 0
-                    for q, r in zip(qs, svgs):
-                        if isinstance(r, str) and r:
-                            q["diagram_svg"] = r
+                    for q, r in zip(qs, outcomes):
+                        if isinstance(r, Exception):
+                            r = diagram.DiagramResult("failed", reason="internal_error",
+                                                      message="绘图处理失败，请稍后重试")
+                        diagram.apply_diagram_result(q, r)
+                        if r.status == "generated":
                             n += 1
+                        elif r.status == "failed":
+                            log.warning("task_id=%s 题%s 示意图失败 reason=%s",
+                                        task_id, q.get("no", "?"), r.reason)
                     if n:
                         log.info("task_id=%s 示意图已生成 %d 张", task_id, n)
                     else:
-                        log.warning("task_id=%s 示意图生成 0 张（模型返回空或清洗失败）", task_id)
+                        log.info("task_id=%s 示意图生成 0 张（逐题状态已记录）", task_id)
             except Exception as e:
                 log.warning("task_id=%s 示意图生成跳过：%s", task_id, e)
+                for q in qs:
+                    if not q.get("diagram_svg"):
+                        diagram.apply_diagram_result(q, diagram.DiagramResult(
+                            "failed", reason="internal_error", message="绘图处理失败，请稍后重试"))
 
         archive = await workspace.apply_archive(s, task, run, result)
 

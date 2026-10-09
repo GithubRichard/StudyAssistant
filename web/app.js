@@ -725,6 +725,7 @@ function resultBodyHtml(task, questions, ledgerByUid) {
       </div>
       ${q.stem ? `<div class="q-stem">${esc(q.stem)}</div>` : ""}
       ${diagramSvg ? `<div class="diagram-wrap">${diagramSvg}<div class="muted small">示意图（AI 按题干重绘，仅供参考）</div></div>` : ""}
+      ${!diagramSvg && (q.diagram || {}).status === "failed" ? `<div class="muted small">示意图生成失败：${esc(q.diagram.message || "请稍后重试")}</div>` : ""}
       ${q.student_answer ? `<div class="q-row"><span class="q-label">我的作答</span><div>${esc(q.student_answer)}</div></div>` : ""}
       ${q.correct_answer ? `<div class="q-row"><span class="q-label">正确答案</span><div class="q-correct">${esc(q.correct_answer)}</div></div>` : ""}
       ${q.error_rule ? `<div class="q-row"><span class="q-label">错因</span><div>${esc(q.error_rule)}</div></div>` : ""}
@@ -895,7 +896,8 @@ async function pageResult(app, r, alive) {
 /* 结果页：老任务缺示意图时，提供手动生成按钮 */
 function bindDiagramButton(app, task, alive) {
   const qs = ((task.result || {}).questions) || [];
-  const need = qs.filter((q) => q.uid && !q.diagram_svg && (q.stem || "").length > 10);
+  const need = qs.filter((q) => !q.diagram_svg && (q.stem || "").trim()
+    && (q.diagram || {}).status !== "skipped");
   if (!need.length) return;
   // 只在可能有几何题时显示（题干含图/形关键词，或科目为数学）
   const subj = task.subject || "";
@@ -918,17 +920,21 @@ function bindDiagramButton(app, task, alive) {
       const r = await S.api(`/tasks/${encodeURIComponent(task.id)}/diagrams`, { method: "POST" });
       if (!alive()) return;
       if (r.generated > 0) {
-        msg.textContent = `已生成 ${r.generated} 张，刷新页面查看`;
+        const failed = (r.results || []).filter((x) => x.status === "failed").length;
+        msg.textContent = `已生成 ${r.generated} 张${failed ? `，${failed} 题失败` : ""}，刷新页面查看`;
         setTimeout(() => location.reload(), 1200);
       } else if (r.failures && r.failures.length) {
         msg.textContent = `生成失败：${r.failures[0]}`;
+        btn.disabled = false;
+      } else if (r.message) {
+        msg.textContent = r.message;
         btn.disabled = false;
       } else if (r.debug) {
         const d = r.debug.questions.map((q) => `${q.no}: 图${q.has_diagram ? "有" : "无"}/干${q.has_stem ? "有" : "无"}/判${q.should_attempt ? "是" : "否"}`).join("；");
         msg.textContent = `科目[${r.debug.subject || "空"}] ${d}`;
         btn.disabled = false;
       } else {
-        msg.textContent = r.message || "无需生成";
+        msg.textContent = "未返回绘图结果，请稍后重试";
         btn.disabled = false;
       }
     } catch (err) {

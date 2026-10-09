@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, Dict, List, Optional, Tuple, Literal
 
-from pydantic import BaseModel, BeforeValidator, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
 
 from .scope import TRAINING_KINDS
 
@@ -317,6 +317,14 @@ class ReviewResponse(StrictModel):
         return self
 
 
+class DiagramInfo(StrictModel):
+    status: Literal["not_attempted", "generated", "skipped", "failed"] = "not_attempted"
+    reason: str = ""
+    message: str = ""
+    provider: str = ""
+    attempts: int = Field(default=0, ge=0)
+
+
 class QuestionResult(StrictModel):
     id: str
     uid: str = ""               # 稳定去重键（来源+日期+页码+题号），由服务端回填
@@ -324,6 +332,8 @@ class QuestionResult(StrictModel):
     source: str = ""
     page: str = ""
     stem: str = ""
+    diagram_svg: str = ""        # 必须声明，否则 extra=ignore 会在页面读取时丢掉图
+    diagram: DiagramInfo = Field(default_factory=DiagramInfo)
     student_answer: str = ""
     status: str
     correct_answer: str = ""
@@ -335,6 +345,13 @@ class QuestionResult(StrictModel):
     final_decision: str = "pending"
     final_decision_basis: str = ""
     remediation: Remediation = Field(default_factory=Remediation)
+
+    @field_validator("diagram_svg")
+    @classmethod
+    def _sanitize_diagram_svg(cls, value: str) -> str:
+        # 来自模型或历史库的 SVG 都不能未经清洗就进入前端 innerHTML。
+        from .diagram import sanitize_svg
+        return sanitize_svg(value)
 
     @model_validator(mode="before")
     @classmethod
