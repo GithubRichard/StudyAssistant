@@ -12,7 +12,8 @@ from PIL import Image
 
 from app.config import Settings
 from app.workspace import (CONFLICT_NAME_RE, LEGACY_GITIGNORE_CONTENT, WorkspaceError,
-                           apply_archive, archive_artifact, collect_artifacts,
+                           apply_archive, archive_artifact, archive_path_reject_reason,
+                           collect_artifacts,
                            ensure_workspace, is_inside_allowed, run_output_dir,
                            safe_archive_path, store_asset, write_conflict_record)
 
@@ -200,6 +201,19 @@ class ArchiveTest(unittest.TestCase):
                                             {"run_no": 1}, result))
             self.assertEqual(out["status"], "failed")
             self.assertFalse((Path(tmp).parent / "evil.md").exists())
+
+    def test_reject_reason_names_the_failed_check(self):
+        account = "web_zhou"  # account_dir_name 派生的目录名
+        self.assertEqual(archive_path_reject_reason("", account=account), "suggested_path 为空")
+        self.assertIn("..", archive_path_reject_reason("../../evil.md", account=account))
+        reason = archive_path_reject_reason("数学/错题解析/wrongname.txt", account=account)
+        self.assertIn("文件名不合法", reason)
+        reason = archive_path_reject_reason("数学/错题解析", account=account)
+        self.assertIn("段数=2", reason)
+        reason = archive_path_reject_reason("数学/笔记/2026-10-10-几何.md", account=account)
+        self.assertIn("子目录不在白名单", reason)
+        self.assertIsNone(archive_path_reject_reason("数学/错题解析/2026-10-10-几何.md",
+                                                     account=account))
 
 
 class ArtifactTest(unittest.TestCase):

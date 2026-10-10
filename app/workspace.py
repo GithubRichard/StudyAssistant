@@ -358,6 +358,38 @@ def safe_archive_path(settings: Settings, relative: str,
     return target
 
 
+def archive_path_reject_reason(relative: str, account: Optional[str] = None) -> Optional[str]:
+    """返回 safe_archive_path 会拒绝 `relative` 的原因；格式校验通过时返回 None。
+
+    仅镜像 safe_archive_path 的格式校验（不做落盘越界检查），供日志定位用。
+    与 safe_archive_path 保持同步：改校验规则时两处一起改。
+    """
+    if not relative or not relative.strip():
+        return "suggested_path 为空"
+    if ".." in Path(relative.strip()).parts:
+        return "含 '..' 路径段"
+    rel = relative.strip().lstrip("./")
+    parts = Path(rel).parts
+    if account:
+        if len(parts) != 3:
+            return f"段数={len(parts)}，应为 3 段（学科/子目录/文件名）"
+        account_name = account
+        subject, subdir, name = parts
+    else:
+        if len(parts) != 4:
+            return f"段数={len(parts)}，应为 4 段（账号/学科/子目录/文件名）"
+        account_name, subject, subdir, name = parts
+    if not ACCOUNT_DIR_RE.match(account_name):
+        return f"账号目录名不合法：{account_name!r}"
+    if not SUBJECT_RE.match(subject):
+        return f"学科名不合法：{subject!r}"
+    if subdir not in ALLOWED_SUBDIRS:
+        return f"子目录不在白名单：{subdir!r}"
+    if not ARCHIVE_NAME_RE.match(name):
+        return f"文件名不合法：{name!r}（应为 YYYY-MM-DD[-主题].md）"
+    return None
+
+
 async def apply_archive(settings: Settings, task: Dict[str, Any], run: Dict[str, Any],
                         result: Dict[str, Any]) -> Dict[str, Any]:
     """把结果中的归档建议写入工作区；追加不覆盖，重复轮次不重复写。
@@ -377,6 +409,10 @@ async def apply_archive(settings: Settings, task: Dict[str, Any], run: Dict[str,
     account = account_dir_name(task.get("openid", ""))
     target = safe_archive_path(settings, archive.get("suggested_path", ""), account=account)
     if target is None:
+        reason = archive_path_reject_reason(archive.get("suggested_path", ""), account=account) \
+            or "落盘路径越界"
+        log.warning("task_id=%s run_no=%d 归档路径被拒绝写入：%r 原因=%s",
+                    task.get("id"), run.get("run_no"), archive.get("suggested_path"), reason)
         return {
             "status": "failed",
             "path": "",
