@@ -1716,10 +1716,15 @@ async function renderAdminLogs(body, alive) {
   const startStream = () => {
     stopStream();
     view.textContent = "";
+    if (!files.length) {
+      view.textContent = "服务器上没有找到日志文件（thinking.log / grader.log 都不存在）。\n可能原因：data_dir 路径不对，或应用尚未写入过日志。";
+      liveDot.textContent = "○ 无日志文件";
+      return;
+    }
     // 先拉最近 200 行，再接实时流
     S.api(`/admin/logs/tail?file=${encodeURIComponent(cur)}&lines=200`)
       .then((d) => { if (alive()) (d.lines || []).forEach((l) => append(l)); })
-      .catch(() => {});
+      .catch((e) => { view.textContent = `读取日志失败：${e.message || e}`; });
     const token = S.token || "";
     es = new EventSource(`/admin/logs/stream?file=${encodeURIComponent(cur)}&token=${encodeURIComponent(token)}`);
     es.onmessage = (ev) => append(ev.data);
