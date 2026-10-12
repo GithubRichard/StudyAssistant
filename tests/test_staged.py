@@ -1461,6 +1461,13 @@ class ReasoningUncertaintyTest(unittest.TestCase):
         self.assertTrue(reason)
         self.assertIn(17, nos)
 
+    def test_stem_uncertain_field_name_does_not_trigger(self):
+        # 2026-10-12 生产：思考过程讨论 stem_uncertain 字段名（"stem_uncertain false？"）
+        # 和选项 D（"D 不确定"），不是题号不确定，不应触发
+        reason, nos = staged._reasoning_number_uncertainty(
+            "stem_uncertain false？我觉得可以。但如果 D 不确定，可以在 stem_no…")
+        self.assertEqual((reason, nos), ("", []))
+
     def test_uncertain_about_answers_only(self):
         self.assertEqual(staged._reasoning_number_uncertainty(
             "学生答案有两个不确定"), ("", []))

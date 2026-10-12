@@ -718,9 +718,10 @@ def _reasoning_number_uncertainty(thinking: str) -> tuple:
     text = thinking or ""
     if not text:
         return "", []
-    # 先剔除字段名本身：模型 deliberation 字段语义是常态，且 "number_uncertain"
-    # 自带 "uncertain" 子串，不剔除会走私触发近距离规则（2026-10-08 生产教训）。
-    lowered = re.sub(r"number_uncertain", " ", text.lower())
+    # 先剔除字段名本身：模型 deliberation 字段语义是常态，且 "number_uncertain"/
+    # "stem_uncertain" 自带 "uncertain" 子串，不剔除会走私触发近距离规则
+    # （2026-10-08 生产教训 number_uncertain；2026-10-12 生产教训 stem_uncertain）。
+    lowered = re.sub(r"(number_uncertain|stem_uncertain)", " ", text.lower())
     num_pos = [m.start() for w in _NUMBER_WORDS for m in re.finditer(re.escape(w), lowered)]
     if not num_pos:
         return "", []
