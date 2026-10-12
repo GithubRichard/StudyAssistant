@@ -1,29 +1,151 @@
-grader-1  | 2026-10-09T05:49:35.994665549Z 2026-10-09 13:49:35,994 INFO app.main: 服务启动，代码版本 91524dcf
-grader-1  | 2026-10-09T05:49:35.994947361Z 2026-10-09 13:49:35,994 INFO app.main: 思考过程日志 → data/logs/thinking.log（按天轮转，保留5天；不再进 docker 日志）
-grader-1  | 2026-10-09T05:49:36.001910993Z 2026-10-09 13:49:36,001 INFO app.main: 网页版入口: /web/ （目录 /srv/app/web）
-grader-1  | 2026-10-09T05:49:36.002229904Z INFO:     Started server process [7]
-grader-1  | 2026-10-09T05:49:36.002238400Z INFO:     Waiting for application startup.
-grader-1  | 2026-10-09T05:49:36.042253314Z 2026-10-09 13:49:36,042 INFO app.main: 学习工作区: /srv/app/workspace（账号 leo、binbin、anna、wx-oCjElxp24iDQz5fK6UgBShmXLUC8、family；学科 语文、数学、英语；新建 0 项；README 新建=False；.gitignore 新建=False；升级=False）
-grader-1  | 2026-10-09T05:49:36.102313250Z 2026-10-09 13:49:36,102 WARNING app.main: Hermes 未就绪: 技能列表接口不可用（Hermes 服务错误 HTTP 500），无法确认技能是否已安装，任务仍会尝试执行
-grader-1  | 2026-10-09T05:49:36.104742111Z INFO:     Application startup complete.
-grader-1  | 2026-10-09T05:49:36.113729570Z INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-grader-1  | 2026-10-09T05:52:48.432228928Z 2026-10-09 13:52:48,432 WARNING app.providers: provider=glmf 输出被截断（max_tokens=4000），不再重试
-grader-1  | 2026-10-09T05:52:48.432364623Z 2026-10-09 13:52:48,432 WARNING studyassistant.diagram: 示意图 provider=glmf budget=4000 reason=truncated attempt=1
-grader-1  | 2026-10-09T05:54:18.459465554Z 2026-10-09 13:54:18,457 WARNING app.providers: provider=glmf 第1次调用失败: 
-grader-1  | 2026-10-09T05:55:48.488467777Z 2026-10-09 13:55:48,488 WARNING app.providers: provider=glmf 第2次调用失败: 
-grader-1  | 2026-10-09T05:55:48.491369018Z 2026-10-09 13:55:48,488 ERROR studyassistant.diagram: 示意图调用失败 provider=glmf
-grader-1  | 2026-10-09T05:55:48.491386922Z Traceback (most recent call last):
-grader-1  | 2026-10-09T05:55:48.491389727Z   File "/srv/app/app/diagram.py", line 204, in generate_diagram
-grader-1  | 2026-10-09T05:55:48.491392252Z     outcome = await prov.complete_text(DIAGRAM_SYSTEM, f"题目：\n{stem}",
-grader-1  | 2026-10-09T05:55:48.491394787Z               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-grader-1  | 2026-10-09T05:55:48.491397091Z   File "/srv/app/app/providers.py", line 82, in complete_text
-grader-1  | 2026-10-09T05:55:48.491399466Z     return await self._chat(messages, max_tokens=max_tokens)
-grader-1  | 2026-10-09T05:55:48.491401690Z            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-grader-1  | 2026-10-09T05:55:48.491403944Z   File "/srv/app/app/providers.py", line 137, in _chat
-grader-1  | 2026-10-09T05:55:48.491406699Z     raise ProviderError(f"{self.name} 调用失败: {last_err}")
-grader-1  | 2026-10-09T05:55:48.491860214Z app.providers.ProviderError: glmf 调用失败: 
-grader-1  | 2026-10-09T05:55:48.491867729Z 2026-10-09 13:55:48,491 WARNING studyassistant.diagram: 示意图 provider=glmf budget=8000 reason=provider_error attempt=2
-grader-1  | 2026-10-09T05:56:09.908612229Z 2026-10-09 13:56:09,908 WARNING app.providers: provider=ds 输出被截断（max_tokens=4000），不再重试
-grader-1  | 2026-10-09T05:56:09.908721024Z 2026-10-09 13:56:09,908 WARNING studyassistant.diagram: 示意图 provider=ds budget=4000 reason=truncated attempt=3
-grader-1  | 2026-10-09T05:56:50.382291115Z 2026-10-09 13:56:50,382 WARNING app.providers: provider=ds 输出被截断（max_tokens=8000），不再重试
-grader-1  | 2026-10-09T05:56:50.382524386Z 2026-10-09 13:56:50,382 WARNING studyassistant.diagram: 示意图 provider=ds budget=8000 reason=truncated attempt=4
+grader-1  | 2026-10-09T13:50:12.847361187Z 2026-10-09 21:50:12,847 INFO app.main: 服务启动，代码版本 5aaedbb4
+grader-1  | 2026-10-09T13:50:12.848267296Z 2026-10-09 21:50:12,847 INFO app.main: 思考过程日志 → data/logs/thinking.log（按天轮转，保留5天；不再进 docker 日志）
+grader-1  | 2026-10-09T13:50:12.861428025Z 2026-10-09 21:50:12,861 INFO app.main: 网页版入口: /web/ （目录 /srv/app/web）
+grader-1  | 2026-10-09T13:50:12.861572278Z INFO:     Started server process [7]
+grader-1  | 2026-10-09T13:50:12.861601693Z INFO:     Waiting for application startup.
+grader-1  | 2026-10-09T13:50:12.871129692Z 2026-10-09 21:50:12,870 INFO app.main: 学习工作区: /srv/app/workspace（账号 leo、binbin、anna、ruison、wx-oCjElxp24iDQz5fK6UgBShmXLUC8、family；学科 语文、数学、英语；新建 0 项；README 新建=False；.gitignore 新建=False；升级=False）
+grader-1  | 2026-10-09T13:50:12.920267802Z 2026-10-09 21:50:12,920 WARNING app.main: Hermes 未就绪: 技能列表接口不可用（Hermes 服务错误 HTTP 500），无法确认技能是否已安装，任务仍会尝试执行
+grader-1  | 2026-10-09T13:50:12.922915686Z INFO:     Application startup complete.
+grader-1  | 2026-10-09T13:50:12.932296598Z INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+grader-1  | 2026-10-09T14:27:53.126198578Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-09T17:01:24.404276057Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-09T17:01:29.581545370Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-09T17:01:34.744016432Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-09T17:01:39.957493676Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-09T17:02:33.143254403Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-09T17:02:35.520686212Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-09T17:46:12.984309446Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-09T18:09:26.885248691Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-09T18:09:28.371897064Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-09T20:04:26.126435951Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-09T21:08:00.808721447Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-09T22:32:59.150225776Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-09T23:07:27.648911059Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-09T23:52:00.485549867Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T00:26:40.632279087Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T01:03:27.426231017Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T01:03:27.854347106Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T01:08:18.119509608Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T02:18:59.193743714Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T02:48:51.406929002Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T04:26:20.853347203Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T04:26:23.263624451Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T04:57:36.929430216Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T04:58:49.535060062Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T05:49:45.378965200Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T05:49:50.345843847Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T05:49:53.744745843Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T05:50:01.211536594Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T05:51:55.141857283Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T05:52:06.856241649Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T13:51:40.474315445Z 2026-10-10 21:51:40,472 INFO app.api: 网页版登录成功: web:leo (来源 117.143.175.99)
+grader-1  | 2026-10-10T13:52:54.837425240Z 2026-10-10 21:52:54,837 INFO app.tasks: 创建学习任务 task_id=82e4d7be707a46ef type=grading kind= scope=-~- assets=2
+grader-1  | 2026-10-10T13:52:55.810620498Z 2026-10-10 21:52:55,810 INFO app.tasks: 开始执行 task_id=82e4d7be707a46ef run_no=1 budget=1200s assets=2
+grader-1  | 2026-10-10T13:52:55.840400069Z 2026-10-10 21:52:55,840 INFO app.tasks: 分阶段批改 task_id=82e4d7be707a46ef run_no=1 images=2 followup=False
+grader-1  | 2026-10-10T13:54:01.804461740Z 2026-10-10 21:54:01,804 INFO app.staged: 分阶段批改[extract]成功 provider=ds tokens=2950/14372 cost≈0.0000元
+grader-1  | 2026-10-10T13:54:01.811463945Z 2026-10-10 21:54:01,810 WARNING app.staged: 分阶段批改[extract] 思考过程暴露题号不确定（思考过程现题号不确定表述（…)(2024-x)的值。   但题号25不确定，因为图片1的第25题是"已知x-y=2..."。所以…）），已暂标待复核洗清
+grader-1  | 2026-10-10T13:54:33.007959863Z 2026-10-10 21:54:33,007 WARNING app.providers: provider=glmf 输出被截断（max_tokens=2000，正文 0 字，思考 4180 字），不再重试
+grader-1  | 2026-10-10T13:54:33.008689960Z 2026-10-10 21:54:33,007 WARNING app.staged: 分阶段批改[number_verify]输出截断，同一模型放大额度重试: provider=glmf 2000->4000
+grader-1  | 2026-10-10T13:54:35.081286041Z 2026-10-10 21:54:35,081 INFO app.api: 网页版登录成功: web:ruison (来源 151.244.134.127)
+grader-1  | 2026-10-10T13:55:18.420709715Z 2026-10-10 21:55:18,420 WARNING app.providers: provider=glmf 输出被截断（max_tokens=4000，正文 0 字，思考 9690 字），不再重试
+grader-1  | 2026-10-10T13:55:18.420766332Z 2026-10-10 21:55:18,420 WARNING app.staged: 分阶段批改[number_verify]切换备胎（输出截断）: provider=glmf
+grader-1  | 2026-10-10T13:55:18.424636550Z 2026-10-10 21:55:18,424 WARNING app.staged: 分阶段批改[extract] 题号复核未完成，已保留首轮转写：所有模型都失败了: glmf: 输出被截断（finish_reason=length）
+grader-1  | 2026-10-10T13:55:18.425942663Z 2026-10-10 21:55:18,425 WARNING app.staged: 分阶段批改[extract] 思考过程暴露题号不确定（思考过程现题号不确定表述（…)(2024-x)的值。   但题号25不确定，因为图片1的第25题是"已知x-y=2..."。所以…）），12 题标存疑
+grader-1  | 2026-10-10T13:55:38.445344319Z 2026-10-10 21:55:38,445 INFO app.api: 网页版登录成功: web:leo (来源 151.244.134.127)
+grader-1  | 2026-10-10T13:56:29.663062822Z 2026-10-10 21:56:29,662 INFO app.staged: 分阶段批改[extract_zoom]成功 provider=ds tokens=9737/17829 cost≈0.0000元
+grader-1  | 2026-10-10T13:56:29.667775630Z 2026-10-10 21:56:29,667 INFO app.staged: 分阶段批改[extract] 放大复核完成：4 题待复核，3 题转写被更新
+grader-1  | 2026-10-10T13:56:29.678074474Z 2026-10-10 21:56:29,676 INFO app.tasks: 【提取阶段转写】task_id=82e4d7be707a46ef run_no=1
+grader-1  | 2026-10-10T13:56:29.678091896Z 共提取 12 题（只转写、不判定）：
+grader-1  | 2026-10-10T13:56:29.678094391Z   题18【字迹存疑】【题号存疑】｜题干：观察下列等式：(x-1)(x+1)=x²-1；(x-1)(x²+x+1)=x³-1；(x-…｜学生答案：（未作答/空白）｜备注：手写答案被红笔批改痕迹覆盖，无法辨认｜题号备注：思考过程兜底：思考过程现题号不确定表述（…)(2024-x)的值。   但题号25不确定，因为图片1的第25题是"已知x-y=2..."。所以…）
+grader-1  | 2026-10-10T13:56:29.678097497Z   题19【题号存疑】｜题干：计算：(-a²)³+(2a²)³-(-a)·(-a)²·(-a³)｜学生答案：原式=a⁶+8a⁶-a⁶=8a⁶｜题号备注：思考过程兜底：思考过程现题号不确定表述（…)(2024-x)的值。   但题号25不确定，因为图片1的第25题是"已知x-y=2..."。所以…）
+grader-1  | 2026-10-10T13:56:29.678100062Z   题20【题号存疑】｜题干：计算：(-x-2y)²-(x+2y)(x+2y)｜学生答案：原式=x²+4xy+4y²-4y²+x²=2x²+4xy｜题号备注：思考过程兜底：思考过程现题号不确定表述（…)(2024-x)的值。   但题号25不确定，因为图片1的第25题是"已知x-y=2..."。所以…）
+grader-1  | 2026-10-10T13:56:29.678102486Z   题21【题号存疑】｜题干：计算：(x+y-2z)(x-y+2z)｜学生答案：原式=[x+(y-2z)][x-(y-2z)]=x²-(y-2z)²=x²-y²+4yz-4z²｜题号备注：思考过程兜底：思考过程现题号不确定表述（…)(2024-x)的值。   但题号25不确定，因为图片1的第25题是"已知x-y=2..."。所以…）
+grader-1  | 2026-10-10T13:56:29.678104841Z   题22【题号存疑】｜题干：利用公式计算：1001×999-997²｜学生答案：原式=(1000+1)(1000-1)-997²=1000²-1-997²=(1000-997)(1000+997)-1=3×1997-1=5991-1=5990｜题号备注：思考过程兜底：思考过程现题号不确定表述（…)(2024-x)的值。   但题号25不确定，因为图片1的第25题是"已知x-y=2..."。所以…）
+grader-1  | 2026-10-10T13:56:29.678107906Z   题23【题号存疑】｜题干：计算：[8/3 ab(-1/2 a)²+(a²b)²÷3ab]÷(-2a)²｜学生答案：原式=[8/3 ab·1/4 a²+a⁴b²÷3ab]÷(-8a³)=[2/3 a³b+1/3 a³b]÷(-8a³)=-(a³b÷8a³)=-1/8 b｜题号备注：思考过程兜底：思考过程现题号不确定表述（…)(2024-x)的值。   但题号25不确定，因为图片1的第25题是"已知x-y=2..."。所以…）
+grader-1  | 2026-10-10T13:56:29.678110521Z   题24【题号存疑】｜题干：计算：(2a-3b)²(2a+3b)²｜学生答案：原式=[(2a-3b)(2a+3b)]²=[4a²-9b²]²=16a⁴-72a²b²+81b⁴｜题号备注：思考过程兜底：思考过程现题号不确定表述（…)(2024-x)的值。   但题号25不确定，因为图片1的第25题是"已知x-y=2..."。所以…）
+grader-1  | 2026-10-10T13:56:29.678112836Z   题25(1)【题号存疑】｜题干：已知x-y=2，x²+y²=6，(1)求代数式xy的值；｜学生答案：解：∵xy=(x²+y²-(x-y)²)/2 当x-y=2，x²+y²=6时 -xy=(4-6)/2 -xy=-1 ∴xy=1｜题号备注：思考过程兜底：思考过程现题号不确定表述（…)(2024-x)的值。   但题号25不确定，因为图片1的第25题是"已知x-y=2..."。所以…）
+grader-1  | 2026-10-10T13:56:29.678115420Z   题25(2)【题号存疑】｜题干：已知x-y=2，x²+y²=6，(2)求代数式x³y-3x²y²+xy³的值。｜学生答案：解：原式=xy(x²-3xy+y²) 当x²+y²=6，xy=1时 原式=6-3=3｜题号备注：思考过程兜底：思考过程现题号不确定表述（…)(2024-x)的值。   但题号25不确定，因为图片1的第25题是"已知x-y=2..."。所以…）
+grader-1  | 2026-10-10T13:56:29.678134546Z   题26【题干存疑】【题号存疑】｜题干：已知正方形ABCD的边长为x，E，F分别是AD、DC上的点，且AE=1，CF=3，长方形E…｜学生答案：(1)解：∵绝对值和与偶次幂为非负数 ∴x+1=0，x=-1；y-2=0，y=2 A-2B=(2x²+3xy+2y-1)-2(x²-xy+x-1/2)=2x²+3xy+2y-1-2x²+2xy-2x+1=5xy+2y-2x 当x=-1，y=2时 A-2B=-10+4+2=-4 (2)解：∵A-2B的值与x无关 ∴5y-2=0 y=2/5｜题干备注：题干文字部分模糊，可能存在缺漏｜题号备注：题号26可辨，但该题内容与前后题关系不明确；思考过程兜底：思考过程现题号不确定表述（…)(2024-x)的值。   但题号25不确定，因为图片1的第25题是"已知x-y=2..."。所以…）
+grader-1  | 2026-10-10T13:56:29.678139275Z   题29(1)【题干存疑】【题号存疑】｜题干：阅读材料：若x满足(9-x)(x-4)=4，求(9-x)²+(x-4)²的值。解：设9-x…｜学生答案：解：设5-x=a，x-2=b 则(5-x)(x-2)=ab=2 a+b=(5-x)+(x-2)=3 ∴(5-x)²+(x-2)²=a²+b²=(a+b)²-2ab=3²-2×2=5｜题干备注：题干文字模糊，阅读材料部分内容可能不准确｜题号备注：题号模糊，疑似29；思考过程兜底：思考过程现题号不确定表述（…)(2024-x)的值。   但题号25不确定，因为图片1的第25题是"已知x-y=2..."。所以…）
+grader-1  | 2026-10-10T13:56:29.678142351Z   题29(2)【题干存疑】【题号存疑】｜题干：阅读材料：若x满足(9-x)(x-4)=4，求(9-x)²+(x-4)²的值。解：设9-x…｜学生答案：解：设n-2023=x，2024-n=y 则(n-2023)+(2024-n)=1，x+y=1 又(n-2023)²+(2024-n)²=1，x²+y²=1 ∴(n-2023)(2024-n)=xy=0｜题干备注：题干文字模糊，阅读材料部分内容可能不准确｜题号备注：题号模糊，疑似29；思考过程兜底：思考过程现题号不确定表述（…)(2024-x)的值。   但题号25不确定，因为图片1的第25题是"已知x-y=2..."。所以…）
+grader-1  | 2026-10-10T13:56:30.087078578Z 2026-10-10 21:56:30,086 INFO app.tasks: 开始复查 task_id=82e4d7be707a46ef run_no=1 送审=12 超限=0 timeout=600s coverage=reread images=2
+grader-1  | 2026-10-10T13:56:30.092400866Z 2026-10-10 21:56:30,091 INFO app.hermes: 调用复查模型 session=review-82e4d7be707a46ef-1 model=glmf（provider=zai） timeout=600.0s
+grader-1  | 2026-10-10T14:06:00.775592345Z 2026-10-10 22:06:00,775 INFO app.hermes: 复查请求耗时 571s session=review-82e4d7be707a46ef-1
+grader-1  | 2026-10-10T14:06:00.780076121Z 2026-10-10 22:06:00,779 INFO app.hermes: 复查完成 session=review-82e4d7be707a46ef-1 题数=12 网关报告模型=glmf tokens=27630/33197
+grader-1  | 2026-10-10T14:06:00.782719867Z 2026-10-10 22:06:00,781 WARNING app.tasks: 复查模型身份仅核对到模型名 task_id=82e4d7be707a46ef: 网关报告模型 glmf 与期望一致且不同于首轮模型，但网关未报告 provider，无法核对是否为 zai
+grader-1  | 2026-10-10T14:06:00.787178535Z 2026-10-10 22:06:00,787 INFO app.tasks: 复查完成 task_id=82e4d7be707a46ef run_no=1 state=completed disagreed=12 unverified=0
+grader-1  | 2026-10-10T14:06:53.861798228Z 2026-10-10 22:06:53,861 INFO app.tasks: task_id=82e4d7be707a46ef 示意图已生成 1 张
+grader-1  | 2026-10-10T14:06:54.046076332Z 2026-10-10 22:06:54,045 INFO app.tasks: 任务完成 task_id=82e4d7be707a46ef run_no=1 status=waiting_input archive=failed git=- ledger=12
+grader-1  | 2026-10-10T15:04:43.281599121Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T17:22:47.201645876Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T18:09:04.067998572Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T18:09:05.019644279Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T18:51:26.751734778Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T18:51:27.658959407Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T18:51:30.810874620Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T18:51:32.130224714Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T18:51:47.629505692Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T18:51:47.681013333Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T19:36:23.384457579Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T21:35:40.804357323Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-10T23:44:31.775996309Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T00:08:58.067651623Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T00:08:58.488559361Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T02:23:50.894280814Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T02:31:16.989392341Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T02:32:06.903880312Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T05:14:06.950148921Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T05:14:08.239537177Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T05:14:14.108449826Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T05:30:31.782403365Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T05:31:27.754809825Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T05:38:17.951561975Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T05:39:26.902652839Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T05:39:27.402040104Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T06:06:51.549560575Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T06:48:52.515041145Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T06:49:38.344982530Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T07:58:34.333550453Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T07:58:35.982265249Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T07:58:41.191715132Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T07:58:41.504655937Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T07:58:51.508412234Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T07:58:51.580655939Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T08:22:21.460819398Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T08:22:21.998047596Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T08:22:22.516577984Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T08:22:23.033763417Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T08:33:54.346471466Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T08:48:34.633929175Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T08:48:34.739188038Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T10:32:03.242707555Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T10:32:04.558455222Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T10:32:05.082350003Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T10:32:09.619073139Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T12:03:12.351626796Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T12:03:12.881038542Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T12:03:14.205333523Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T16:47:54.977441627Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T16:47:54.978645426Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T16:47:55.477749889Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T16:51:04.266333587Z 2026-10-12 00:51:04,265 INFO app.weekly: 周总结AI分析成功: subject=未分类 provider=ds tokens=4599/10405 cost≈0.0000元
+grader-1  | 2026-10-11T16:51:04.285326925Z 2026-10-12 00:51:04,285 INFO app.weekly: 周总结已生成: openid=web:leo week=2026-10-05 科目=未分类
+grader-1  | 2026-10-11T16:51:04.320823353Z 2026-10-12 00:51:04,320 INFO app.main: 周总结已生成: web:leo 生成 1 周
+grader-1  | 2026-10-11T17:36:04.374960797Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T17:55:04.294783138Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T19:13:24.331885406Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T19:13:24.351786504Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T19:45:38.139181236Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T20:54:55.907554712Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T20:55:02.575270779Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T20:55:17.086554575Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T20:58:34.495314121Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T20:58:45.919677186Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T21:02:13.476133969Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T21:47:45.940282506Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-11T23:10:06.797843604Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-12T00:51:28.489764297Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-12T01:33:12.312761775Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-12T01:33:13.036510762Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-12T02:16:20.713176079Z WARNING:  Invalid HTTP request received.
+grader-1  | 2026-10-12T05:39:44.573480610Z WARNING:  Invalid HTTP request received.
