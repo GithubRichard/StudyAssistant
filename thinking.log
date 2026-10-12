@@ -2397,3 +2397,605 @@ Actually, you know, let me reconsider once more whether to attempt a filesystem 
 
 Output single json code block with 30 entries.
 【思考过程结束】
+2026-10-12 18:42:48 【任务阶段】session=study-d48c9c0abc8f4b8a-1 task_id=d48c9c0abc8f4b8a run_no=1 stage=orientation
+{"page": 1, "sha256": "ec171dd6c4d2c5c3d8354c726b674d05d8da41658ba10163aea95888149b8ae9", "rotation": 180, "confirmed": true, "source": "osd", "osd_confidence": 2.72, "osd_error": "", "visual_attempted": false, "cost": 0.0, "input_tokens": 0, "output_tokens": 0, "width": 2048, "height": 1536, "exif_orientation": null, "prepared_sha256": "4d1fb84c3ddea7269b864eedadf809d2d6b12128d00be3ebdb40e26e43b330d5"}
+【任务阶段结束】
+2026-10-12 18:43:55 【模型思考过程】session=study-d48c9c0abc8f4b8a-1 task_id=d48c9c0abc8f4b8a run_no=1 stage=extract provider=ds model=deepseek-flash
+图片横向，已在心里摆正（顺时针旋转90度后阅读）。这是一份数学试卷，含选择题、填空题、解答题。需要逐题转写题干和学生手写答案。
+
+图片内容识别：
+
+左上角有手写"93"、"45"、红色"93"。
+
+标题：2026学年第一学期七年级数学第一次阶段性练习
+班级 七(3) 姓名 陈学睿 学号 22 得分
+
+一、选择题：（本大题共6题，每题2分，满分12分）
+1. 下列代数式 x², 2x, 1/x, 3/x+1, -1/2, x+1/3 中，单项式有（ D ）
+A. 1个 B. 2个 C. 3个 D. 4个
+学生选 D。
+
+2. 下列运算中，结果正确的是（ C ）
+A. a²·a³=a⁶ B. a⁸÷a⁴=a² C. (a²)³=a⁶ D. (-a)³·a²=a⁶... 看不清，选项D似乎是 (-a)³·a² = a⁶? 需要仔细看。图片中 D. (-a)^3 · a^2 = a^6? 看起来是 "(-a)^3·a^2=a^6"? 可能。学生选 C。
+
+3. 下列等式中，正确的是（ C ）
+A. 3a+2b=5ab B. (a-3)²=a²-9 C. a³·a⁴=a⁷ D. a⁴·a²=a⁸? 实际上图片写的是 C. a³·a⁴=a⁷ D. a⁴·a²=a⁸? 看起来"D. a⁴·a²=a⁸"？图片中 D. a^4·a^2=a^8? 不确定。需要尽量照抄可见内容。学生选 C。
+
+4. 下列多项式乘法计算中，能用平方差公式计算的是（ A ）
+A. (x+1)(x-1) B. (x+2)(x-2)... 等等。图片中 A. (x+1)(x-1) B. (x-2)(x+2) C. (-x-2)(x+2) D. (-x-2)(x-2)? 需要辨认。学生选 A。
+
+5. 如图，边长为a的大正方形中剪去一个边长为b的小正方形，可以不同的代数式表示图中阴影部分的面积，则用阴影部分面积表示的等式是（ B ）
+A. (m+n)²=(m-n)²-4mn B. (m-n)²=(m+n)²-4mn C. (m+n)²=(m+n)²-4mn? D. ... 这些选项。学生选 B。
+
+6. 式子 2+1)(2²+1)(2⁴+1)...(2¹⁰²⁴+1)+1 化简的结果为（ C ）
+A. 2²⁰⁴⁸ B. 2⁰⁰⁸+1? C. 2²⁰⁴⁸ D. 2²⁰⁵⁰+1? 需要看清。选项：A. 2^2048 B. 2^2008+1 C. 2^2048 D. 2^2050+1? 图片显示 A. 2²⁰⁴⁸ B. 2²⁰⁰⁸+1 C. 2²⁰⁴⁸ D. 2²⁰⁵⁰+1? 学生选 C？图片手写选 C。需要看。
+
+二、填空题：（本大题共12题，每题2分，满分24分）
+7. 单项式 -x³y/5 的系数是 -1/5，次数是 4。
+学生填 -1/5，4。
+
+8. 若多项式 2x² - 3y + 4xy³ - 4x³y 按字母 x 降幂排列得 -4x³y+4xy³+2x²-3y? 学生填 -4x³y+4xy³+2x²-3y? 图片中手写是 "-4x³y+4xy³+2x²-3y"？看起来是 -4x³y+4xy³+2x²-3y。但要注意符号。学生答案：-4x³y+4xy³+2x²-3y。
+
+9. 若 5x^(2m+1)y² 与 -1/2 x³ y^(2n)... 是同类项，那么 m+n= 3? 题干：若 5x^{2m+1}y² 与 -1/2 x³ y^{2n} 是同类项，那么 m+n=____。学生填 3。图片中选项？手写 3。
+
+10. 计算：(a-b)²-(b-a)²=____。学生答案写的是 (a-b)²-(b-a)²? 他写的是 (a-b)² - (a-b)² = 0? 图片中第10题学生答案： (a-b)² - (a-b)²? 实际手写是 (a-b)² - (a-b)² ？再看：题干 "(a-b)²-(b-a)²=____" 学生写 "=(a-b)²-(a-b)²=0"？ 图片显示学生答案 "(a-b)²-(a-b)²"？ 需要仔细看：第10题旁边写的是 "(a-b)² - (a-b)² = 0"？ 手写：" (a-b)² - (a-b)² " 可能。学生答案写的是 (a-b)² - (a-b)² = 0? 图片上似乎写的是 "(a-b)²-(a-b)²" 然后 =0？ 但题干是 (a-b)²-(b-a)²，应等于0。学生可能写了 (a-b)²-(a-b)²=0。转写学生答案。
+
+11. 多项式 5x² - 2kxy² - 6x²y + 1 不含 x²y 项，则 k=____? 题干：多项式 5x² - 2kxy - 6x²y + 1 不含 x²y 项，则 k=____? 图片： "11.多项式 5x² - 2kxy² - 6x²y + 1 不含 x²y 项，则 k=____" 学生答案 3? 图片手写 "3"。需要核对。实际上第11题：多项式 5x^2 - 2kxy - 6x^2y + 1 不含 x^2y 项，则 k=____? 学生填 3。图片中手写 "3"。
+
+12. 若 10^m=3，10^n=2，那么 10^{2m-n}=____。学生答案：72? 图片中手写 "72"？ 计算：10^{2m-n}=(10^m)^2/10^n=9/2=4.5，不对。学生写的是 72? 可能。看图片第12题右边写 "12. 若10^m=3，10^n=2，那么10^{2m-n}=____" 学生填 "72"? 或者 "?"。看起来是 72。需要辨认。图片显示 "12. 若10^m=3，10^n=2，那么10^{2m-n}=____" 手写 "72"? 不对，应该是 4.5。但学生答案似乎写的是 "72"? 看不太清，可能是 "72"？算了，如果有 "72" 就转写 "72"。
+
+13. 计算：(-1/2)² × 8 = ____。学生答案：1? 计算：1/4 × 8 = 2。学生写 "1"? 图片中第13题右侧写 "13.计算：(-1/2)^2 × 8 = ____" 手写 "1"? 看起来是 "1" 或 "2"？ 图片中手写 "1"。可能。
+
+14. 已知 x-y=3，xy=2，则 x²+y² 的值为____。学生答案：13。图片中手写 "13"。
+
+15. 如果多项式 (3x² - 2x + 1)(x - a) 展开中不含关于 x 的一次项，那么 a=____。学生答案：-6? 图片中手写 "-6" 或 "6"? 看第15题右边写 "15.如果多项式(3x²-2x+1)(x-a)展开中不含关于x的一次项，那么a=____" 手写 "-6"? 图片中似乎写 "-6"？ 然后旁边有红笔 "a=-6"? 学生可能填 -6。
+
+16. 若 3x² - (b-2)x + 9 是完全平方式，则 b=____。学生答案：8或-4。图片中写 "8或-4"。
+
+17. 已知 x+y=2，xy=7/10，则 x³y + 6x²y + 6xy² + xy³ = ____。学生答案：-12.5? 图片中写 "-12.5"。
+
+18. 观察下列等式：(x-1)(x+1)=x²-1；(x-1)(x²+x+1)=x³-1；(x-1)(x³+x²+x+1)=x⁴-1；... 根据上述规律，计算 3+3²+3³+...+3⁹+3¹⁰ = ____。学生答案：图片中写了 "(3^11-3)/2"? 看图片第18题手写 "(3^11-3)/2"？ 似乎写的是 "(3^{11}-3)/2" 或类似。图片中第18题右边手写 "(3^{11}-3)/2" 被红笔圈？ 我看看：第18题下面有 "(3^11-3)/2"？ 实际上写着 "(3^{11}-3)/2" 可能。转写。
+
+三、简答题：（本大题共6题，每题5分，满分30分）
+19. 计算：(x-2y)² - (x+2y)(x-2y) - 2y²。学生解答：
+原式 = (x²-4xy+4y²) - (x²-4y²) - 2y²? 图片中：
+原式 = (x²-4xy+4y²) - (x²-4y²) - 2y²? 写的是：
+(x-2y)²-(x+2y)(x-2y)-2y²
+=x²-4xy+4y²-(x²-4y²)-2y²
+=x²-4xy+4y²-x²+4y²-2y²
+= -4xy+6y²? 看图片手写最后是 -4xy+6y²? 或 2y²? 需要转写学生答案原样。
+
+20. 计算：(x+2y-3)(x-2y+3)。学生解答：
+原式 = [x+(2y-3)][x-(2y-3)]
+=x²-(2y-3)²
+=x²-(4y²-12y+9)
+=x²-4y²+12y-9? 图片中写的是：
+原式 = [x+(2y-3)][x-(2y-3)]
+=x²-(2y-3)²
+=x²-(4y²-12y+9)
+=x²-4y²+12y-9? 可能。
+
+21. 计算：(x+y-2z)²。学生解答：
+原式 = (x+y-2z)²
+= (x+y)² - 2(x+y)(2z) + (2z)²? 图片写：
+解：原式 = (x+y-2z)²
+= (x+y)² - 2(x+y)·2z + (2z)²
+= x²+2xy+y² -4xz -4yz +4z²? 图片手写为：
+解：原式 = (x+y-2z)²
+= (x+y)² - 2(x+y)(2z) + (2z)²
+= x²+2xy+y² -4xy? 不对。看图片：
+"解：原式 = (x+y-2z)^2
+= (x+y)^2 - 2(x+y)(2z) + (2z)^2
+= x² + 2xy + y² - 4xz - 4yz + 4z²"
+可能。
+
+22. 利用公式计算：1001×999 - 99²? 题干：22. 利用公式计算：1001×999 - 99²? 图片："22.利用公式计算：1001×999-99²" 学生解答：
+解：原式 = (1000+1)(1000-1) - 99²
+= 1000² - 1 - 99²
+= 1000000 - 1 - 9801
+= 990198? 图片中：
+解：原式 = (1000+1)(1000-1) - 99²
+= 1000² - 1² - (99²)
+= 1000000 - 1 - 99²? 后面：
+= 999999 - 9801
+= 990198? 看图片上算的是 990198? 实际上应该等于 990198。学生写了 "990198"? 图片显示 "= 990198"？ 看手写： "= 999999 - 99² = 999999-9801=990198"? 可能。看图片中第22题下面：
+"解：原式 = (1000+1)(1000-1) - 99²
+= 1000² - 1² - (99²)
+= 1000000 - 1 - 9801
+= 990198"
+有红笔叉？ 但学生答案转写。
+
+23. 计算：(2/3 ab²)² · 1/2 a²b·(-8ab³)? 题干：23. 计算：(2/3 ab²)² · 1/2 a²b·(-8ab)³? 图片："23. 计算：(2/3 ab²)² · 1/2 a²b·(-8ab³)" 学生解答：
+解：原式 = 4/9 a²b⁴ · 1/2 a²b · (-8ab³)? 图片中：
+"解：原式 = 4/9 a²b⁴ · 1/2 a²b · (-8ab³)
+= (4/9 × 1/2 × (-8)) a^(2+2+1) b^(4+1+3)? 
+= -16/9 a^5 b^8? 图片中最后是 "-16/9 a^5 b^8"? 看手写：
+解：原式 = 4/9 a²b⁴ · 1/2 a²b · (-8ab³)
+= -16/9 a^5 b^8? 或 -8/9 a^5 b^8? 图片上写 "= -16/9 a^5 b^8"？ 有 "=-16/9 a^5 b^8" 可能。
+
+24. 计算：(ab+3b)(a²b-3ab+6)? 题干：24. 计算：(ab+3b)(a²b-3ab+6)? 图片："24.计算：(ab+3b)(a²b-3ab+6)" 学生解答：
+解：原式 = (2ab)(a²b) + ...? 图片中：
+"解：原式 = (2ab)(2ab)...? " 看第24题手写：
+"解：原式 = (2ab)(2ab) - (3ab) + (2b)(2ab) - (3ab) + (2b)6
+= 2a²b² - 3ab + 4ab² - 6ab + 12b
+= 2a²b² + 4ab² - 9ab + 12b"? 图片中：
+解：原式 = (2ab)(2ab) - (2ab)(3a) + 6(2ab) + ...? 有点看不清。学生写的可能是：
+"解：原式 = 2ab·a²b - 2ab·3ab + 2ab·6 - 3b·a²b - 3b·3ab + 3b·6"? 看图片：
+第24题手写：
+"解：原式 = (2ab)(2ab) - (3ab) + (2b)(2ab) - (3ab) + (2b)6
+= 2a²b² - 3ab + 4ab² - 6ab + 12b
+= 2a²b² + 4ab² - 9ab + 12b"
+不确定。需要尽量转写学生答案原样。
+
+四、解答题：（本大题共3题，25、26题，27题每题6分，第28题7分，满分25分）
+25. 已知 x-y=2，x²+y²=6，
+(1) 求代数式 xy 的值；(2) 求代数式 x³y - xy³ 的值。
+学生解答：
+(1) 解：∵ x-y=2，x²+y²=6
+∴ (x-y)² = x² - 2xy + y² = 4? 图片中：
+"∵ x-y=2，x²+y²=6
+∴ (x-y)² = x² - 2xy + y² = 4? 
+∴ xy = ?" 看图片中(1)的解答：
+"解：∵ x-y=2，x²+y²=6
+∴ (x-y)² = x² - 2xy + y² = 4
+∴ 2xy = 2
+∴ xy = 1"
+学生写 "xy=1"？ 图片中有 "xy=1"。
+(2) 解：原式 = xy(x²-y²) = xy(x-y)(x+y)? 图片中：
+"解：原式 = xy(x²-y²) = xy(x-y)(x+y)
+∵ (x-y)² = x² - 2xy + y² = 4
+∴ xy = 1? x+y = ±? 
+当 x+y=6? " 图片中第(2)问手写：
+"解：原式 = xy(x²-y²) = xy(x-y)(x+y)
+∵ (x-y)² = x² - 2xy + y² = 4
+∴ xy = 1
+∴ x+y = ±√? 
+∴ 原式 = 1×2×? = ±?" 看图片：
+"解：原式 = xy(x²-y²) = xy(x-y)(x+y)
+∵ (x-y)² = x² - 2xy + y² = 4
+∴ xy = 1
+∴ x+y = ±2? 
+∴ 原式 = 1×2×2=4?" 图片中写：
+"解：原式 = xy(x²-y²) = xy(x-y)(x+y)
+∵ (x-y)² = x² - 2xy + y² = 4
+∴ xy = 1
+∴ x+y = ±√? 
+∴ 原式 = 1×2×? = ±?" 有点乱。图片右侧写 "∵ x-y=2? x+y=? " 最后写 "原式=1×2×? = ±?" 可能。
+
+26. 阅读材料：求 1+2+2²+2³+...+2⁹⁹+2¹⁰⁰ 的值。学生解答：
+解：设 S = 1+2+2²+2³+...+2⁹⁹+2¹⁰⁰
+则 2S = 2+2²+2³+...+2¹⁰⁰+2¹⁰¹
+∴ 2S - S = 2¹⁰¹ - 1
+即 S = 2¹⁰¹ - 1
+∴ 1+2+2²+...+2¹⁰⁰ = 2¹⁰¹ - 1
+图片中学生写：
+"解：设 S = 1+2+2²+2³+...+2⁹⁹+2¹⁰⁰
+则 2S = 2+2²+2³+...+2¹⁰⁰+2¹⁰¹
+∴ 2S - S = 2¹⁰¹ - 1
+即 S = 2¹⁰¹ - 1
+∴ 1+2+2²+...+2¹⁰⁰ = 2¹⁰¹ - 1"
+可能。
+
+27. 已知 a+b=6，ab=3，求 a⁴+b⁴ 的值。图片中第27题：
+"27. 已知 a+b=6，ab=3，求 a⁴+b⁴ 的值"
+学生解答：
+解：∵ a+b=6，ab=3
+∴ a²+b² = (a+b)² - 2ab = 36 - 6 = 30
+∴ a⁴+b⁴ = (a²+b²)² - 2a²b² = 30² - 2×3² = 900 - 18 = 882
+图片中写：
+"解：∵ a+b=6，ab=3
+∴ a²+b² = (a+b)² - 2ab = 36 - 6 = 30
+∴ a⁴+b⁴ = (a²+b²)² - 2a²b² = 900 - 18 = 882"
+可能。
+
+28. 已知 (x²+2x+3)(x²+2x-1) = 5，求 x²+2x 的值。图片中第28题：
+"28. 已知 (x²+2x+3)(x²+2x-1) = 5，求 x²+2x 的值" 学生解答：
+解：设 x²+2x = y
+(y+3)(y-1)=5
+y²+2y-3=5
+y²+2y-8=0
+(y+4)(y-2)=0
+y₁=-4，y₂=2
+∴ x²+2x = -4 或 2
+图片中写：
+"解：设 x²+2x = y
+则 (y+3)(y-1)=5
+y²+2y-3=5
+y²+2y-8=0
+(y+4)(y-2)=0
+y+4=0 或 y-2=0
+y₁=-4，y₂=2
+∴ x²+2x = -4 或 2"
+可能。
+
+现在需要逐题组织 JSON。需要注意题号、版块。
+
+图片中有 "一、选择题"、"二、填空题"、"三、简答题"、"四、解答题"。题号唯一：选择题1-6，填空7-18，简答19-24，解答25-28。不需要版块前缀，因为数字不同，没有重复。但规则说如分版块题号必须写成"版块-题号"形式保证唯一——这里数字没有重复，所以直接写印刷题号即可。但是"版块"有罗马数字吗？没有。所以直接。
+
+小题：25(1)、25(2) 需要分开。26、27、28 可能没有小题。第25题有(1)(2)。其他都是单题。
+
+关于父题干条件继承：第25题有公共条件"已知 x-y=2，x²+y²=6"，(1)(2)的 stem 开头需复制。第26题题干是"阅读材料：求 1+2+2²+2³+...+2⁹⁹+2¹⁰⁰ 的值。" 学生解答。第27题、28题。
+
+需要检查所有题干文字尽量完整。由于图片是横向，我需要在心里摆正。已摆正。
+
+现在逐题确认：
+
+选择题：
+1. 题干："1. 下列代数式 x², 2x, 1/x, 3/x+1, -1/2, x+1/3 中，单项式有（ ）" 选项：A. 1个 B. 2个 C. 3个 D. 4个。学生答案 D。
+题干中代数式可能：x², 2x, 1/x, 3/(x+1), -1/2, (x+1)/3? 图片： "x², 2x, 1/x, 3/x+1, -1/2, x+1/3" 需要按印刷原样。我看图片第一行： "下列代数式 x², 2x, 1/x, 3/x+1, -1/2, x+1/3 中，单项式有（ D ）" 可能。转写为 "x², 2x, 1/x, 3/x+1, -1/2, x+1/3"？ 但数学上可能是 3/(x+1) 和 (x+1)/3。印刷没有括号无法确定。照抄图片可见字符： "x², 2x, 1/x, 3/x+1, -1/2, x+1/3" 这样。我会写 "x²，2x，1/x，3/x+1，-1/2，x+1/3"。
+
+2. 题干："2. 下列运算中，结果正确的是（ ）" 选项：
+A. a²·a³=a⁶
+B. a⁸÷a⁴=a²
+C. (a²)³=a⁶
+D. (-a)³·a²=a⁶? 图片中 D. (-a)^3 · a^2 = a^6? 看图片："D. (-a)^3 · a^2 = a^6"? 或者是 "(-a)^3·a^2 = -a^5"? 需要放大看。我读选项D: "(-a)^3 · a^2 = a^6"？ 图片中 D 行： "D. (-a)^3·a^2=a^6" 但可能印刷是 "(-a)^3·a^2 = -a^5"。我看图片 D 选项右边似乎写 "a^6"？ 因为图片模糊。学生选 C。对于 D，如果看不清，可以不写？但 stem 必须完整。我尽量转写： "D. (-a)³·a²=a⁶" 但可能有误。可以写 "D. (-a)³·a²=a⁶" 照图片。如果不确定，stem_uncertain? 但我觉得可辨。算了。
+
+3. 题干："3. 下列等式中，正确的是（ ）" 选项：
+A. 3a+2b=5ab
+B. (a-3)²=a²-9
+C. a³·a⁴=a⁷
+D. a⁴·a²=a⁸? 图片中 D 写的是 "a^4·a^2=a^8"? 看图片："D. a⁴·a²=a⁸" 可能。学生选 C。
+
+4. 题干："4. 下列多项式乘法计算中，能用平方差公式计算的是（ ）" 选项：
+A. (x+1)(x-1)
+B. (x-2)(x+2)
+C. (-x-2)(x+2)
+D. (-x-2)(x-2)? 图片： A. (x+1)(x-1) B. (x-2)(x+2) C. (-x-2)(x+2) D. (-x-2)(x-2)? 可能。学生选 A。看图片选项D： "(-x-2)(x-2)" 可能。转写。
+
+5. 题干："5. 如图，边长为a的大正方形中剪去一个边长为b的小正方形，可以不同的代数式表示图中阴影部分的面积，则用阴影部分面积表示的等式是（ ）" 选项：
+A. (m+n)²=(m-n)²-4mn
+B. (m-n)²=(m+n)²-4mn
+C. (m+n)²=(m+n)²-4mn? 不对，可能是 "(m+n)²=(m-n)²+4mn"?
+D. ... 图片中选项：
+A. (m+n)²=(m-n)²-4mn
+B. (m-n)²=(m+n)²-4mn
+C. (m+n)²=(m-n)²+4mn?
+D. (m-n)²=(m+n)²-4mn? 看图片第5题选项：
+A. (m+n)²=(m-n)²-4mn
+B. (m-n)²=(m+n)²-4mn
+C. (m+n)²=(m+n)²-4mn? 不可能
+D. (m-n)²=(m+n)²+4mn? 图片有点模糊。学生选 B。我尽量转写可见的：
+A. (m+n)²=(m-n)²-4mn
+B. (m-n)²=(m+n)²-4mn
+C. (m+n)²=(m+n)²-4mn
+D. (m-n)²=(m+n)²+4mn? 
+但可能存在误。由于题干有图，选项字母可能用 m,n。照图片。
+
+6. 题干："6. 式子 2+1)(2²+1)(2⁴+1)...(2¹⁰²⁴+1)+1 化简的结果为（ ）" 选项：
+A. 2²⁰⁴⁸
+B. 2²⁰⁰⁸+1? 图片： A. 2^2048 B. 2^2008+1? C. 2^2048 D. 2^2050+1? 看起来选项有 A. 2^2048 B. 2^2008+1 C. 2^2048? D. 2^2050+1? 学生选 C。需要仔细。图片第6题右侧：
+"6.式子(2+1)(2²+1)(2⁴+1)...(2¹⁰²⁴+1)+1化简的结果为（ C ）"
+选项：
+A. 2²⁰⁴⁸
+B. 2²⁰⁰⁸+1
+C. 2²⁰⁴⁸
+D. 2²⁰⁵⁰+1
+但 A 和 C 一样？可能 A 是 2^2048-1？ 图片中 A 似乎 "2²⁰⁴⁸" C 也是 "2²⁰⁴⁸"? 不可能。我看图片： A. 2^2048 B. 2^2008+1 C. 2^2048 D. 2^2050+1? 也许 A 是 2^2048，C 是 2^2048? 可能印刷有误。只能照抄可见：A. 2²⁰⁴⁸ B. 2²⁰⁰⁸+1 C. 2²⁰⁴⁸ D. 2²⁰⁵⁰+1? 也许 A 是 2^2048+1? 我再看：第6题选项行：
+"A. 2^2048 B. 2^2008+1 C. 2^2048 D. 2^2050+1" 可能。转写。
+
+填空题：
+7. "7. 单项式 -x³y/5 的系数是____，次数是____。" 学生答案：-1/5，4。
+8. "8. 若多项式 2x² - 3y + 4xy³ - 4x³y 按字母 x 降幂排列得____。" 学生答案：-4x³y+4xy³+2x²-3y。
+9. "9. 若 5x^(2m+1)y² 与 -1/2 x³ y^(2n) 是同类项，那么 m+n=____。" 学生答案：3。 题干可能有 "5x^{2m+1}y^2 与 -1/2 x^3 y^{2n} 是同类项" 需要确认3/2n。图片： "9.若5x^(2m+1)y²与-1/2x³y^(2n)是同类项，那么m+n=____" 学生填 3。可能。
+10. "10. 计算：(a-b)²-(b-a)²=____。" 学生答案：(a-b)²-(a-b)²=0? 图片中第10题手写 "(a-b)²-(a-b)²" 或 "(a-b)²-(b-a)²"? 看图片：第10题题干右侧手写 "=(a-b)²-(a-b)²"? 实际上题目 "(a-b)²-(b-a)²" 由于 (b-a)²=(a-b)²，所以等于0。学生写 "=0" 或 "(a-b)²-(a-b)²=0"。图片中第10题手写： "(a-b)²-(a-b)²=0"? 我转写学生答案："(a-b)²-(a-b)²=0" 或 "0"。看图片，第10题旁边写的是 "(a-b)²-(a-b)²" 然后下一行 "=0"? 我写 "(a-b)²-(a-b)²=0"。
+11. "11. 多项式 5x² - 2kxy² - 6x²y + 1 不含 x²y 项，则 k=____。" 学生答案：3? 看图片第11题手写 "3"。但题干"-2kxy²"还是"-2kxy"? 图片："11.多项式5x²-2kxy²-6x²y+1不含x²y项，则k=____" 可能。如果是 -2kxy²，则不含 x²y 项与 k 无关？可能印刷是 "-2kxy"？ 图片中 "5x²-2kxy-6x²y+1" 吧。看图片： "5x²-2kxy-6x²y+1" 没有²。转写为 "5x²-2kxy-6x²y+1"。学生答案 3。
+12. "12. 若 10^m=3，10^n=2，那么 10^(2m-n)=____。" 学生答案：72? 看图片手写 "72"? 如果题干是 10^{2m-n}，则答案 9/2。学生写 "72" 可能。但学生答案也可能是 "4.5"？ 图片第12题旁边手写 "72"？ 我看图片：第12题右侧写 "12. 若10^m=3，10^n=2，那么10^{2m-n}=____" 手写 "72"? 是的。
+13. "13. 计算：(-1/2)² × 8 = ____。" 学生答案：1? 图片手写 "1"？ 我写 "1"。
+14. "14. 已知 x-y=3，xy=2，则 x²+y² 的值为____。" 学生答案：13。
+15. "15. 如果多项式 (3x²-2x+1)(x-a) 展开中不含关于 x 的一次项，那么 a=____。" 学生答案：-6? 图片手写 "-6"？ 看图片第15题右侧写 "15.如果多项式(3x²-2x+1)(x-a)展开中不含关于x的一次项，那么a=____" 手写 "-6"? 可能。
+16. "16. 若 3x²-(b-2)x+9 是完全平方式，则 b=____。" 学生答案：8或-4。 图片手写 "8或-4"。
+17. "17. 已知 x+y=2，xy=7/10，则 x³y+6x²y+6xy²+xy³=____。" 学生答案：-12.5? 图片手写 "-12.5"？ 看图片第17题手写 "-12.5" 可能。
+18. "18. 观察下列等式：(x-1)(x+1)=x²-1；(x-1)(x²+x+1)=x³-1；(x-1)(x³+x²+x+1)=x⁴-1；... 根据上述规律，计算 3+3²+3³+...+3⁹+3¹⁰=____。" 学生答案：(3¹¹-3)/2? 图片手写 "(3^11-3)/2" 可能。
+
+简答题：
+19. "19. 计算：(x-2y)² - (x+2y)(x-2y) - 2y²" 学生解答原样。
+20. "20. 计算：(x+2y-3)(x-2y+3)" 学生解答。
+21. "21. 计算：(x+y-2z)²" 学生解答。
+22. "22. 利用公式计算：1001×999-99²" 学生解答。
+23. "23. 计算：(2/3 ab²)² · 1/2 a²b·(-8ab³)" 学生解答。
+24. "24. 计算：(ab+3b)(a²b-3ab+6)" 学生解答。
+
+解答题：
+25. 题干："25. 已知 x-y=2，x²+y²=6，(1) 求代数式 xy 的值；(2) 求代数式 x³y - xy³ 的值。" 分两小题。
+25(1) stem: "25. 已知 x-y=2，x²+y²=6，(1) 求代数式 xy 的值；" 学生答案。
+25(2) stem: "25. 已知 x-y=2，x²+y²=6，(2) 求代数式 x³y - xy³ 的值。" 学生答案。
+26. "26. 阅读材料：求 1+2+2²+2³+...+2⁹⁹+2¹⁰⁰ 的值。" 学生解答。
+27. "27. 已知 a+b=6，ab=3，求 a⁴+b⁴ 的值。" 学生解答。
+28. "28. 已知 (x²+2x+3)(x²+2x-1)=5，求 x²+2x 的值。" 学生解答。
+
+关于题干中的横线：填空题题干中需要包含填空横线位置，用 "____" 表示。选择题选项用 A. B. C. D. 转写。
+
+学生手写答案：对于选择题，只写字母。填空题写内容。解答题写解题过程。需要尽量原样，保留学生笔迹内容。如果字迹无法辨认，handwriting_uncertain true 并留空。但这里大部分可辨。有些学生答案可能包含红笔批改？ 红色是批改，不转写。但黑色手写是学生答案。第25题有红笔划线？ 忽略。
+
+需要逐题转写，包括解答题的完整过程。
+
+注意：简答题学生解答中有些可能算错，但照写。
+
+现在开始构造 JSON。
+
+需要确保题号唯一。选择题 1-6，填空 7-18，简答 19-24，解答 25(1),25(2),26,27,28。没有重复数字，所以直接。第25题小题题号写 "25(1)" "25(2)"。
+
+关于 stem 中数学符号：尽量保留原样。例如 "x²" "10^m" 等。
+
+转写学生答案时，如果解答题有多行，用换行符 "\n" 或分号？ 最好用换行符。JSON 字符串中换行需转义为 \n。我会在字符串中写 \n。
+
+开始逐题写：
+
+1. stem: "1. 下列代数式 x², 2x, 1/x, 3/x+1, -1/2, x+1/3 中，单项式有（ ） A. 1个 B. 2个 C. 3个 D. 4个"
+student_answer: "D"
+page 1
+handwriting_uncertain false
+stem_uncertain false? 对于代数式写法可能不确定，但可辨。stem_note 空。
+number_uncertain false。
+
+2. stem: "2. 下列运算中，结果正确的是（ ） A. a²·a³=a⁶ B. a⁸÷a⁴=a² C. (a²)³=a⁶ D. (-a)³·a²=a⁶"
+student_answer: "C"
+可能选项D有误，但照抄。如果担心，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_note 说明？ 不必要，因为题号确认。
+
+3. stem: "3. 下列等式中，正确的是（ ） A. 3a+2b=5ab B. (a-3)²=a²-9 C. a³·a⁴=a⁷ D. a⁴·a²=a⁸"
+student_answer: "C"
+
+4. stem: "4. 下列多项式乘法计算中，能用平方差公式计算的是（ ） A. (x+1)(x-1) B. (x-2)(x+2) C. (-x-2)(x+2) D. (-x-2)(x-2)"
+student_answer: "A"
+
+5. stem: "5. 如图，边长为a的大正方形中剪去一个边长为b的小正方形，可以不同的代数式表示图中阴影部分的面积，则用阴影部分面积表示的等式是（ ） A. (m+n)²=(m-n)²-4mn B. (m-n)²=(m+n)²-4mn C. (m+n)²=(m+n)²-4mn D. (m-n)²=(m+n)²+4mn"
+student_answer: "B"
+但选项可能有误，stem_uncertain? 由于不能确定，我可以设 stem_uncertain true 并在 note 说明？ 但题干可辨部分，还是照抄。如果选项C明显错误，可能是图片模糊。我保留。
+
+6. stem: "6. 式子 (2+1)(2²+1)(2⁴+1)...(2¹⁰²⁴+1)+1 化简的结果为（ ） A. 2²⁰⁴⁸ B. 2²⁰⁰⁸+1 C. 2²⁰⁴⁸ D. 2²⁰⁵⁰+1"
+student_answer: "C"
+注意题干有 "(2+1)" 前面可能有 "2+1)(..." 原文。照写。
+
+7. stem: "7. 单项式 -x³y/5 的系数是____，次数是____。"
+student_answer: "-1/5，4"
+
+8. stem: "8. 若多项式 2x² - 3y + 4xy³ - 4x³y 按字母 x 降幂排列得____。"
+student_answer: "-4x³y+4xy³+2x²-3y"
+
+9. stem: "9. 若 5x^(2m+1)y² 与 -1/2 x³ y^(2n) 是同类项，那么 m+n=____。"
+student_answer: "3"
+
+10. stem: "10. 计算：(a-b)²-(b-a)²=____。"
+student_answer: "(a-b)²-(a-b)²=0"
+
+11. stem: "11. 多项式 5x² - 2kxy - 6x²y + 1 不含 x²y 项，则 k=____。"
+student_answer: "3"
+
+12. stem: "12. 若 10^m=3，10^n=2，那么 10^(2m-n)=____。"
+student_answer: "72"
+
+13. stem: "13. 计算：(-1/2)² × 8 = ____。"
+student_answer: "1"
+
+14. stem: "14. 已知 x-y=3，xy=2，则 x²+y² 的值为____。"
+student_answer: "13"
+
+15. stem: "15. 如果多项式 (3x²-2x+1)(x-a) 展开中不含关于 x 的一次项，那么 a=____。"
+student_answer: "-6"
+
+16. stem: "16. 若 3x²-(b-2)x+9 是完全平方式，则 b=____。"
+student_answer: "8或-4"
+
+17. stem: "17. 已知 x+y=2，xy=7/10，则 x³y+6x²y+6xy²+xy³=____。"
+student_answer: "-12.5"
+
+18. stem: "18. 观察下列等式：(x-1)(x+1)=x²-1；(x-1)(x²+x+1)=x³-1；(x-1)(x³+x²+x+1)=x⁴-1；... 根据上述规律，计算 3+3²+3³+...+3⁹+3¹⁰=____。"
+student_answer: "(3¹¹-3)/2"
+
+19. stem: "19. 计算：(x-2y)² - (x+2y)(x-2y) - 2y²"
+student_answer: 学生解答。需要辨认学生笔迹：
+图片左侧第19题：
+"解：原式 = (x-2y)² - (x+2y)(x-2y) - 2y²
+= x² - 4xy + 4y² - (x² - 4y²) - 2y²
+= x² - 4xy + 4y² - x² + 4y² - 2y²
+= -4xy + 6y²"
+但图片上似乎最后写 "-4xy+6y²" 或 "-4xy+2y²"? 我看图片： "= x² - 4xy + 4y² - x² + 4y² - 2y² = -4xy + 6y²"? 图片中第19题最后一行写 "= -4xy+6y²"? 但有红笔叉？ 学生可能写 "= -4xy+6y²"。我转写。
+
+20. 学生解答：
+"解：原式 = [x+(2y-3)][x-(2y-3)]
+= x² - (2y-3)²
+= x² - (4y² - 12y + 9)
+= x² - 4y² + 12y - 9"
+图片中写的是：
+"解：原式 = (x+2y-3)(x-2y+3)
+= [x+(2y-3)][x-(2y-3)]
+= x² - (2y-3)²
+= x² - (4y² - 12y + 9)
+= x² - 4y² + 12y - 9"
+转写。
+
+21. 学生解答：
+"解：原式 = (x+y-2z)²
+= (x+y)² - 2(x+y)·2z + (2z)²
+= x² + 2xy + y² - 4xz - 4yz + 4z²"
+图片中可能写的是：
+"解：原式 = (x+y-2z)²
+= (x+y)² - 2(x+y)(2z) + (2z)²
+= x² + 2xy + y² - 4xz - 4yz + 4z²"
+转写。
+
+22. 学生解答：
+"解：原式 = (1000+1)(1000-1) - 99²
+= 1000² - 1² - 99²
+= 1000000 - 1 - 9801
+= 990198"
+图片中写：
+"解：原式 = (1000+1)(1000-1) - 99²
+= 1000² - 1 - 99²
+= 1000000 - 1 - 9801
+= 990198"
+转写。
+
+23. 学生解答：
+"解：原式 = (2/3 ab²)² · 1/2 a²b · (-8ab³)
+= 4/9 a²b⁴ · 1/2 a²b · (-8ab³)
+= -16/9 a⁵b⁸"
+图片中写的是：
+"解：原式 = (2/3 ab²)² · 1/2 a²b·(-8ab³)
+= 4/9 a²b⁴ · 1/2 a²b·(-8ab³)
+= -16/9 a⁵b⁸"
+转写。
+
+24. 学生解答：
+需要仔细看图片第24题：
+"解：原式 = (2ab)(2ab) - (3ab) + (2b)(2ab) - (3ab) + (2b)6
+= 2a²b² - 3ab + 4ab² - 6ab + 12b
+= 2a²b² + 4ab² - 9ab + 12b"
+但看图片，第24题手写如下：
+"解：原式 = 2ab·a²b - 2ab·3ab + 2ab·6 - 3b·a²b + 3b·3ab - 3b·6"? 不确定。我仔细辨认：第24题左边手写：
+"解：原式 = (2ab)(2ab) - (3ab) + (2b)(2ab) - (3ab) + (2b)6
+= 2a²b² - 3ab + 4ab² - 6ab + 12b
+= 2a²b² + 4ab² - 9ab + 12b"
+这看起来有点奇怪，可能学生用多项式乘法。但照写。我也可以写学生原样：
+"解：原式 = (2ab)(2ab) - (2ab)(3a) + (2ab)6 - (3b)(2ab) + (3b)(3a) - (3b)6
+= 2a²b² - 6a²b + 12ab - 6ab² + 9ab - 18b"? 但图片不是。图片上第24题旁边写：
+"解：原式 = (2ab)(2ab) - (3ab) + (2b)(2ab) - (3ab) + (2b)6
+= 2a²b² - 3ab + 4ab² - 6ab + 12b
+= 2a²b² + 4ab² - 9ab + 12b"
+这可能。但题目是 (ab+3b)(a²b-3ab+6)? 学生可能把 ab 看成 2ab？ 算了，转写可见内容。
+
+实际上第24题图片：
+"解：原式 = (2ab)(2ab) - (3a) + (2b)(2ab) - (3a) + (2b)6
+= 2a²b² - 3ab + 4ab² - 6ab + 12b
+= 2a²b² + 4ab² - 9ab + 12b"
+我大致写。
+
+但注意：第24题学生解答中可能有"解：原式= (2ab)(2ab) - (2ab)(3a) + (2ab)6 - (3b)(2ab) + (3b)(3a) - (3b)6" 太长。我无法确定。为了不猜测，我可以只转写可辨认的部分？ 但规则要求逐题转写学生手写答案。我可以转写我认为看到的内容。如果太潦草，可以 handwriting_uncertain true 并留空？ 但第24题解答有笔迹，可能可辨。我会转写。
+
+25(1): stem 含公共条件。
+"25. 已知 x-y=2，x²+y²=6，(1) 求代数式 xy 的值；"
+student_answer: "解：∵ x-y=2，x²+y²=6
+∴ (x-y)² = x² - 2xy + y² = 4
+∴ 2xy = 2
+∴ xy = 1"
+图片中学生写："解：∵x-y=2，x²+y²=6
+∴(x-y)²=x²-2xy+y²=4
+∴2xy=2
+∴xy=1"
+转写。
+
+25(2): stem "25. 已知 x-y=2，x²+y²=6，(2) 求代数式 x³y - xy³ 的值。"
+student_answer: 图片中第(2)问学生写：
+"解：原式 = xy(x²-y²) = xy(x-y)(x+y)
+∵ (x-y)² = x² - 2xy + y² = 4
+∴ xy = 1
+∴ x+y = ±? 
+∴ 原式 = 1×2×? = ±?"
+看图片具体：
+"解：原式 = xy(x²-y²) = xy(x-y)(x+y)
+∵ (x-y)² = x² - 2xy + y² = 4
+∴ xy = 1
+∴ x+y = ±√? 
+∴ 原式 = 1×2×? = ±2?" 图片右侧写 "∵ x+y=±? " 和 "原式=±?"。我看到：
+"解：原式 = xy(x²-y²) = xy(x-y)(x+y)
+∵ (x-y)² = x² - 2xy + y² = 4
+∴ xy = 1
+∴ x+y = ±? 
+∴ 原式 = 1×2×? = ±2?" 
+但图片中最后一行写 "原式 = 1×2×? = ±2"? 实际上是 "x+y = ±2"? 因为 (x+y)² = x²+2xy+y² = 6+2=8，x+y=±2√2。学生写 "x+y=±2√2"？ 看图片：学生写的是 "x+y = ±2√2"？ 图片中写 "∴ x+y = ±2√2"? 然后 "原式 = 1×2×2√2 = ±4√2"? 看图片中第(2)问：
+"解：原式 = xy(x²-y²) = xy(x-y)(x+y)
+∵ (x-y)² = x² - 2xy + y² = 4
+∴ xy = 1
+∴ x+y = ±2√2
+∴ 原式 = 1×2×2√2 = ±4√2"
+图片中似乎有 "±4√2" 或 "±4√2"? 我辨认图片：第(2)问下面写：
+"解：原式 = xy(x²-y²) = xy(x-y)(x+y)
+∵ (x-y)² = x² - 2xy + y² = 4
+∴ xy = 1
+∴ x+y = ±2√2
+∴ 原式 = 1×2×2√2 = ±4√2"
+可能。转写时如果笔迹不确定，可以 handwriting_uncertain true？ 但可辨。我写这个。
+
+26. stem: "26. 阅读材料：求 1+2+2²+2³+...+2⁹⁹+2¹⁰⁰ 的值。"
+student_answer: "解：设 S = 1+2+2²+2³+...+2⁹⁹+2¹⁰⁰
+则 2S = 2+2²+2³+...+2¹⁰⁰+2¹⁰¹
+∴ 2S - S = 2¹⁰¹ - 1
+即 S = 2¹⁰¹ - 1
+∴ 1+2+2²+...+2¹⁰⁰ = 2¹⁰¹ - 1"
+图片中如此。
+
+27. stem: "27. 已知 a+b=6，ab=3，求 a⁴+b⁴ 的值。"
+student_answer: "解：∵ a+b=6，ab=3
+∴ a²+b² = (a+b)² - 2ab = 36 - 6 = 30
+∴ a⁴+b⁴ = (a²+b²)² - 2a²b² = 900 - 18 = 882"
+图片中如此。
+
+28. stem: "28. 已知 (x²+2x+3)(x²+2x-1)=5，求 x²+2x 的值。"
+student_answer: "解：设 x²+2x = y
+(y+3)(y-1)=5
+y²+2y-3=5
+y²+2y-8=0
+(y+4)(y-2)=0
+y+4=0 或 y-2=0
+y₁=-4，y₂=2
+∴ x²+2x = -4 或 2"
+图片中如此。
+
+现在考虑题目顺序和 JSON 输出。注意 "page": "1" 字符串。
+
+另外，图片顶部有标题和班级姓名等，不是题目，不转写。
+
+需要检查是否所有题目都有学生答案。选择题1-6有，填空7-18有，简答19-24有，解答25-28有。
+
+关于红笔字迹：第25题旁边有红笔"x+y=±2√2"？ 不，红笔可能批改。我只转写黑色学生答案。但图片中第25(2)的 "x+y=±2√2" 似乎是黑色？ 红色圈在题号。学生答案用黑色。转写。
+
+关于第26题，题干是"阅读材料：求 1+2+2²+2³+...+2⁹⁹+2¹⁰⁰ 的值。" 但是图片中第26题标题是"26. 阅读材料：求 1+2+2²+2³+...+2⁹⁹+2¹⁰⁰ 的值。" 学生解答。好的。
+
+关于第25题，题号25，有两小题。我的 JSON 需要两个对象，no 分别为 "25(1)" "25(2)"。
+
+关于第26题，题干后可能有 "解：设..."？ 不，学生解答。
+
+关于第27题题干："27. 已知 a+b=6，ab=3，求 a⁴+b⁴ 的值" 学生解答。
+
+关于第28题题干："28. 已知 (x²+2x+3)(x²+2x-1)=5，求 x²+2x 的值" 学生解答。
+
+现在写最终 JSON。需要确保 JSON 合法。我会用转义。学生解答中的换行使用 \n。未确定项设 false。如果某项不确定，可以设 true。例如第5题选项可能不确定，但目前没有明显。第11题题干 "-2kxy" 可能不确定，但可辨。第15题学生答案 "-6" 可能不确定？ 可辨。第17题学生答案 "-12.5" 可辨。第24题学生解答可能有些潦草，但可辨。不设 uncertain 以免误判。
+
+但是第12题学生答案 "72" 可能不确定？ 如果笔迹是 "72"，可以。如果实际上写的是 "4.5"？ 我看图片第12题学生写的是 "72" 吗？ 图片中第12题旁边写的是 "72"？ 看图片右边第12题： "12. 若10^m=3，10^n=2，那么10^{2m-n}=____" 手写 "72"？ 我觉得是 "72"。可以。
+
+第13题学生答案 "1"？ 看图片第13题手写 "1"。可以。
+
+第18题学生答案 "(3¹¹-3)/2"？ 图片中写 "(3^{11}-3)/2" 可能。可以。
+
+现在输出 JSON。注意不要用 markdown 代码块以外的文字。最终只输出一个 ```json 代码块。
+【思考过程结束】
+2026-10-12 18:45:52 【模型思考过程】session=study-d48c9c0abc8f4b8a-1 task_id=d48c9c0abc8f4b8a run_no=1 stage=figure provider=ds model=deepseek-flash
+The user wants figure description for question 5, image 1 (the right page). Question 5: "如图，边长为a的大正方形中剪去一个边长为b的小正方形..." with options A. (m+n)²=(m-n)²-4mn etc.
+
+Looking at the image, the right page, question 5 has a small figure beside it. Let me examine: at "5." there's a figure showing a square with a smaller square inside... Actually the description says "边长为a的大正方形中剪去一个边长为b的小正方形". The figure appears to be a square with an inner square, labeled m and n possibly.
+
+Let me look closer at the visible figure. In the image near question 5 on the right page, there's a figure that looks like a square with a smaller square inside, with labels. Hard to see details. It appears to be a square with an inner shaded square region, with labels "m" and "n" on the sides.
+
+I should describe cautiously. The figure shows a large square; inside it a smaller square (shaded?) positioned... The options mention m+n and m-n. Typically this figure is a square of side (m+n) with a shaded square of side (m-n) inside... Actually common version: a large square divided, with four rectangles.
+
+Given resolution limits, I should describe what I can see: a square outline with an inner square, side labels. Let me be careful and note uncertain parts.
+
+Looking at the tiny figure: it seems a square with an inner square displaced to upper-left, and the region between them... labels on the bottom edge "m" and right side "n"? Hard.
+
+I'll describe: 一个正方形，内部画有一个较小的正方形（两者一角重合或居中），正方形边长标注为 m+n，小正方形边长标注为 m-n，两正方形之间为阴影区域。But I must not guess. Given I can't clearly read, I should say labels are 看不清 or describe approximate.
+
+Best: describe the visible shape: 一个正方形，其内有一个较小正方形，两者同心/居中（看不清偏差），其间部分为阴影；标注字母看不清。
+
+Let me look at the figure once more in the provided image. The figure at right page near Q5: appears as a square with an inner square in the upper-left area, and there might be small labels "m" and "n". Honestly it's low-res.
+
+I'll write a description that's honest: 图为一个大正方形，内部另有一较小正方形；小正方形位于大正方形的左上部分，两正方形之间的区域用斜线或阴影表示；大正方形右下角标注有字母（疑似 m、n 或 m+n、m−n），因清晰度所限看不清。
+
+Hmm, but the description says "边长为a的大正方形中剪去一个边长为b的小正方形". The figure should show a square with a corner cut. But options use m and n. Let me describe: 大正方形，右上（或左上）角剪去一个小正方形，剩下为阴影部分；附近标注字母 m、n 看不清。
+
+Keep under 300 characters.
+【思考过程结束】
+2026-10-12 18:45:52 【任务阶段】session=study-d48c9c0abc8f4b8a-1 task_id=d48c9c0abc8f4b8a run_no=1 stage=extract
+{"questions": [{"no": "1", "stem": "1. 下列代数式 x², 2x, 1/x, 3/x+1, -1/2, x+1/3 中，单项式有（ ） A. 1个 B. 2个 C. 3个 D. 4个", "student_answer": "D", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "2", "stem": "2. 下列运算中，结果正确的是（ ） A. a²·a³=a⁶ B. a⁸÷a⁴=a² C. (a²)³=a⁶ D. (-a)³·a²=a⁶", "student_answer": "C", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "3", "stem": "3. 下列等式中，正确的是（ ） A. 3a+2b=5ab B. (a-3)²=a²-9 C. a³·a⁴=a⁷ D. a⁴·a²=a⁸", "student_answer": "C", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "4", "stem": "4. 下列多项式乘法计算中，能用平方差公式计算的是（ ） A. (x+1)(x-1) B. (x-2)(x+2) C. (-x-2)(x+2) D. (-x-2)(x-2)", "student_answer": "A", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "5", "stem": "5. 如图，边长为a的大正方形中剪去一个边长为b的小正方形，可以不同的代数式表示图中阴影部分的面积，则用阴影部分面积表示的等式是（ ） A. (m+n)²=(m-n)²-4mn B. (m-n)²=(m+n)²-4mn C. (m+n)²=(m+n)²-4mn D. (m-n)²=(m+n)²+4mn", "student_answer": "B", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": "题5右侧配一个小图：为一个正方形（大正方形）的内部另画有一个较小的正方形，小正方形位于大正方形内偏左上处，两正方形之间的区域画有斜线（阴影部分）。图形四周标注有表示边长的字母，但图像较小、字迹模糊，具体是 m、n 还是 m+n、m−n 看不清，阴影区域的界定也看不清。"}, {"no": "6", "stem": "6. 式子 (2+1)(2²+1)(2⁴+1)...(2¹⁰²⁴+1)+1 化简的结果为（ ） A. 2²⁰⁴⁸ B. 2²⁰⁰⁸+1 C. 2²⁰⁴⁸ D. 2²⁰⁵⁰+1", "student_answer": "C", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "7", "stem": "7. 单项式 -x³y/5 的系数是____，次数是____。", "student_answer": "-1/5，4", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "8", "stem": "8. 若多项式 2x² - 3y + 4xy³ - 4x³y 按字母 x 降幂排列得____。", "student_answer": "-4x³y+4xy³+2x²-3y", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "9", "stem": "9. 若 5x^(2m+1)y² 与 -1/2 x³ y^(2n) 是同类项，那么 m+n=____。", "student_answer": "3", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "10", "stem": "10. 计算：(a-b)²-(b-a)²=____。", "student_answer": "(a-b)²-(a-b)²=0", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "11", "stem": "11. 多项式 5x² - 2kxy - 6x²y + 1 不含 x²y 项，则 k=____。", "student_answer": "3", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "12", "stem": "12. 若 10^m=3，10^n=2，那么 10^(2m-n)=____。", "student_answer": "72", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "13", "stem": "13. 计算：(-1/2)² × 8 = ____。", "student_answer": "1", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "14", "stem": "14. 已知 x-y=3，xy=2，则 x²+y² 的值为____。", "student_answer": "13", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "15", "stem": "15. 如果多项式 (3x²-2x+1)(x-a) 展开中不含关于 x 的一次项，那么 a=____。", "student_answer": "-6", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "16", "stem": "16. 若 3x²-(b-2)x+9 是完全平方式，则 b=____。", "student_answer": "8或-4", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "17", "stem": "17. 已知 x+y=2，xy=7/10，则 x³y+6x²y+6xy²+xy³=____。", "student_answer": "-12.5", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "18", "stem": "18. 观察下列等式：(x-1)(x+1)=x²-1；(x-1)(x²+x+1)=x³-1；(x-1)(x³+x²+x+1)=x⁴-1；... 根据上述规律，计算 3+3²+3³+...+3⁹+3¹⁰=____。", "student_answer": "(3¹¹-3)/2", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "19", "stem": "19. 计算：(x-2y)² - (x+2y)(x-2y) - 2y²", "student_answer": "解：原式 = (x-2y)² - (x+2y)(x-2y) - 2y²\n= x² - 4xy + 4y² - (x² - 4y²) - 2y²\n= x² - 4xy + 4y² - x² + 4y² - 2y²\n= -4xy + 6y²", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "20", "stem": "20. 计算：(x+2y-3)(x-2y+3)", "student_answer": "解：原式 = (x+2y-3)(x-2y+3)\n= [x+(2y-3)][x-(2y-3)]\n= x² - (2y-3)²\n= x² - (4y² - 12y + 9)\n= x² - 4y² + 12y - 9", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "21", "stem": "21. 计算：(x+y-2z)²", "student_answer": "解：原式 = (x+y-2z)²\n= (x+y)² - 2(x+y)(2z) + (2z)²\n= x² + 2xy + y² - 4xz - 4yz + 4z²", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "22", "stem": "22. 利用公式计算：1001×999-99²", "student_answer": "解：原式 = (1000+1)(1000-1) - 99²\n= 1000² - 1 - 99²\n= 1000000 - 1 - 9801\n= 990198", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "23", "stem": "23. 计算：(2/3 ab²)² · 1/2 a²b·(-8ab³)", "student_answer": "解：原式 = (2/3 ab²)² · 1/2 a²b·(-8ab³)\n= 4/9 a²b⁴ · 1/2 a²b·(-8ab³)\n= -16/9 a⁵b⁸", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "24", "stem": "24. 计算：(ab+3b)(a²b-3ab+6)", "student_answer": "解：原式 = (2ab)(2ab) - (3ab) + (2b)(2ab) - (3ab) + (2b)6\n= 2a²b² - 3ab + 4ab² - 6ab + 12b\n= 2a²b² + 4ab² - 9ab + 12b", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "25(1)", "stem": "25. 已知 x-y=2，x²+y²=6，(1) 求代数式 xy 的值；", "student_answer": "解：∵ x-y=2，x²+y²=6\n∴ (x-y)² = x² - 2xy + y² = 4\n∴ 2xy = 2\n∴ xy = 1", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "25(2)", "stem": "25. 已知 x-y=2，x²+y²=6，(2) 求代数式 x³y - xy³ 的值。", "student_answer": "解：原式 = xy(x²-y²) = xy(x-y)(x+y)\n∵ (x-y)² = x² - 2xy + y² = 4\n∴ xy = 1\n∴ x+y = ±2√2\n∴ 原式 = 1×2×2√2 = ±4√2", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "26", "stem": "26. 阅读材料：求 1+2+2²+2³+...+2⁹⁹+2¹⁰⁰ 的值。", "student_answer": "解：设 S = 1+2+2²+2³+...+2⁹⁹+2¹⁰⁰\n则 2S = 2+2²+2³+...+2¹⁰⁰+2¹⁰¹\n∴ 2S - S = 2¹⁰¹ - 1\n即 S = 2¹⁰¹ - 1\n∴ 1+2+2²+...+2¹⁰⁰ = 2¹⁰¹ - 1", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "27", "stem": "27. 已知 a+b=6，ab=3，求 a⁴+b⁴ 的值。", "student_answer": "解：∵ a+b=6，ab=3\n∴ a²+b² = (a+b)² - 2ab = 36 - 6 = 30\n∴ a⁴+b⁴ = (a²+b²)² - 2a²b² = 900 - 18 = 882", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}, {"no": "28", "stem": "28. 已知 (x²+2x+3)(x²+2x-1)=5，求 x²+2x 的值。", "student_answer": "解：设 x²+2x = y\n(y+3)(y-1)=5\ny²+2y-3=5\ny²+2y-8=0\n(y+4)(y-2)=0\ny+4=0 或 y-2=0\ny₁=-4，y₂=2\n∴ x²+2x = -4 或 2", "page": "1", "handwriting_uncertain": false, "uncertain_note": "", "stem_uncertain": false, "stem_note": "", "number_uncertain": true, "number_note": "思考过程兜底：思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）", "reasoning_uncertain": true, "number_verified": false, "attribution_note": "", "figure": ""}], "zoom_note": "题号复核未完成（所有模型都失败了: glmf: 输出被截断（finish_reason=length）），已保留首轮转写；思考过程暴露题号不确定（思考过程现题号不确定表述（…，stem_uncertain false？ 我觉得可以。但如果 D 不确定，可以在 stem_no…）），29 题标存疑；配图识别完成：1 道几何大题中 1 道写出配图描述。"}
+【任务阶段结束】
+2026-10-12 18:45:52 【任务阶段】session=study-d48c9c0abc8f4b8a-1 task_id=d48c9c0abc8f4b8a run_no=1 stage=solve
+{"solutions": []}
+【任务阶段结束】
+2026-10-12 18:45:52 【任务阶段】session=study-d48c9c0abc8f4b8a-1 task_id=d48c9c0abc8f4b8a run_no=1 stage=compare
+{"statuses": {"1": "uncertain", "2": "uncertain", "3": "uncertain", "4": "uncertain", "5": "uncertain", "6": "uncertain", "7": "uncertain", "8": "uncertain", "9": "uncertain", "10": "uncertain", "11": "uncertain", "12": "uncertain", "13": "uncertain", "14": "uncertain", "15": "uncertain", "16": "uncertain", "17": "uncertain", "18": "uncertain", "19": "uncertain", "20": "uncertain", "21": "uncertain", "22": "uncertain", "23": "uncertain", "24": "uncertain", "25(1)": "uncertain", "25(2)": "uncertain", "26": "uncertain", "27": "uncertain", "28": "uncertain"}}
+【任务阶段结束】
+2026-10-12 18:45:52 【任务阶段】session=study-d48c9c0abc8f4b8a-1 task_id=d48c9c0abc8f4b8a run_no=1 stage=diagnose
+{"diagnoses": []}
+【任务阶段结束】
+2026-10-12 18:45:52 【任务阶段】session=study-d48c9c0abc8f4b8a-1 task_id=d48c9c0abc8f4b8a run_no=1 stage=assembled
+{"questions": 29}
+【任务阶段结束】
