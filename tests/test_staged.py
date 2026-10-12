@@ -1454,6 +1454,13 @@ class ReasoningUncertaintyTest(unittest.TestCase):
         self.assertTrue(reason)
         self.assertEqual(nos, [])
 
+    def test_extract_bare_number(self):
+        # 2026-10-12："看到17"这类裸数字也要提取
+        reason, nos = staged._reasoning_number_uncertainty(
+            "嗯，其实再看图片1左页编号，看到17，有点不确定")
+        self.assertTrue(reason)
+        self.assertIn(17, nos)
+
     def test_uncertain_about_answers_only(self):
         self.assertEqual(staged._reasoning_number_uncertainty(
             "学生答案有两个不确定"), ("", []))

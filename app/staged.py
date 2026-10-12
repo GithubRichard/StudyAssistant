@@ -741,11 +741,12 @@ def _reasoning_number_uncertainty(thinking: str) -> tuple:
             break
     if not reason:
         return "", []
-    # 提取不确定表述附近的具体题号（如"题号25"、"第25题"）
+    # 提取不确定表述附近的具体题号（如"题号25"、"第25题"、"看到17"、"编号17"）
     # 只在命中位置前后 60 字符内找，避免误伤远处无关题号
     window = lowered[max(0, hit_pos - 60):hit_pos + 60]
     nos = set()
-    for pat in (r"题号\s*(\d+)", r"第\s*(\d+)\s*题"):
+    for pat in (r"题号\s*(\d+)", r"第\s*(\d+)\s*题",
+                r"看到\s*(\d+)", r"编号\s*(\d+)", r"号码\s*(\d+)"):
         for mm in re.finditer(pat, window):
             try:
                 nos.add(int(mm.group(1)))
@@ -1137,20 +1138,42 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
         r_hook_note = f"思考过程兜底：{r_reason}"
         if r_nos:
             # 精准标定：只标思考过程点名的题号
-            no_set = {str(n) for n in r_nos}
-            targets = [q for q in qs
-                       if unicodedata.normalize("NFKC", str(q.no or "")).strip() in no_set
-                       or str(q.no or "").strip().startswith(tuple(no_set))]
-            if not targets:
-                targets = qs  # 题号对不上时回落整批（保守）
+            # 2026-10-12：如果提到的题号与提取的题号差距太大（>10），
+            # 说明是不同版块/页面的编号（如左页17 vs 提取23-35），直接忽略信号
+            qs_nos = []
+            for q in qs:
+                try:
+                    # 提取题号中的数字部分（如"25(1)"→25）
+                    m = re.search(r"(\d+)", str(q.no or ""))
+                    if m:
+                        qs_nos.append(int(m.group(1)))
+                except ValueError:
+                    pass
+            if qs_nos:
+                min_q, max_q = min(qs_nos), max(qs_nos)
+                # 所有提到的号都远离提取范围 → 不同版块，忽略
+                if all(abs(n - min_q) > 10 and abs(n - max_q) > 10 for n in r_nos):
+                    log.info("分阶段批改[extract] 思考过程提到的题号 %s 与提取范围 %d-%d 差距过大，"
+                             "判定为不同版块编号，忽略兜底信号", r_nos, min_q, max_q)
+                    r_reason = ""  # 清空，不触发兜底
+                else:
+                    no_set = {str(n) for n in r_nos}
+                    targets = [q for q in qs
+                               if unicodedata.normalize("NFKC", str(q.no or "")).strip() in no_set
+                               or str(q.no or "").strip().startswith(tuple(no_set))]
+                    if not targets:
+                        targets = qs  # 题号对不上时回落整批（保守）
+            else:
+                targets = qs
         else:
             targets = qs
-        for q in targets:
-            q.reasoning_uncertain = True
-            q.number_note = ((q.number_note + "；" if q.number_note else "")
-                             + r_hook_note)
-        log.warning("分阶段批改[extract] 思考过程暴露题号不确定（%s），%d 题已暂标待复核洗清",
-                    r_reason, len(targets))
+        if r_reason:  # 只有信号未被忽略时才标定
+            for q in targets:
+                q.reasoning_uncertain = True
+                q.number_note = ((q.number_note + "；" if q.number_note else "")
+                                 + r_hook_note)
+            log.warning("分阶段批改[extract] 思考过程暴露题号不确定（%s），%d 题已暂标待复核洗清",
+                        r_reason, len(targets))
 
     # 题号重复检测：同一题号出现多次时无法唯一标识，下游按题号 key 的
     # 环节（比对 statuses、诊断校验、UID）会塌。把重复题号的题全部标
