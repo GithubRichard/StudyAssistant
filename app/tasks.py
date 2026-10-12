@@ -165,6 +165,41 @@ async def add_followup(settings: Settings, openid: str, task_id: str,
     return {"task_id": task_id, "run_id": run["id"], "run_no": run_no, "status": "pending"}
 
 
+RETRY_ALLOWED = ("failed", "interrupted")
+
+
+async def retry_task(settings: Settings, openid: str, task_id: str) -> Dict[str, Any]:
+    """失败/中断任务用原图片与原文字说明重新派发一轮（非增量修订，相当于重跑）。"""
+    task = await db.get_task(settings.db_path, task_id)
+    if not task or task["openid"] != openid:
+        raise TaskError("任务不存在", 404)
+    if task["status"] not in RETRY_ALLOWED:
+        raise TaskError(f"任务当前状态（{task['status']}）无需重试", 409)
+    runs = await db.list_runs(settings.db_path, task_id)
+    if any(r["status"] in ("queued", "running") for r in runs):
+        raise TaskError("任务已有轮次正在执行，请稍后再试", 409)
+    if task.get("run_count", 0) >= settings.limits.max_runs_per_task:
+        raise TaskError(f"该任务已达最大轮次（{settings.limits.max_runs_per_task}）", 429)
+
+    asset_ids: List[str] = []
+    if runs:
+        rows = await db.list_task_assets(settings.db_path, task_id, runs[-1]["id"])
+        asset_ids = [r["id"] for r in rows]
+    if not asset_ids:
+        rows = await db.list_task_assets(settings.db_path, task_id)
+        asset_ids = [r["id"] for r in rows]
+
+    run_no = int(task.get("run_count", 0)) + 1
+    run = _new_run(task_id=task_id, run_no=run_no, kind="retry",
+                   input_text=task.get("input_text") or "")
+    await db.create_run(settings.db_path, run)
+    await db.link_task_assets(settings.db_path, task_id, run["id"], asset_ids)
+    await db.update_task(settings.db_path, task_id, status="pending", run_count=run_no,
+                         error="", claim_owner="", claim_expires_at=0)
+    log.info("任务重试 task_id=%s run_no=%d assets=%d", task_id, run_no, len(asset_ids))
+    return {"task_id": task_id, "run_id": run["id"], "run_no": run_no, "status": "pending"}
+
+
 def _new_run(task_id: str, run_no: int, kind: str, input_text: str) -> Dict[str, Any]:
     return {
         "id": _new_id(),

@@ -385,6 +385,16 @@ async def confirm_orientation(task_id: str, payload: OrientationConfirm, ctx: di
         raise HTTPException(409, "原图片无法读取，请重新提交") from e
 
 
+@router.post("/tasks/{task_id}/retry", status_code=201)
+async def retry_failed_task(task_id: str, ctx: dict = Session):
+    """失败/中断的任务：用原图片与原文字说明重新派发一轮批改。"""
+    s = get_settings()
+    try:
+        return await tasks.retry_task(s, ctx["openid"], task_id)
+    except TaskError as e:
+        raise HTTPException(e.status_code, e.message) from e
+
+
 @router.delete("/tasks/{task_id}")
 async def delete_task(task_id: str, ctx: dict = Session):
     """删除任务：允许删除失败/中断的任务，以及方向待确认的任务。

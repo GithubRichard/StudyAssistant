@@ -828,6 +828,7 @@ async function pageTask(app, r, alive) {
       return;
     }
     const needInput = task.status === "waiting_input";
+    const failedTerminal = task.status === "failed" || task.status === "interrupted";
     // 结果已产出（含等待补充材料）：先展示结果，补充材料作为附加项放最下方
     if (needInput && task.result && !task.result_unknown) {
       renderResultView(app, task, {
@@ -842,16 +843,30 @@ async function pageTask(app, r, alive) {
     <div class="page">
       <div class="card center">
         <div class="spinner"></div>
-        <div class="card-title">${needInput ? "需要补充材料" : "正在处理…"}</div>
+        <div class="card-title">${needInput ? "需要补充材料" : (failedTerminal ? "处理失败" : "正在处理…")}</div>
         <p class="muted">${esc(task.subject || "")} · ${esc(TASK_TYPE_LABEL[task.task_type] || task.task_type || "")}</p>
         ${task.error ? `<p class="error-text">${esc(task.error)}</p>` : ""}
         ${needInput
           ? `<p class="muted small">结果还没有产出，补充材料后会重新处理</p>`
           : `<p class="muted">完成后会自动跳转</p>`}
+        ${failedTerminal ? `<div style="margin-top:12px"><button class="btn primary" id="retryTaskBtn">重试批改</button></div>` : ""}
       </div>
       ${needInput ? followupCardHtml(task, false) : ""}
     </div>`);
     if (needInput) bindFollowupForm(app, id, () => poll());
+    const retryBtn = app.querySelector("#retryTaskBtn");
+    if (retryBtn) {
+      retryBtn.addEventListener("click", async () => {
+        retryBtn.disabled = true;
+        try {
+          await S.api(`/tasks/${encodeURIComponent(id)}/retry`, { method: "POST" });
+          poll();
+        } catch (e) {
+          alert("重试失败：" + (e && e.message || "未知错误"));
+          retryBtn.disabled = false;
+        }
+      });
+    }
   };
 
   await poll();
@@ -1441,6 +1456,7 @@ async function pageHistory(app, r, alive) {
         ? `#/${t.task_type === "training" ? "practice" : "result"}/${t.id}`
         : `#/task/${t.id}`;
       const deletable = t.status === "failed" || t.status === "interrupted" || t.orientation_pending;
+      const retriable = t.status === "failed" || t.status === "interrupted";
       const stateText = t.orientation_pending ? "待确认方向" : (statusLabel[t.status] || t.status);
       const delHint = t.orientation_pending ? "确定放弃这次方向确认吗？图片会一起删除。" : "确定删除这条失败记录吗？相关图片也会一起删除。";
       return `
@@ -1454,11 +1470,26 @@ async function pageHistory(app, r, alive) {
           ${t.summary ? `<div class="ledger-stem">${esc(t.summary.slice(0, 80))}</div>` : ""}
           <div class="ledger-meta muted small">${fmtDT(t.created_at)}${t.missing_info_count ? ` · 缺${t.missing_info_count}项信息` : ""}</div>
         </a>
-        ${deletable ? `<div style="margin-top:8px;text-align:right"><button class="btn ghost small del-task" data-id="${esc(t.id)}" data-hint="${esc(delHint)}">删除</button></div>` : ""}
+        ${deletable ? `<div style="margin-top:8px;text-align:right">
+          ${retriable ? `<button class="btn primary small retry-task" data-id="${esc(t.id)}" style="margin-right:8px">重试</button>` : ""}
+          <button class="btn ghost small del-task" data-id="${esc(t.id)}" data-hint="${esc(delHint)}">删除</button>
+        </div>` : ""}
       </div>`;
     }).join("")}</div>` : `<div class="card center"><p>还没有任务，去「学习」提交第一份作业吧</p>
       <a class="btn primary" href="#/learn">去提交</a></div>`}
   </div>`);
+  app.querySelectorAll(".retry-task").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await S.api(`/tasks/${encodeURIComponent(btn.dataset.id)}/retry`, { method: "POST" });
+        go("task", btn.dataset.id);
+      } catch (e) {
+        alert("重试失败：" + (e && e.message || "未知错误"));
+        btn.disabled = false;
+      }
+    });
+  });
   app.querySelectorAll(".del-task").forEach((btn) => {
     btn.addEventListener("click", async () => {
       if (!confirm(btn.dataset.hint || "确定删除吗？")) return;

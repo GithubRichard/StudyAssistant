@@ -373,6 +373,66 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view["result"]["questions"][0]["status"], "wrong")
         self.assertEqual(view["result"]["review_summary"]["state"], "not_run")
 
+    async def test_retry_failed_task_creates_second_run_with_same_assets(self):
+        created = await self._create()
+        await run_executor(self.settings, FakeClient(error=HermesAuthError("鉴权失败")))
+        task = await db.get_task(self.settings.db_path, created["task_id"])
+        self.assertEqual(task["status"], "failed")
+
+        res = await tasks.retry_task(self.settings, "u1", created["task_id"])
+        self.assertEqual(res["run_no"], 2)
+        self.assertEqual(res["status"], "pending")
+
+        task = await db.get_task(self.settings.db_path, created["task_id"])
+        self.assertEqual(task["status"], "pending")
+        self.assertEqual(task["run_count"], 2)
+        self.assertEqual(task["error"], "")
+        runs = await db.list_runs(self.settings.db_path, created["task_id"])
+        self.assertEqual([r["run_no"] for r in runs], [1, 2])
+        self.assertEqual(runs[-1]["kind"], "retry")
+        assets = await db.list_task_assets(self.settings.db_path, created["task_id"],
+                                           runs[-1]["id"])
+        self.assertEqual([a["id"] for a in assets], ["a1"])
+
+    async def test_retry_interrupted_task(self):
+        created = await self._create()
+        # 生产里 restart 会把派发中的任务和轮次一起标 interrupted
+        await db.update_task(self.settings.db_path, created["task_id"], status="interrupted")
+        runs = await db.list_runs(self.settings.db_path, created["task_id"])
+        await db.update_run(self.settings.db_path, runs[0]["id"], status="interrupted")
+        res = await tasks.retry_task(self.settings, "u1", created["task_id"])
+        self.assertEqual(res["run_no"], 2)
+        task = await db.get_task(self.settings.db_path, created["task_id"])
+        self.assertEqual(task["status"], "pending")
+
+    async def test_retry_rejected_for_active_or_done_task(self):
+        created = await self._create()
+        with self.assertRaises(tasks.TaskError) as ctx:
+            await tasks.retry_task(self.settings, "u1", created["task_id"])
+        self.assertEqual(ctx.exception.status_code, 409)
+        await db.update_task(self.settings.db_path, created["task_id"], status="done")
+        with self.assertRaises(tasks.TaskError) as ctx:
+            await tasks.retry_task(self.settings, "u1", created["task_id"])
+        self.assertEqual(ctx.exception.status_code, 409)
+
+    async def test_retry_wrong_owner_rejected(self):
+        created = await self._create()
+        await run_executor(self.settings, FakeClient(error=HermesAuthError("鉴权失败")))
+        with self.assertRaises(tasks.TaskError) as ctx:
+            await tasks.retry_task(self.settings, "u2", created["task_id"])
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_retry_run_executes_fresh_like_initial(self):
+        # 重试轮 kind="retry" 不带上一轮结果，不走补充轮增量修订
+        created = await self._create()
+        await run_executor(self.settings, FakeClient(error=HermesAuthError("鉴权失败")))
+        await tasks.retry_task(self.settings, "u1", created["task_id"])
+        client = FakeClient()
+        await run_executor(self.settings, client)
+        task = await db.get_task(self.settings.db_path, created["task_id"])
+        self.assertEqual(task["status"], "waiting_input")
+        self.assertEqual(client.calls, 1)
+
 
 async def _git(cwd: Path, *args: str):
     proc = await asyncio.create_subprocess_exec(
