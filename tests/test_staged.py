@@ -1417,39 +1417,54 @@ class ProductionIncidentRegressionTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ReasoningUncertaintyTest(unittest.TestCase):
-    """_reasoning_number_uncertainty：思考过程暴露题号不确定即命中。"""
+    """_reasoning_number_uncertainty：思考过程暴露题号不确定即命中，返回 (原因, 题号列表)。"""
 
     def test_field_name_mention_alone_does_not_trigger(self):
         # 2026-10-08 生产教训：模型 deliberation 字段语义（"我标 number_uncertain
         # 可能不需要"）是常态，字面命中会导致整批误伤，不再作为信号。
         self.assertEqual(staged._reasoning_number_uncertainty(
-            "我决定对表格的题号标记 number_uncertain 并在说明里解释"), "")
+            "我决定对表格的题号标记 number_uncertain 并在说明里解释"), ("", []))
         self.assertEqual(staged._reasoning_number_uncertainty(
             "注意图片底部题号是\"1.\"或\"I.\"，看起来是\"1.\"但实际可能是罗马数字\"I\"。"
-            "我标 number_uncertain 可能不需要。就写 \"1\"。"), "")
+            "我标 number_uncertain 可能不需要。就写 \"1\"。"), ("", []))
 
     def test_chinese_cooccurrence(self):
-        self.assertTrue(staged._reasoning_number_uncertainty(
-            "题号 28-32 辨认不确定，但先按顺序给出了编号"))
+        reason, nos = staged._reasoning_number_uncertainty(
+            "题号 28-32 辨认不确定，但先按顺序给出了编号")
+        self.assertTrue(reason)
 
     def test_empty_thinking(self):
-        self.assertEqual(staged._reasoning_number_uncertainty(""), "")
+        self.assertEqual(staged._reasoning_number_uncertainty(""), ("", []))
 
     def test_neutral_number_mention(self):
         self.assertEqual(staged._reasoning_number_uncertainty(
-            "题号 19 出现在 found it ___ (help) 句中"), "")
+            "题号 19 出现在 found it ___ (help) 句中"), ("", []))
+
+    def test_extract_specific_numbers(self):
+        # 2026-10-12：能提取具体题号时只标那些题
+        reason, nos = staged._reasoning_number_uncertainty(
+            "但题号25不确定，因为图片1的第25题是\"已知x-y=2...\"。所以先按25标。")
+        self.assertTrue(reason)
+        self.assertIn(25, nos)
+
+    def test_no_specific_numbers_fallback(self):
+        # 提不到具体题号时返回空列表，调用方回落整批
+        reason, nos = staged._reasoning_number_uncertainty(
+            "这些题号我有点不确定，先都标上吧")
+        self.assertTrue(reason)
+        self.assertEqual(nos, [])
 
     def test_uncertain_about_answers_only(self):
         self.assertEqual(staged._reasoning_number_uncertainty(
-            "学生答案有两个不确定"), "")
+            "学生答案有两个不确定"), ("", []))
 
     def test_negation_does_not_trigger(self):
         # 2026-10-08 生产："如果确定红笔，无需不确定"被误判，
         # 模型本意是不标，否定反转不是信号。
         self.assertEqual(staged._reasoning_number_uncertainty(
-            "题号旁字母为红笔。如果确定红笔，无需不确定。但为了安全，我可以在 note 里写"), "")
+            "题号旁字母为红笔。如果确定红笔，无需不确定。但为了安全，我可以在 note 里写"), ("", []))
         self.assertEqual(staged._reasoning_number_uncertainty(
-            "题号 1-3 没有不确定的，都很清楚"), "")
+            "题号 1-3 没有不确定的，都很清楚"), ("", []))
 
 
 class ReasoningUncertaintyIntegrationTest(unittest.IsolatedAsyncioTestCase):

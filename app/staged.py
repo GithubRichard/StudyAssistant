@@ -706,20 +706,26 @@ _NEGATION_WORDS = ("无需", "不用", "不需要", "没有", "不是", "并未"
 _NUMBER_UNCERTAIN_WINDOW = 40
 
 
-def _reasoning_number_uncertainty(thinking: str) -> str:
+def _reasoning_number_uncertainty(thinking: str) -> tuple:
     """检查 extract 阶段的思考过程是否暴露了题号不确定性。
 
-    返回命中原因（"" 表示无信号）。网关没返回 thinking 时返回 ""。
+    返回 (原因, 相关题号列表)。原因 "" 表示无信号。
+    网关没返回 thinking 时返回 ("", [])。
+    相关题号：从不确定表述附近提取具体题号（如"题号25不确定"→[25]），
+    用于精准标定，避免一道题含糊整批连坐。提不到具体题号时返回 []，
+    调用方回落到整批暂标（保守）。
     """
     text = thinking or ""
     if not text:
-        return ""
+        return "", []
     # 先剔除字段名本身：模型 deliberation 字段语义是常态，且 "number_uncertain"
     # 自带 "uncertain" 子串，不剔除会走私触发近距离规则（2026-10-08 生产教训）。
     lowered = re.sub(r"number_uncertain", " ", text.lower())
     num_pos = [m.start() for w in _NUMBER_WORDS for m in re.finditer(re.escape(w), lowered)]
     if not num_pos:
-        return ""
+        return "", []
+    reason = ""
+    hit_pos = -1
     for w in _UNCERTAIN_WORDS:
         for m in re.finditer(re.escape(w), lowered):
             # 否定反转："无需不确定"不是信号，跳过
@@ -728,8 +734,24 @@ def _reasoning_number_uncertainty(thinking: str) -> str:
                 continue
             if any(abs(m.start() - p) <= _NUMBER_UNCERTAIN_WINDOW for p in num_pos):
                 snippet = text[max(0, m.start() - 20):m.start() + 30].replace("\n", " ")
-                return f"思考过程现题号不确定表述（…{snippet}…）"
-    return ""
+                reason = f"思考过程现题号不确定表述（…{snippet}…）"
+                hit_pos = m.start()
+                break
+        if reason:
+            break
+    if not reason:
+        return "", []
+    # 提取不确定表述附近的具体题号（如"题号25"、"第25题"）
+    # 只在命中位置前后 60 字符内找，避免误伤远处无关题号
+    window = lowered[max(0, hit_pos - 60):hit_pos + 60]
+    nos = set()
+    for pat in (r"题号\s*(\d+)", r"第\s*(\d+)\s*题"):
+        for mm in re.finditer(pat, window):
+            try:
+                nos.add(int(mm.group(1)))
+            except ValueError:
+                pass
+    return reason, sorted(nos)
 
 
 def _resolve_reasoning_provisional(qs: List["ExtractedQuestion"],
@@ -1103,20 +1125,32 @@ async def extract_stage(images: List[Tuple[bytes, str]], subject: str, grade_lev
         stage_notes.append(msg)
 
     # reasoning 兜底（provisional 暂标）：模型思考过程里暴露题号不确定，但
-    # 结构化输出没标时，服务端先整批暂标（reasoning_uncertain），待题号复核
+    # 结构化输出没标时，服务端先暂标（reasoning_uncertain），待题号复核
     # 逐题位置确认后洗清（_resolve_reasoning_provisional）。
     # 2026-09-30 事故：reasoning 写了 number_uncertain，输出字段却没标，
     # 模型把"纠结后决定采用某套编号"当成了"已确定"。
-    r_reason = _reasoning_number_uncertainty(outcome.thinking)
+    # 2026-10-12 改进：能提取到具体题号时只标那些题（如"题号25不确定"只标25题），
+    # 提不到具体题号时回落整批暂标（保守）。
+    r_reason, r_nos = _reasoning_number_uncertainty(outcome.thinking)
     r_hook_note = ""
     if r_reason and qs:
         r_hook_note = f"思考过程兜底：{r_reason}"
-        for q in qs:
+        if r_nos:
+            # 精准标定：只标思考过程点名的题号
+            no_set = {str(n) for n in r_nos}
+            targets = [q for q in qs
+                       if unicodedata.normalize("NFKC", str(q.no or "")).strip() in no_set
+                       or str(q.no or "").strip().startswith(tuple(no_set))]
+            if not targets:
+                targets = qs  # 题号对不上时回落整批（保守）
+        else:
+            targets = qs
+        for q in targets:
             q.reasoning_uncertain = True
             q.number_note = ((q.number_note + "；" if q.number_note else "")
                              + r_hook_note)
-        log.warning("分阶段批改[extract] 思考过程暴露题号不确定（%s），已暂标待复核洗清",
-                    r_reason)
+        log.warning("分阶段批改[extract] 思考过程暴露题号不确定（%s），%d 题已暂标待复核洗清",
+                    r_reason, len(targets))
 
     # 题号重复检测：同一题号出现多次时无法唯一标识，下游按题号 key 的
     # 环节（比对 statuses、诊断校验、UID）会塌。把重复题号的题全部标
